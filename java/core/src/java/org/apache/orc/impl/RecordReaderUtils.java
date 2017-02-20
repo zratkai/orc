@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -38,12 +39,9 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileRange;
 import org.apache.hadoop.fs.impl.FileRangeImpl;
-import org.apache.hadoop.hive.common.io.DiskRange;
 import org.apache.hadoop.hive.common.io.DiskRangeList;
 import org.apache.orc.CompressionCodec;
-import org.apache.orc.CompressionKind;
 import org.apache.orc.DataReader;
-import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.StripeInformation;
 import org.apache.orc.TypeDescription;
@@ -55,102 +53,6 @@ public class RecordReaderUtils {
   private static final HadoopShims SHIMS = HadoopShimsFactory.get();
   private static final Logger LOG = LoggerFactory.getLogger(RecordReaderUtils.class);
 
-  static boolean hadBadBloomFilters(TypeDescription.Category category,
-                                    OrcFile.WriterVersion version) {
-    switch(category) {
-      case STRING:
-      case CHAR:
-      case VARCHAR:
-        return !version.includes(OrcFile.WriterVersion.HIVE_12055);
-      case DECIMAL:
-        return true;
-      case TIMESTAMP:
-        return !version.includes(OrcFile.WriterVersion.ORC_135);
-      default:
-        return false;
-    }
-  }
-
-  /**
-   * Plans the list of disk ranges that the given stripe needs to read the
-   * indexes. All of the positions are relative to the start of the stripe.
-   * @param  fileSchema the schema for the file
-   * @param footer the stripe footer
-   * @param ignoreNonUtf8BloomFilter should the reader ignore non-utf8
-   *                                 encoded bloom filters
-   * @param fileIncluded the columns (indexed by file columns) that should be
-   *                     read
-   * @param sargColumns true for the columns (indexed by file columns) that
-   *                    we need bloom filters for
-   * @param version the version of the software that wrote the file
-   * @param bloomFilterKinds (output) the stream kind of the bloom filters
-   * @return a list of merged disk ranges to read
-   */
-  public static DiskRangeList planIndexReading(TypeDescription fileSchema,
-                                        OrcProto.StripeFooter footer,
-                                        boolean ignoreNonUtf8BloomFilter,
-                                        boolean[] fileIncluded,
-                                        boolean[] sargColumns,
-                                        OrcFile.WriterVersion version,
-                                        OrcProto.Stream.Kind[] bloomFilterKinds) {
-    DiskRangeList.CreateHelper result = new DiskRangeList.CreateHelper();
-    List<OrcProto.Stream> streams = footer.getStreamsList();
-    // figure out which kind of bloom filter we want for each column
-    // picks bloom_filter_utf8 if its available, otherwise bloom_filter
-    if (sargColumns != null) {
-      for (OrcProto.Stream stream : streams) {
-        if (stream.hasKind() && stream.hasColumn()) {
-          int column = stream.getColumn();
-          if (sargColumns[column]) {
-            switch (stream.getKind()) {
-              case BLOOM_FILTER:
-                if (bloomFilterKinds[column] == null &&
-                    !(ignoreNonUtf8BloomFilter &&
-                        hadBadBloomFilters(fileSchema.findSubtype(column)
-                            .getCategory(), version))) {
-                  bloomFilterKinds[column] = OrcProto.Stream.Kind.BLOOM_FILTER;
-                }
-                break;
-              case BLOOM_FILTER_UTF8:
-                bloomFilterKinds[column] = OrcProto.Stream.Kind.BLOOM_FILTER_UTF8;
-                break;
-              default:
-                break;
-            }
-          }
-        }
-      }
-    }
-    long offset = 0;
-    for(OrcProto.Stream stream: footer.getStreamsList()) {
-      if (stream.hasKind() && stream.hasColumn()) {
-        int column = stream.getColumn();
-        if (fileIncluded == null || fileIncluded[column]) {
-          boolean needStream = false;
-          switch (stream.getKind()) {
-            case ROW_INDEX:
-              needStream = true;
-              break;
-            case BLOOM_FILTER:
-              needStream = bloomFilterKinds[column] == OrcProto.Stream.Kind.BLOOM_FILTER;
-              break;
-            case BLOOM_FILTER_UTF8:
-              needStream = bloomFilterKinds[column] == OrcProto.Stream.Kind.BLOOM_FILTER_UTF8;
-              break;
-            default:
-              // PASS
-              break;
-          }
-          if (needStream) {
-            result.addOrMerge(offset, offset + stream.getLength(), true, false);
-          }
-        }
-      }
-      offset += stream.getLength();
-    }
-    return result.get();
-  }
-
   private static class DefaultDataReader implements DataReader {
     private FSDataInputStream file = null;
     private ByteBufferAllocatorPool pool;
@@ -158,21 +60,15 @@ public class RecordReaderUtils {
     private final Supplier<FileSystem> fileSystemSupplier;
     private final Path path;
     private final boolean useZeroCopy;
-    private InStream.StreamOptions options = InStream.options();
-    private final int typeCount;
-    private CompressionKind compressionKind;
-    private final int maxDiskRangeChunkLimit;
+    private InStream.StreamOptions options;
+    private boolean isOpen = false;
     private final boolean isVectoredRead;
 
     private DefaultDataReader(DataReaderProperties properties) {
       this.fileSystemSupplier = properties.getFileSystemSupplier();
       this.path = properties.getPath();
       this.useZeroCopy = properties.getZeroCopy();
-      this.compressionKind = properties.getCompression();
-      options.withCodec(OrcCodecPool.getCodec(compressionKind))
-          .withBufferSize(properties.getBufferSize());
-      this.typeCount = properties.getTypeCount();
-      this.maxDiskRangeChunkLimit = properties.getMaxDiskRangeChunkLimit();
+      this.options = properties.getCompression();
       this.isVectoredRead = properties.getIsVectoredRead();
     }
 
@@ -284,28 +180,28 @@ public class RecordReaderUtils {
               new BufferChunk(tailBuf, 0), 0, tailLength, options)));
     }
 
-    public DiskRangeList readDiskRangesNormalOrVectored(FSDataInputStream file, ZeroCopyReaderShim zcr,
-        DiskRangeList range, long baseOffset,
-        boolean doForceDirect, int maxDiskRangeChunkLimit) throws  IOException{
+    public void readDiskRangesNormalOrVectored(FSDataInputStream file, ZeroCopyReaderShim zcr,
+                                               BufferChunkList range, boolean doForceDirect) throws  IOException{
       if(isVectoredRead) {
         LOG.info("Reading in vectored mode.");
-        return RecordReaderUtils.readDiskRangesVectored(file, zcr, baseOffset,
-            range, doForceDirect, maxDiskRangeChunkLimit);
+        RecordReaderUtils.readDiskRangesVectored(file, range, doForceDirect);
       }
-      return RecordReaderUtils.readDiskRanges(file, zcr, baseOffset,
-          range, doForceDirect, maxDiskRangeChunkLimit);
+      else
+        RecordReaderUtils.readDiskRanges(file, zcr, range, doForceDirect);
     }
 
     @Override
-    public DiskRangeList readFileData(
-        DiskRangeList range, long baseOffset, boolean doForceDirect) throws IOException {
-      return readDiskRangesNormalOrVectored(file, zcr, range, baseOffset, doForceDirect, maxDiskRangeChunkLimit);
+    public BufferChunkList readFileData(BufferChunkList range,
+                                        boolean doForceDirect
+                                        ) throws IOException {
+      readDiskRangesNormalOrVectored(file, zcr, range, doForceDirect);
+      return range;
     }
 
     @Override
     public void close() throws IOException {
       if (options.getCodec() != null) {
-        OrcCodecPool.returnCodec(compressionKind, options.getCodec());
+        OrcCodecPool.returnCodec(options.getCodec().getKind(), options.getCodec());
         options.withCodec(null);
       }
       if (pool != null) {
@@ -359,17 +255,6 @@ public class RecordReaderUtils {
     return new DefaultDataReader(properties);
   }
 
-  public static boolean[] findPresentStreamsByColumn(
-      List<OrcProto.Stream> streamList, List<OrcProto.Type> types) {
-    boolean[] hasNull = new boolean[types.size()];
-    for(OrcProto.Stream stream: streamList) {
-      if (stream.hasKind() && (stream.getKind() == OrcProto.Stream.Kind.PRESENT)) {
-        hasNull[stream.getColumn()] = true;
-      }
-    }
-    return hasNull;
-  }
-
   /**
    * Does region A overlap region B? The end points are inclusive on both sides.
    * @param leftA A's left point
@@ -385,43 +270,21 @@ public class RecordReaderUtils {
     return rightB >= leftA;
   }
 
-  public static void addEntireStreamToRanges(
-      long offset, long length, DiskRangeList.CreateHelper list, boolean doMergeBuffers) {
-    list.addOrMerge(offset, offset + length, doMergeBuffers, false);
-  }
-
-  public static void addRgFilteredStreamToRanges(OrcProto.Stream stream,
-      boolean[] includedRowGroups, boolean isCompressed, OrcProto.RowIndex index,
-      OrcProto.ColumnEncoding encoding, OrcProto.Type type, int compressionSize, boolean hasNull,
-      long offset, long length, DiskRangeList.CreateHelper list, boolean doMergeBuffers) {
-    for (int group = 0; group < includedRowGroups.length; ++group) {
-      if (!includedRowGroups[group]) continue;
-      int posn = getIndexPosition(
-          encoding.getKind(), type.getKind(), stream.getKind(), isCompressed, hasNull);
-      long start = index.getEntry(group).getPositions(posn);
-      final long nextGroupOffset;
-      boolean isLast = group == (includedRowGroups.length - 1);
-      nextGroupOffset = isLast ? length : index.getEntry(group + 1).getPositions(posn);
-
-      start += offset;
-      long end = offset + estimateRgEndOffset(
-          isCompressed, compressionSize, isLast, nextGroupOffset, length);
-      list.addOrMerge(start, end, doMergeBuffers, true);
-    }
-  }
-
-  public static long estimateRgEndOffset(boolean isCompressed,
-                                         int bufferSize,
+  public static long estimateRgEndOffset(InStream.StreamOptions unencryptedOptions,
                                          boolean isLast,
                                          long nextGroupOffset,
                                          long streamLength) {
+    // figure out the worst case last location
+    // if adjacent groups have the same compressed block offset then stretch the slop
+    // by factor of 2 to safely accommodate the next compression block.
+    // One for the current compression block and another for the next compression block.
     // Figure out the worst case last location
     long slop = WORST_UNCOMPRESSED_SLOP;
     // Stretch the slop by a factor to safely accommodate following compression blocks.
     // We need to calculate the maximum number of blocks(stretchFactor) by bufferSize accordingly.
-    if (isCompressed) {
-      int stretchFactor = 2 + (MAX_VALUES_LENGTH * MAX_BYTE_WIDTH - 1) / bufferSize;
-      slop = stretchFactor * (OutStream.HEADER_SIZE + bufferSize);
+    if (unencryptedOptions.isCompressed()) {
+      int stretchFactor = 2 + (MAX_VALUES_LENGTH * MAX_BYTE_WIDTH - 1) / unencryptedOptions.getBufferSize();
+      slop = stretchFactor * (OutStream.HEADER_SIZE + unencryptedOptions.getBufferSize());
     }
     return isLast ? streamLength : Math.min(streamLength, nextGroupOffset + slop);
   }
@@ -437,12 +300,12 @@ public class RecordReaderUtils {
    * @param columnEncoding the encoding of the column
    * @param columnType the type of the column
    * @param streamType the kind of the stream
-   * @param isCompressed is the file compressed
+   * @param isCompressed is the stream compressed?
    * @param hasNulls does the column have a PRESENT stream?
    * @return the number of positions that will be used for that stream
    */
   public static int getIndexPosition(OrcProto.ColumnEncoding.Kind columnEncoding,
-                              OrcProto.Type.Kind columnType,
+                              TypeDescription.Category columnType,
                               OrcProto.Stream.Kind streamType,
                               boolean isCompressed,
                               boolean hasNulls) {
@@ -479,10 +342,6 @@ public class RecordReaderUtils {
           }
         }
       case BINARY:
-        if (streamType == OrcProto.Stream.Kind.DATA) {
-          return base;
-        }
-        return base + BYTE_STREAM_POSITIONS + compressionValue;
       case DECIMAL:
         if (streamType == OrcProto.Stream.Kind.DATA) {
           return base;
@@ -550,59 +409,59 @@ public class RecordReaderUtils {
    * @param range
    * @return list of fileRange
    */
-  static List<FileRange> getFileRangeFrom(long base, DiskRangeList range) {
+  static List<FileRange> getFileRangeFrom(BufferChunkList range) {
     List<FileRange> fRange = new ArrayList<>();
-    while (range != null) {
-      long len = range.getEnd() - range.getOffset();
-      long off = range.getOffset();
-      FileRange currentRange = FileRange.createFileRange((base + off), (int) len);
+    BufferChunk cr = range.get();
+    while (cr.next != null) {
+      long len = cr.getLength();
+      long off = cr.getOffset();
+      FileRange currentRange = FileRange.createFileRange(off, (int) len);
       fRange.add(currentRange);
-      range = range.next;
+      cr = (BufferChunk) cr.next;
     }
     return fRange;
   }
 
+  static long computeEnd(BufferChunk first, BufferChunk last) {
+    long end = 0;
+    for(BufferChunk ptr=first; ptr != last.next; ptr = (BufferChunk) ptr.next) {
+      end = Math.max(ptr.getEnd(), end);
+    }
+    return end;
+  }
+
   /**
    * Read the list of ranges from the file.
-   * @param file the file to read
-   * @param base the base of the stripe
    * @param range the disk ranges within the stripe to read
    * @return the bytes read for each disk range, which is the same length as
    *    ranges
    * @throws IOException
    */
-  static DiskRangeList readDiskRangesVectored(FSDataInputStream fileInputStream,
-                                      HadoopShims.ZeroCopyReaderShim zcr,
-                                 long base,
-                                 DiskRangeList range,
-                                 boolean doForceDirect, int maxChunkLimit) throws IOException {
+  static void readDiskRangesVectored(FSDataInputStream fileInputStream,
+                                     BufferChunkList range, boolean doForceDirect) throws IOException {
     if (range == null)
-      return null;
-    DiskRangeList rootRange = range;
-    DiskRangeList prev = range.prev;
-    if (prev == null) {
-      prev = new DiskRangeList.MutateHelper(range);
-    }
+      return;
+    BufferChunkList rootRange = range;
     //Convert DiskRange to FileRange here
-    List<FileRange> fRanges = getFileRangeFrom(base, range);
+    List<FileRange> fRanges = getFileRangeFrom(range);
 
     try {
       IntFunction<ByteBuffer> allocate = doForceDirect ? ByteBuffer::allocateDirect : ByteBuffer::allocate;
+
       fileInputStream.readVectored(fRanges, allocate);
 
       int index = 0;
       range = rootRange;
-      while (range != null) {
-        if (range.hasData()) {
-          range = range.next;
-          index++;
-          continue;
+      BufferChunk current = range.get();
+      while (current != null) {
+        if (current.hasData()) {
+          current = (BufferChunk) current.next;
+          index ++;
         }
         ByteBuffer data = fRanges.get(index).getData().get();
-        BufferChunk bc = new BufferChunk(data, range.getOffset());
+        current.setChunk(data);
         //replace the range data with the buffer chunk returned after reading
-        range.replaceSelfWith(bc);
-        range = bc;
+        current = (BufferChunk) current.next;
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -610,72 +469,38 @@ public class RecordReaderUtils {
     } catch (ExecutionException e) {
       throw new IOException(e);
     }
-    return prev.next;
   }
 
-  static DiskRangeList readDiskRanges(FSDataInputStream file,
-      HadoopShims.ZeroCopyReaderShim zcr,
-      long base,
-      DiskRangeList range,
-      boolean doForceDirect, int maxChunkLimit) throws IOException {
-    if (range == null)
-      return null;
-    DiskRangeList prev = range.prev;
-    if (prev == null) {
-      prev = new DiskRangeList.MutateHelper(range);
-    }
-    while (range != null) {
-      if (range.hasData()) {
-        range = range.next;
-        continue;
+  /**
+   * Read the list of ranges from the file by updating each range in the list
+   * with a buffer that has the bytes from the file.
+   *
+   * The ranges must be sorted, but may overlap or include holes.
+   *
+   * @param file the file to read
+   * @param zcr the zero copy shim
+   * @param list the disk ranges within the file to read
+   * @param doForceDirect allocate direct buffers
+   */
+  static void readDiskRanges(FSDataInputStream file,
+                             HadoopShims.ZeroCopyReaderShim zcr,
+                             BufferChunkList list,
+                             boolean doForceDirect) throws IOException {
+    BufferChunk current = list == null ? null : list.get();
+    while (current != null) {
+      while (current.hasData()) {
+        current = (BufferChunk) current.next;
       }
-      boolean firstRead = true;
-      long len = range.getEnd() - range.getOffset();
-      long off = range.getOffset();
-      while (len > 0) {
-        // Stripe could be too large to read fully into a single buffer and
-        // will need to be chunked
-        int readSize = (len >= maxChunkLimit) ? maxChunkLimit : (int) len;
-        ByteBuffer partial;
-
-        // create chunk
-        if (zcr != null) {
-          if (firstRead) {
-            file.seek(base + off);
-          }
-
-          partial = zcr.readBuffer(readSize, false);
-          readSize = partial.remaining();
-        } else {
-          // Don't use HDFS ByteBuffer API because it has no readFully, and is
-          // buggy and pointless.
-          byte[] buffer = new byte[readSize];
-          file.readFully((base + off), buffer, 0, buffer.length);
-          if (doForceDirect) {
-            partial = ByteBuffer.allocateDirect(readSize);
-            partial.put(buffer);
-            partial.position(0);
-            partial.limit(readSize);
-          } else {
-            partial = ByteBuffer.wrap(buffer);
-          }
-        }
-        BufferChunk bc = new BufferChunk(partial, off);
-        if (firstRead) {
-          range.replaceSelfWith(bc);
-        } else {
-          range.insertAfter(bc);
-        }
-        firstRead = false;
-        range = bc;
-        len -= readSize;
-        off += readSize;
+      BufferChunk last = findSingleRead(current);
+      if (zcr != null) {
+        zeroCopyReadRanges(file, zcr, current, last, doForceDirect);
+      } else {
+        readRanges(file, current, last, doForceDirect);
       }
-      range = range.next;
+      current = (BufferChunk) last.next;
     }
-    return prev.next;
   }
-  
+
   static DiskRangeList getStreamBuffers(DiskRangeList range, long offset,
                                         long length) {
     // This assumes sorted ranges (as do many other parts of ORC code.
@@ -693,7 +518,7 @@ public class RecordReaderUtils {
           if (range.getOffset() < offset) {
             // Partial first buffer, add a slice of it.
             result.add((BufferChunk) range.sliceAndShift(offset,
-                Math.min(streamEnd, range.getEnd()), -offset));
+                    Math.min(streamEnd, range.getEnd()), -offset));
             if (range.getEnd() >= streamEnd)
               break; // Partial first buffer is also partial last buffer.
             range = range.next;
@@ -705,7 +530,7 @@ public class RecordReaderUtils {
         if (range.getEnd() > streamEnd) {
           // Partial last buffer (may also be the first buffer), add a slice of it.
           result.add((BufferChunk) range.sliceAndShift(range.getOffset(),
-              streamEnd, -offset));
+                  streamEnd, -offset));
           break;
         }
         // Buffer that belongs entirely to one stream.
@@ -713,12 +538,160 @@ public class RecordReaderUtils {
         //       the list, but we cannot because bufferChunks is also used by
         //       clearStreams for zcr. Create a useless dup.
         result.add((BufferChunk) range.sliceAndShift(range.getOffset(),
-            range.getEnd(), -offset));
+                range.getEnd(), -offset));
         if (range.getEnd() == streamEnd) break;
         range = range.next;
       }
     }
     return result.get();
+  }
+  
+  /**
+   * Zero-copy tead the data from the file based on a list of ranges in a
+   * single read.
+   *
+   * As a side note, the HDFS zero copy API really sucks from a user's point of
+   * view.
+   *
+   * @param file the file we're reading from
+   * @param zcr the zero copy shim
+   * @param first the first range to read
+   * @param last the last range to read
+   * @param allocateDirect if we need to allocate buffers, should we use direct
+   * @throws IOException
+   */
+  static void zeroCopyReadRanges(FSDataInputStream file,
+                                 HadoopShims.ZeroCopyReaderShim zcr,
+                                 BufferChunk first,
+                                 BufferChunk last,
+                                 boolean allocateDirect) throws IOException {
+    // read all of the bytes that we need
+    final long offset = first.getOffset();
+    int length = (int)(computeEnd(first, last) - offset);
+    file.seek(offset);
+    List<ByteBuffer> bytes = new ArrayList<>();
+    while (length > 0) {
+      ByteBuffer read= zcr.readBuffer(length, false);
+      bytes.add(read);
+      length -= read.remaining();
+    }
+    long currentOffset = offset;
+
+    // iterate and fill each range
+    BufferChunk current = first;
+    Iterator<ByteBuffer> buffers = bytes.iterator();
+    ByteBuffer currentBuffer = buffers.next();
+    while (current != last.next) {
+
+      // if we are past the start of the range, restart the iterator
+      if (current.getOffset() < offset) {
+        buffers = bytes.iterator();
+        currentBuffer = buffers.next();
+        currentOffset = offset;
+      }
+
+      // walk through the buffers to find the start of the buffer
+      while (currentOffset + currentBuffer.remaining() <= current.getOffset()) {
+        currentOffset += currentBuffer.remaining();
+        // We assume that buffers.hasNext is true because we know we read
+        // enough data to cover the last range.
+        currentBuffer = buffers.next();
+      }
+
+      // did we get the current range in a single read?
+      if (currentOffset + currentBuffer.remaining() >= current.getEnd()) {
+        ByteBuffer copy = currentBuffer.duplicate();
+        copy.position((int) (current.getOffset() - currentOffset));
+        copy.limit(copy.position() + current.getLength());
+        current.setChunk(copy);
+
+      } else {
+        // otherwise, build a single buffer that holds the entire range
+        ByteBuffer result = allocateDirect
+                              ? ByteBuffer.allocateDirect(current.getLength())
+                              : ByteBuffer.allocate(current.getLength());
+        // we know that the range spans buffers
+        ByteBuffer copy = currentBuffer.duplicate();
+        // skip over the front matter
+        copy.position((int) (current.getOffset() - currentOffset));
+        result.put(copy);
+        // advance the buffer
+        currentOffset += currentBuffer.remaining();
+        currentBuffer = buffers.next();
+        while (result.hasRemaining()) {
+          if (result.remaining() > currentBuffer.remaining()) {
+            result.put(currentBuffer.duplicate());
+            currentOffset += currentBuffer.remaining();
+            currentBuffer = buffers.next();
+          } else {
+            copy = currentBuffer.duplicate();
+            copy.limit(result.remaining());
+            result.put(copy);
+          }
+        }
+        result.flip();
+        current.setChunk(result);
+      }
+      current = (BufferChunk) current.next;
+    }
+  }
+
+  /**
+   * Read the data from the file based on a list of ranges in a single read.
+   * @param file the file to read from
+   * @param first the first range to read
+   * @param last the last range to read
+   * @param allocateDirect should we use direct buffers
+   */
+  static void readRanges(FSDataInputStream file,
+                         BufferChunk first,
+                         BufferChunk last,
+                         boolean allocateDirect) throws IOException {
+    // assume that the chunks are sorted by offset
+    long offset = first.getOffset();
+    int readSize = (int) (computeEnd(first, last) - offset);
+    byte[] buffer = new byte[readSize];
+    file.readFully(offset, buffer, 0, buffer.length);
+
+    // get the data into a ByteBuffer
+    ByteBuffer bytes;
+    if (allocateDirect) {
+      bytes = ByteBuffer.allocateDirect(readSize);
+      bytes.put(buffer);
+      bytes.flip();
+    } else {
+      bytes = ByteBuffer.wrap(buffer);
+    }
+
+    // populate each BufferChunks with the data
+    BufferChunk current = first;
+    while (current != last.next) {
+      ByteBuffer currentBytes = current == last ? bytes : bytes.duplicate();
+      currentBytes.position((int) (current.getOffset() - offset));
+      currentBytes.limit((int) (current.getEnd() - offset));
+      current.setChunk(currentBytes);
+      current = (BufferChunk) current.next;
+    }
+  }
+
+  /**
+   * Find the list of ranges that should be read in a single read.
+   * The read will stop when there is a gap, one of the ranges already has data,
+   * or we have reached the maximum read size of 2^31.
+   * @param first the first range to read
+   * @return the last range to read
+   */
+  static BufferChunk findSingleRead(BufferChunk first) {
+    BufferChunk last = first;
+    long currentEnd = first.getEnd();
+    while (last.next != null &&
+               !last.next.hasData() &&
+               last.next.getOffset() <= currentEnd &&
+               last.next.getEnd() - first.getOffset() < Integer.MAX_VALUE) {
+      last = (BufferChunk) last.next;
+      currentEnd = Math.max(currentEnd, last.getEnd());
+    }
+    return last;
   }
 
   static HadoopShims.ZeroCopyReaderShim createZeroCopyShim(FSDataInputStream file,
@@ -772,9 +745,9 @@ public class RecordReaderUtils {
       }
     }
 
-    private final TreeMap<Key, ByteBuffer> buffers = new TreeMap<Key, ByteBuffer>();
+    private final TreeMap<Key, ByteBuffer> buffers = new TreeMap<>();
 
-    private final TreeMap<Key, ByteBuffer> directBuffers = new TreeMap<Key, ByteBuffer>();
+    private final TreeMap<Key, ByteBuffer> directBuffers = new TreeMap<>();
 
     private long currentGeneration = 0;
 
@@ -813,5 +786,168 @@ public class RecordReaderUtils {
       }
     }
   }
-}
 
+  static class ChunkReader {
+    private final BufferChunk from;
+    private final BufferChunk to;
+    private final int readBytes;
+    private final int reqBytes;
+
+    private ChunkReader(BufferChunk from, BufferChunk to, int readSize, int reqBytes) {
+      this.from = from;
+      this.to = to;
+      this.readBytes = readSize;
+      this.reqBytes = reqBytes;
+    }
+
+    double getExtraBytesFraction() {
+      return (readBytes - reqBytes) / ((double) reqBytes);
+    }
+
+    public int getReadBytes() {
+      return readBytes;
+    }
+
+    public int getReqBytes() {
+      return reqBytes;
+    }
+
+    public BufferChunk getFrom() {
+      return from;
+    }
+
+    public BufferChunk getTo() {
+      return to;
+    }
+
+    void populateChunks(ByteBuffer bytes, boolean allocateDirect, double extraByteTolerance) {
+      if (getExtraBytesFraction() > extraByteTolerance) {
+        LOG.debug("ExtraBytesFraction = {}, ExtraByteTolerance = {}, reducing memory size",
+                getExtraBytesFraction(),
+                extraByteTolerance);
+        populateChunksReduceSize(bytes, allocateDirect);
+      } else {
+        LOG.debug("ExtraBytesFraction = {}, ExtraByteTolerance = {}, populating as is",
+                getExtraBytesFraction(),
+                extraByteTolerance);
+        populateChunksAsIs(bytes);
+      }
+    }
+
+    void populateChunksAsIs(ByteBuffer bytes) {
+      // populate each BufferChunks with the data
+      BufferChunk current = from;
+      long offset = from.getOffset();
+      while (current != to.next) {
+        ByteBuffer currentBytes = current == to ? bytes : bytes.duplicate();
+        currentBytes.position((int) (current.getOffset() - offset));
+        currentBytes.limit((int) (current.getEnd() - offset));
+        current.setChunk(currentBytes);
+        current = (BufferChunk) current.next;
+      }
+    }
+
+    void populateChunksReduceSize(ByteBuffer bytes, boolean allocateDirect) {
+      ByteBuffer newBuffer;
+      if (allocateDirect) {
+        newBuffer = ByteBuffer.allocateDirect(reqBytes);
+        newBuffer.position(reqBytes);
+        newBuffer.flip();
+      } else {
+        byte[] newBytes = new byte[reqBytes];
+        newBuffer = ByteBuffer.wrap(newBytes);
+      }
+
+      final long offset = from.getOffset();
+      int copyStart = 0;
+      int copyEnd;
+      int copyLength;
+      int skippedBytes = 0;
+      int srcPosition;
+      BufferChunk current = from;
+      while (current != to.next) {
+        // We can skip bytes as required, but no need to copy bytes that are already copied
+        srcPosition = (int) (current.getOffset() - offset);
+        skippedBytes += Math.max(0, srcPosition - copyStart);
+        copyStart = Math.max(copyStart, srcPosition);
+        copyEnd = (int) (current.getEnd() - offset);
+        copyLength = copyStart < copyEnd ? copyEnd - copyStart : 0;
+        newBuffer.put(bytes.array(), copyStart, copyLength);
+        copyStart += copyLength;
+        // Set up new ByteBuffer that wraps on the same backing array
+        ByteBuffer currentBytes = current == to ? newBuffer : newBuffer.duplicate();
+        currentBytes.position(srcPosition - skippedBytes);
+        currentBytes.limit(currentBytes.position() + current.getLength());
+        current.setChunk(currentBytes);
+        current = (BufferChunk) current.next;
+      }
+    }
+
+    /**
+     * Read the data from the file based on a list of ranges in a single read.
+     *
+     * @param file           the file to read from
+     * @param allocateDirect should we use direct buffers
+     */
+    void readRanges(FSDataInputStream file, boolean allocateDirect, double extraByteTolerance)
+            throws IOException {
+      // assume that the chunks are sorted by offset
+      long offset = from.getOffset();
+      int readSize = (int) (computeEnd(from, to) - offset);
+      byte[] buffer = new byte[readSize];
+      try {
+        file.readFully(offset, buffer, 0, buffer.length);
+      } catch (IOException e) {
+        throw new IOException(String.format("Failed while reading %s %d:%d",
+                file,
+                offset,
+                buffer.length),
+                e);
+      }
+
+      // get the data into a ByteBuffer
+      ByteBuffer bytes;
+      if (allocateDirect) {
+        bytes = ByteBuffer.allocateDirect(readSize);
+        bytes.put(buffer);
+        bytes.flip();
+      } else {
+        bytes = ByteBuffer.wrap(buffer);
+      }
+
+      // populate each BufferChunks with the data
+      populateChunks(bytes, allocateDirect, extraByteTolerance);
+    }
+
+    static ChunkReader create(BufferChunk from, BufferChunk to) {
+      long f = Integer.MAX_VALUE;
+      long e = Integer.MIN_VALUE;
+
+      long cf = Integer.MAX_VALUE;
+      long ef = Integer.MIN_VALUE;
+      int reqBytes = 0;
+
+      BufferChunk current = from;
+      while (current != to.next) {
+        f = Math.min(f, current.getOffset());
+        e = Math.max(e, current.getEnd());
+        if (ef == Integer.MIN_VALUE || current.getOffset() <= ef) {
+          cf = Math.min(cf, current.getOffset());
+          ef = Math.max(ef, current.getEnd());
+        } else {
+          reqBytes += ef - cf;
+          cf = current.getOffset();
+          ef = current.getEnd();
+        }
+        current = (BufferChunk) current.next;
+      }
+      reqBytes += ef - cf;
+      return new ChunkReader(from, to, (int) (e - f), reqBytes);
+    }
+
+    static ChunkReader create(BufferChunk from) {
+      BufferChunk to = findSingleRead(from);
+      return create(from, to);
+    }
+  }
+}
