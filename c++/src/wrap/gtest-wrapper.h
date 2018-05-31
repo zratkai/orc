@@ -20,27 +20,38 @@
 // we need to disable a whole set of warnings as we include gtest.h
 // restore most of the warnings after the file is loaded.
 
-DIAGNOSTIC_IGNORE("-Wsign-compare")
+#if defined(__GNUC__) || defined(__clang__)
+  DIAGNOSTIC_IGNORE("-Wsign-compare")
+#endif
 
 #ifdef __clang__
   DIAGNOSTIC_IGNORE("-Wconversion-null")
   DIAGNOSTIC_IGNORE("-Wexit-time-destructors")
   DIAGNOSTIC_IGNORE("-Wglobal-constructors")
+  DIAGNOSTIC_IGNORE("-Wunknown-warning-option")
   DIAGNOSTIC_IGNORE("-Wused-but-marked-unused")
+  DIAGNOSTIC_IGNORE("-Wzero-as-null-pointer-constant")
 #endif
 
 DIAGNOSTIC_PUSH
 
-DIAGNOSTIC_IGNORE("-Wdeprecated")
-DIAGNOSTIC_IGNORE("-Wmissing-noreturn")
-DIAGNOSTIC_IGNORE("-Wpadded")
-DIAGNOSTIC_IGNORE("-Wsign-compare")
-DIAGNOSTIC_IGNORE("-Wundef")
+#if defined(__GNUC__) || defined(__clang__)
+  DIAGNOSTIC_IGNORE("-Wdeprecated")
+  DIAGNOSTIC_IGNORE("-Wmissing-noreturn")
+  DIAGNOSTIC_IGNORE("-Wpadded")
+  DIAGNOSTIC_IGNORE("-Wsign-compare")
+  DIAGNOSTIC_IGNORE("-Wundef")
+#endif
 
 #ifdef __clang__
   DIAGNOSTIC_IGNORE("-Wshift-sign-overflow")
   DIAGNOSTIC_IGNORE("-Wused-but-marked-unused")
   DIAGNOSTIC_IGNORE("-Wweak-vtables")
+#endif
+
+#ifdef _MSC_VER
+  DIAGNOSTIC_IGNORE(4146) // unary minus operator applied to unsigned type, result still unsigned
+  DIAGNOSTIC_IGNORE(4805) // '==': unsafe mix of type 'const bool' and type 'const int64_t' in operation
 #endif
 
 #include "gtest/gtest.h"

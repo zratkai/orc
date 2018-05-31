@@ -14,35 +14,45 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/c++/src
   ${PROJECT_BINARY_DIR}/c++/include
   ${PROJECT_BINARY_DIR}/c++/src
-  ${PROTOBUF_INCLUDE_DIRS}
-  ${ZLIB_INCLUDE_DIRS}
-  ${SNAPPY_INCLUDE_DIRS}
-  ${GMOCK_INCLUDE_DIRS}
+  ${PROTOBUF_INCLUDE_DIR}
+  ${ZLIB_INCLUDE_DIR}
+  ${SNAPPY_INCLUDE_DIR}
+  ${GTEST_INCLUDE_DIR}
 )
 
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX11_FLAGS} ${WARN_FLAGS}")
 
 add_executable (orc-test
+  MemoryInputStream.cc
+  MemoryOutputStream.cc
+  TestBufferedOutputStream.cc
   TestByteRle.cc
+  TestByteRLEEncoder.cc
   TestColumnPrinter.cc
   TestColumnReader.cc
+  TestColumnStatistics.cc
   TestCompression.cc
+  TestDecompression.cc
+  TestDecimal.cc
   TestDriver.cc
   TestInt128.cc
   TestReader.cc
   TestRle.cc
-  TestTimezone.cc
+  TestRLEv1Encoder.cc
+  TestStripeIndexStatistics.cc
   TestTimestampStatistics.cc
+  TestTimezone.cc
   TestType.cc
+  TestWriter.cc
 )
 
 target_link_libraries (orc-test
   orc
-  ${GMOCK_LIBRARIES}
-  ${LZ4_LIBRARIES}
-  ${PROTOBUF_LIBRARIES}
-  ${SNAPPY_LIBRARIES}
-  ${ZLIB_LIBRARIES}
+  lz4
+  protobuf
+  snappy
+  zlib
+  ${GTEST_LIBRARIES}
 )
 
 add_executable (create-test-files
@@ -51,8 +61,7 @@ add_executable (create-test-files
 
 target_link_libraries (create-test-files
   orc
-  ${PROTOBUF_LIBRARIES}
+  protobuf
 )
 
 add_test (NAME orc-test COMMAND orc-test)
-

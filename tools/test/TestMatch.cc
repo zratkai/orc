@@ -110,7 +110,7 @@ namespace orc {
     EXPECT_EQ(GetParam().rowCount, reader->getNumberOfRows());
     EXPECT_EQ(GetParam().rowIndexStride, reader->getRowIndexStride());
     EXPECT_EQ(GetParam().contentLength, reader->getContentLength());
-    EXPECT_EQ(GetParam().formatVersion, reader->getFormatVersion());
+    EXPECT_EQ(GetParam().formatVersion, reader->getFormatVersion().toString());
     EXPECT_EQ(getFilename(), reader->getStreamName());
     EXPECT_EQ(GetParam().userMeta.size(), reader->getMetadataKeys().size());
     for(std::map<std::string, std::string>::const_iterator itr =
@@ -454,6 +454,17 @@ namespace orc {
                                        CompressionKind_ZLIB,
                                        262144,
                                        10000,
+                                       std::map<std::string, std::string>()),
+                    OrcFileDescription("orc_index_int_string.orc",
+                                       "orc_index_int_string.jsn.gz",
+                                       ("struct<_col0:int,_col1:varchar(4)>"),
+                                       "0.12",
+                                       6000,
+                                       11280,
+                                       1,
+                                       CompressionKind_ZLIB,
+                                       262144,
+                                       2000,
                                        std::map<std::string, std::string>()),
                     OrcFileDescription("over1k_bloom.orc",
                                        "over1k_bloom.jsn.gz",
@@ -915,7 +926,7 @@ TEST(TestMatch, futureFormatVersion) {
   EXPECT_EQ(("Warning: ORC file " + filename +
              " was written in an unknown format version 19.99\n"),
             errorMsg.str());
-  EXPECT_EQ("19.99", reader->getFormatVersion());
+  EXPECT_EQ("19.99", reader->getFormatVersion().toString());
 }
 
 TEST(TestMatch, selectColumns) {

@@ -77,6 +77,7 @@ public class ReaderImpl implements Reader {
 
   private long deserializedSize = -1;
   protected final Configuration conf;
+  protected final boolean useUTCTimestamp;
   private final List<Integer> versionList;
   private final OrcFile.WriterVersion writerVersion;
 
@@ -221,13 +222,15 @@ public class ReaderImpl implements Reader {
 
   @Override
   public ColumnStatistics[] getStatistics() {
-    return deserializeStats(fileStats);
+    return deserializeStats(schema, fileStats);
   }
 
-  static ColumnStatistics[] deserializeStats(List<OrcProto.ColumnStatistics> fileStats){
+  public static ColumnStatistics[] deserializeStats(
+      TypeDescription schema,
+      List<OrcProto.ColumnStatistics> fileStats) {
     ColumnStatistics[] result = new ColumnStatistics[fileStats.size()];
     for(int i=0; i < result.length; ++i) {
-      result[i] = ColumnStatisticsImpl.deserialize(fileStats.get(i));
+      result[i] = ColumnStatisticsImpl.deserialize(schema, fileStats.get(i));
     }
     return result;
   }
@@ -342,6 +345,7 @@ public class ReaderImpl implements Reader {
     this.path = path;
     this.conf = options.getConfiguration();
     this.maxLength = options.getMaxLength();
+    this.useUTCTimestamp = options.getUseUTCTimestamp();
     FileMetadata fileMetadata = options.getFileMetadata();
     if (fileMetadata != null) {
       this.compressionKind = fileMetadata.getCompressionKind();
@@ -349,8 +353,10 @@ public class ReaderImpl implements Reader {
       this.metadataSize = fileMetadata.getMetadataSize();
       this.stripeStats = fileMetadata.getStripeStats();
       this.versionList = fileMetadata.getVersionList();
+      OrcFile.WriterImplementation writer =
+          OrcFile.WriterImplementation.from(fileMetadata.getWriterImplementation());
       this.writerVersion =
-          OrcFile.WriterVersion.from(fileMetadata.getWriterVersionNum());
+          OrcFile.WriterVersion.from(writer, fileMetadata.getWriterVersionNum());
       this.types = fileMetadata.getTypes();
       this.rowIndexStride = fileMetadata.getRowIndexStride();
       this.contentLength = fileMetadata.getContentLength();
@@ -381,6 +387,7 @@ public class ReaderImpl implements Reader {
       this.stripes = tail.getStripes();
       this.stripeStats = tail.getStripeStatisticsProto();
     }
+    OrcUtils.isValidTypeTree(this.types, 0);
     this.schema = OrcUtils.convertTypeFromProtobuf(this.types, 0);
   }
 

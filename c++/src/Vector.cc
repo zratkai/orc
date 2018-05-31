@@ -19,7 +19,7 @@
 #include "orc/Vector.hh"
 
 #include "Adaptor.hh"
-#include "Exceptions.hh"
+#include "orc/Exceptions.hh"
 
 #include <iostream>
 #include <sstream>
@@ -34,7 +34,7 @@ namespace orc {
                                           notNull(pool, cap),
                                           hasNulls(false),
                                           memoryPool(pool) {
-    // PASS
+    std::memset(notNull.data(), 1, capacity);
   }
 
   ColumnVectorBatch::~ColumnVectorBatch() {
@@ -391,9 +391,13 @@ namespace orc {
       scale = 0;
     }else{
       std::string copy(str);
-      scale = static_cast<int32_t>(str.length() - foundPoint);
+      scale = static_cast<int32_t>(str.length() - foundPoint - 1);
       value = Int128(copy.replace(foundPoint, 1, ""));
     }
+  }
+
+  Decimal::Decimal() : value(0), scale(0) {
+    // PASS
   }
 
   std::string Decimal::toString() const {

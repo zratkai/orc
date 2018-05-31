@@ -38,6 +38,7 @@ import java.sql.Timestamp;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -275,23 +276,26 @@ public class TestRecordReaderImpl {
   @Test
   public void testGetMin() throws Exception {
     assertEquals(10L, RecordReaderImpl.getMin(
-      ColumnStatisticsImpl.deserialize(createIntStats(10L, 100L))));
+      ColumnStatisticsImpl.deserialize(null, createIntStats(10L, 100L))));
     assertEquals(10.0d, RecordReaderImpl.getMin(ColumnStatisticsImpl.deserialize(
+      null,
       OrcProto.ColumnStatistics.newBuilder()
         .setDoubleStatistics(OrcProto.DoubleStatistics.newBuilder()
           .setMinimum(10.0d).setMaximum(100.0d).build()).build())));
     assertEquals(null, RecordReaderImpl.getMin(ColumnStatisticsImpl.deserialize(
+      null,
       OrcProto.ColumnStatistics.newBuilder()
         .setStringStatistics(OrcProto.StringStatistics.newBuilder().build())
         .build())));
     assertEquals("a", RecordReaderImpl.getMin(ColumnStatisticsImpl.deserialize(
+      null,
       OrcProto.ColumnStatistics.newBuilder()
         .setStringStatistics(OrcProto.StringStatistics.newBuilder()
           .setMinimum("a").setMaximum("b").build()).build())));
     assertEquals("hello", RecordReaderImpl.getMin(ColumnStatisticsImpl
-      .deserialize(createStringStats("hello", "world"))));
+      .deserialize(null, createStringStats("hello", "world"))));
     assertEquals(HiveDecimal.create("111.1"), RecordReaderImpl.getMin(ColumnStatisticsImpl
-      .deserialize(createDecimalStats("111.1", "112.1"))));
+      .deserialize(null, createDecimalStats("111.1", "112.1"))));
   }
 
   private static OrcProto.ColumnStatistics createIntStats(Long min,
@@ -379,23 +383,27 @@ public class TestRecordReaderImpl {
 
   @Test
   public void testGetMax() throws Exception {
-    assertEquals(100L, RecordReaderImpl.getMax(ColumnStatisticsImpl.deserialize(createIntStats(10L, 100L))));
+    assertEquals(100L, RecordReaderImpl.getMax(ColumnStatisticsImpl.deserialize(
+        null, createIntStats(10L, 100L))));
     assertEquals(100.0d, RecordReaderImpl.getMax(ColumnStatisticsImpl.deserialize(
+        null,
         OrcProto.ColumnStatistics.newBuilder()
             .setDoubleStatistics(OrcProto.DoubleStatistics.newBuilder()
                 .setMinimum(10.0d).setMaximum(100.0d).build()).build())));
     assertEquals(null, RecordReaderImpl.getMax(ColumnStatisticsImpl.deserialize(
+        null,
         OrcProto.ColumnStatistics.newBuilder()
             .setStringStatistics(OrcProto.StringStatistics.newBuilder().build())
             .build())));
     assertEquals("b", RecordReaderImpl.getMax(ColumnStatisticsImpl.deserialize(
+        null,
         OrcProto.ColumnStatistics.newBuilder()
             .setStringStatistics(OrcProto.StringStatistics.newBuilder()
                 .setMinimum("a").setMaximum("b").build()).build())));
     assertEquals("world", RecordReaderImpl.getMax(ColumnStatisticsImpl
-      .deserialize(createStringStats("hello", "world"))));
+      .deserialize(null, createStringStats("hello", "world"))));
     assertEquals(HiveDecimal.create("112.1"), RecordReaderImpl.getMax(ColumnStatisticsImpl
-      .deserialize(createDecimalStats("111.1", "112.1"))));
+      .deserialize(null, createDecimalStats("111.1", "112.1"))));
   }
 
   static TruthValue evaluateBoolean(OrcProto.ColumnStatistics stats,
@@ -433,7 +441,8 @@ public class TestRecordReaderImpl {
 
   static TruthValue evaluateTimestamp(OrcProto.ColumnStatistics stats,
                                       PredicateLeaf predicate,
-                                      boolean include135) {
+                                      boolean include135,
+                                      boolean useUTCTimestamp) {
     OrcProto.ColumnEncoding encoding =
         OrcProto.ColumnEncoding.newBuilder()
             .setKind(OrcProto.ColumnEncoding.Kind.DIRECT)
@@ -441,13 +450,14 @@ public class TestRecordReaderImpl {
     return RecordReaderImpl.evaluatePredicateProto(stats, predicate, null,
         encoding, null,
         include135 ? OrcFile.WriterVersion.ORC_135: OrcFile.WriterVersion.ORC_101,
-        TypeDescription.Category.TIMESTAMP);
+        TypeDescription.Category.TIMESTAMP, useUTCTimestamp);
   }
 
   static TruthValue evaluateTimestampBloomfilter(OrcProto.ColumnStatistics stats,
                                                  PredicateLeaf predicate,
                                                  BloomFilter bloom,
-                                                 OrcFile.WriterVersion version) {
+                                                 OrcFile.WriterVersion version,
+                                                 boolean useUTCTimestamp) {
     OrcProto.ColumnEncoding.Builder encoding =
         OrcProto.ColumnEncoding.newBuilder()
             .setKind(OrcProto.ColumnEncoding.Kind.DIRECT);
@@ -463,7 +473,7 @@ public class TestRecordReaderImpl {
     BloomFilterIO.serialize(builder, bloom);
     return RecordReaderImpl.evaluatePredicateProto(stats, predicate, kind,
         encoding.build(), builder.build(), version,
-        TypeDescription.Category.TIMESTAMP);
+        TypeDescription.Category.TIMESTAMP, useUTCTimestamp);
   }
 
   @Test
@@ -749,44 +759,44 @@ public class TestRecordReaderImpl {
         "x", Timestamp.valueOf("2017-01-01 00:00:00"), null);
     assertEquals(TruthValue.YES_NO,
         evaluateTimestamp(createTimestampStats("2017-01-01 00:00:00",
-            "2018-01-01 00:00:00"), pred, true));
+            "2018-01-01 00:00:00"), pred, true, false));
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
         PredicateLeaf.Type.FLOAT, "x", 15.0, null);
     assertEquals(TruthValue.YES_NO_NULL,
         evaluateTimestamp(createTimestampStats("2017-01-01 00:00:00", "2018-01-01 00:00:00"),
-            pred, true));
+            pred, true, false));
     assertEquals(TruthValue.YES_NO_NULL,
         evaluateTimestamp(createTimestampStats("2017-01-01 00:00:00", "2018-01-01 00:00:00"),
-            pred, true));
+            pred, true, false));
 
     // pre orc-135 should always be yes_no_null.
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
         PredicateLeaf.Type.TIMESTAMP, "x",  Timestamp.valueOf("2017-01-01 00:00:00"), null);
     assertEquals(TruthValue.YES_NO_NULL,
         evaluateTimestamp(createTimestampStats("2017-01-01 00:00:00", "2017-01-01 00:00:00"),
-            pred, false));
+            pred, false, false));
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
         PredicateLeaf.Type.STRING, "x", Timestamp.valueOf("2017-01-01 00:00:00").toString(), null);
     assertEquals(TruthValue.YES_NO,
         evaluateTimestamp(createTimestampStats("2017-01-01 00:00:00", "2018-01-01 00:00:00"),
-            pred, true));
+            pred, true, false));
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
         PredicateLeaf.Type.DATE, "x", Date.valueOf("2016-01-01"), null);
     assertEquals(TruthValue.NO,
         evaluateTimestamp(createTimestampStats("2017-01-01 00:00:00", "2017-01-01 00:00:00"),
-            pred, true));
+            pred, true, false));
     assertEquals(TruthValue.YES_NO,
         evaluateTimestamp(createTimestampStats("2015-01-01 00:00:00", "2016-01-01 00:00:00"),
-            pred, true));
+            pred, true, false));
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
         PredicateLeaf.Type.DECIMAL, "x", new HiveDecimalWritable("15"), null);
     assertEquals(TruthValue.YES_NO_NULL,
         evaluateTimestamp(createTimestampStats("2015-01-01 00:00:00", "2016-01-01 00:00:00"),
-            pred, true));
+            pred, true, false));
   }
 
   @Test
@@ -1068,13 +1078,50 @@ public class TestRecordReaderImpl {
         "x", Timestamp.valueOf("2000-01-01 00:00:00"), null);
     OrcProto.ColumnStatistics cs = createTimestampStats("2000-01-01 00:00:00", "2001-01-01 00:00:00");
     assertEquals(TruthValue.YES_NO_NULL,
-      evaluateTimestampBloomfilter(cs, pred, new BloomFilterUtf8(10000, 0.01), OrcFile.WriterVersion.ORC_101));
+      evaluateTimestampBloomfilter(cs, pred, new BloomFilterUtf8(10000, 0.01), OrcFile.WriterVersion.ORC_101, false));
     BloomFilterUtf8 bf = new BloomFilterUtf8(10, 0.05);
     bf.addLong(getUtcTimestamp("2000-06-01 00:00:00"));
     assertEquals(TruthValue.NO_NULL,
-      evaluateTimestampBloomfilter(cs, pred, bf, OrcFile.WriterVersion.ORC_135));
+      evaluateTimestampBloomfilter(cs, pred, bf, OrcFile.WriterVersion.ORC_135, false));
     assertEquals(TruthValue.YES_NO_NULL,
-      evaluateTimestampBloomfilter(cs, pred, bf, OrcFile.WriterVersion.ORC_101));
+      evaluateTimestampBloomfilter(cs, pred, bf, OrcFile.WriterVersion.ORC_101, false));
+  }
+
+  @Test
+  public void testTimestampUTC() throws Exception {
+    DateFormat f = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+    f.setTimeZone(TimeZone.getTimeZone("UTC"));
+    PredicateLeaf pred = createPredicateLeaf
+        (PredicateLeaf.Operator.EQUALS, PredicateLeaf.Type.TIMESTAMP,
+            "x", new Timestamp(f.parse("2015-01-01 00:00:00").getTime()), null);
+    PredicateLeaf pred2 = createPredicateLeaf
+        (PredicateLeaf.Operator.EQUALS, PredicateLeaf.Type.TIMESTAMP,
+            "x", new Timestamp(f.parse("2014-12-31 23:59:59").getTime()), null);
+    PredicateLeaf pred3 = createPredicateLeaf
+        (PredicateLeaf.Operator.EQUALS, PredicateLeaf.Type.TIMESTAMP,
+            "x", new Timestamp(f.parse("2016-01-01 00:00:01").getTime()), null);
+    OrcProto.ColumnStatistics cs = createTimestampStats("2015-01-01 00:00:00", "2016-01-01 00:00:00");
+
+    assertEquals(TruthValue.YES_NO_NULL,
+        evaluateTimestamp(cs, pred, true, true));
+    assertEquals(TruthValue.NO_NULL,
+        evaluateTimestamp(cs, pred2, true, true));
+    assertEquals(TruthValue.NO_NULL,
+        evaluateTimestamp(cs, pred3, true, true));
+
+    assertEquals(TruthValue.NO_NULL,
+        evaluateTimestampBloomfilter(cs, pred, new BloomFilterUtf8(10000, 0.01), OrcFile.WriterVersion.ORC_135, true));
+    assertEquals(TruthValue.NO_NULL,
+        evaluateTimestampBloomfilter(cs, pred2, new BloomFilterUtf8(10000, 0.01), OrcFile.WriterVersion.ORC_135, true));
+
+    BloomFilterUtf8 bf = new BloomFilterUtf8(10, 0.05);
+    bf.addLong(getUtcTimestamp("2015-06-01 00:00:00"));
+    assertEquals(TruthValue.NO_NULL,
+        evaluateTimestampBloomfilter(cs, pred, bf, OrcFile.WriterVersion.ORC_135, true));
+
+    bf.addLong(getUtcTimestamp("2015-01-01 00:00:00"));
+    assertEquals(TruthValue.YES_NO_NULL,
+        evaluateTimestampBloomfilter(cs, pred, bf, OrcFile.WriterVersion.ORC_135, true));
   }
 
   private static long getUtcTimestamp(String ts)  {
@@ -1471,7 +1518,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addLong(i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createIntStats(10, 100));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createIntStats(10, 100));
     assertEquals(TruthValue.NO, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addLong(15);
@@ -1486,7 +1533,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addLong(i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createIntStats(10, 100));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createIntStats(10, 100));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addLong(15);
@@ -1505,7 +1552,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addLong(i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createIntStats(10, 100));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createIntStats(10, 100));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addLong(19);
@@ -1523,7 +1570,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addDouble(i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDoubleStats(10.0, 100.0));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDoubleStats(10.0, 100.0));
     assertEquals(TruthValue.NO, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addDouble(15.0);
@@ -1538,7 +1585,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addDouble(i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDoubleStats(10.0, 100.0));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDoubleStats(10.0, 100.0));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addDouble(15.0);
@@ -1557,7 +1604,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addDouble(i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDoubleStats(10.0, 100.0));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDoubleStats(10.0, 100.0));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addDouble(19.0);
@@ -1575,7 +1622,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addString("str_" + i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createStringStats("str_10", "str_200"));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createStringStats("str_10", "str_200"));
     assertEquals(TruthValue.NO, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addString("str_15");
@@ -1590,7 +1637,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addString("str_" + i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createStringStats("str_10", "str_200"));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createStringStats("str_10", "str_200"));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addString("str_15");
@@ -1609,7 +1656,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addString("str_" + i);
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createStringStats("str_10", "str_200"));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createStringStats("str_10", "str_200"));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addString("str_19");
@@ -1628,7 +1675,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addLong((new DateWritable(i)).getDays());
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDateStats(10, 100));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDateStats(10, 100));
     assertEquals(TruthValue.NO, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addLong((new DateWritable(15)).getDays());
@@ -1644,7 +1691,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addLong((new DateWritable(i)).getDays());
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDateStats(10, 100));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDateStats(10, 100));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addLong((new DateWritable(15)).getDays());
@@ -1663,7 +1710,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addLong((new DateWritable(i)).getDays());
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDateStats(10, 100));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDateStats(10, 100));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addLong((new DateWritable(19)).getDays());
@@ -1683,7 +1730,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addString(HiveDecimal.create(i).toString());
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDecimalStats("10", "200"));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDecimalStats("10", "200"));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addString(HiveDecimal.create(15).toString());
@@ -1702,7 +1749,7 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addString(HiveDecimal.create(i).toString());
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDecimalStats("10", "200"));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDecimalStats("10", "200"));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
     bf.addString(HiveDecimal.create(19).toString());
@@ -1725,11 +1772,11 @@ public class TestRecordReaderImpl {
     for (int i = 20; i < 1000; i++) {
       bf.addString(HiveDecimal.create(i).toString());
     }
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(createDecimalStats("10", "200", false));
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDecimalStats("10", "200", false));
     // hasNull is false, so bloom filter should return NO
     assertEquals(TruthValue.NO, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
-    cs = ColumnStatisticsImpl.deserialize(createDecimalStats("10", "200", true));
+    cs = ColumnStatisticsImpl.deserialize(null, createDecimalStats("10", "200", true));
     // hasNull is true, so bloom filter should return YES_NO_NULL
     assertEquals(TruthValue.YES_NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
@@ -1971,7 +2018,7 @@ public class TestRecordReaderImpl {
             .end().build();
     RecordReaderImpl.SargApplier applier =
         new RecordReaderImpl.SargApplier(sarg, 1000, evolution,
-            OrcFile.WriterVersion.ORC_135);
+            OrcFile.WriterVersion.ORC_135, false);
     OrcProto.StripeInformation stripe =
         OrcProto.StripeInformation.newBuilder().setNumberOfRows(4000).build();
     OrcProto.RowIndex[] indexes = new OrcProto.RowIndex[3];
@@ -2019,7 +2066,7 @@ public class TestRecordReaderImpl {
             .end().build();
     RecordReaderImpl.SargApplier applier =
         new RecordReaderImpl.SargApplier(sarg, 1000, evolution,
-            OrcFile.WriterVersion.ORC_135);
+            OrcFile.WriterVersion.ORC_135, false);
     OrcProto.StripeInformation stripe =
         OrcProto.StripeInformation.newBuilder().setNumberOfRows(3000).build();
     OrcProto.RowIndex[] indexes = new OrcProto.RowIndex[3];

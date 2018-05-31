@@ -19,6 +19,7 @@
 #include "orc/Int128.hh"
 #include "Adaptor.hh"
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -41,7 +42,7 @@ namespace orc {
       bool isNegative = str[0] == '-';
       size_t posn = isNegative ? 1 : 0;
       while (posn < length) {
-        size_t group = std::min(18ul, length - posn);
+        size_t group = std::min(static_cast<size_t>(18), length - posn);
         int64_t chunk = std::stoll(str.substr(posn, group));
         int64_t multiple = 1;
         for(size_t i=0; i < group; ++i) {
@@ -59,7 +60,7 @@ namespace orc {
 
   Int128& Int128::operator*=(const Int128 &right) {
     const uint64_t INT_MASK = 0xffffffff;
-    const uint64_t CARRY_BIT = 1l << 32;
+    const uint64_t CARRY_BIT = INT_MASK + 1;
 
     // Break the left and right numbers into 32 bit chunks
     // so that we can multiply them without overflow.
@@ -433,6 +434,61 @@ namespace orc {
         << std::setw(16) << std::setfill('0') << highbits
         << std::setw(16) << std::setfill('0') << lowbits;
     return buf.str();
+  }
+
+  const static int32_t MAX_PRECISION_64 = 18;
+  const static int64_t POWERS_OF_TEN[MAX_PRECISION_64 + 1] =
+    {1,
+     10,
+     100,
+     1000,
+     10000,
+     100000,
+     1000000,
+     10000000,
+     100000000,
+     1000000000,
+     10000000000,
+     100000000000,
+     1000000000000,
+     10000000000000,
+     100000000000000,
+     1000000000000000,
+     10000000000000000,
+     100000000000000000,
+     1000000000000000000};
+
+  Int128 scaleUpInt128ByPowerOfTen(Int128 value,
+                                   int32_t power,
+                                   bool &overflow) {
+    overflow = false;
+    Int128 remainder;
+
+    while (power > 0) {
+      int32_t step = std::min(power, MAX_PRECISION_64);
+      if (value > 0 && Int128::maximumValue().divide(POWERS_OF_TEN[step], remainder) < value) {
+        overflow = true;
+        return Int128::maximumValue();
+      } else if (value < 0 && Int128::minimumValue().divide(POWERS_OF_TEN[step], remainder) > value) {
+        overflow = true;
+        return Int128::minimumValue();
+      }
+
+      value *= POWERS_OF_TEN[step];
+      power -= step;
+    }
+
+    return value;
+  }
+
+  Int128 scaleDownInt128ByPowerOfTen(Int128 value, int32_t power) {
+    Int128 remainder;
+    while (power > 0) {
+      int32_t step = std::min(std::abs(power), MAX_PRECISION_64);
+      value = value.divide(POWERS_OF_TEN[step], remainder);
+      power -= step;
+    }
+    return value;
   }
 
 }

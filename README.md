@@ -15,18 +15,24 @@ lists, maps, and unions.
 
 ## ORC File Library
 
-This project includes both a Java library for reading and writing and
-a C++ library for reading the _Optimized Row Columnar_ (ORC) file
-format. The C++ and Java libraries are completely independent of each
-other and will each read all versions of ORC files.
+This project includes both a Java library and a C++ library for reading and writing the _Optimized Row Columnar_ (ORC) file format. The C++ and Java libraries are completely independent of each other and will each read all versions of ORC files. But the C++ library only writes the original (Hive 0.11) version of ORC files, and will be extened in the future.
+
+Releases:
+* Latest: <a href="http://orc.apache.org/releases">Apache ORC releases</a>
+* Maven Central: <a href="http://search.maven.org/#search%7Cga%7C1%7Cg%3A%22org.apache.orc%22">![Maven Central](https://maven-badges.herokuapp.com/maven-central/org.apache.orc/orc/badge.svg)</a>
+* Downloads: <a href="http://orc.apache.org/downloads">Apache ORC downloads</a>
 
 The current build status:
 * Master branch <a href="https://travis-ci.org/apache/orc/branches">
 ![master build status](https://travis-ci.org/apache/orc.svg?branch=master)</a>
 * <a href="https://travis-ci.org/apache/orc/pull_requests">Pull Requests</a>
 
+
+Bug tracking: <a href="http://orc.apache.org/bugs">Apache Jira</a>
+
+
 The subdirectories are:
-* c++ - the c++ reader
+* c++ - the c++ reader and writer
 * docker - docker scripts to build and test on various linuxes
 * examples - various ORC example files that are used to test compatibility
 * java - the java reader and writer

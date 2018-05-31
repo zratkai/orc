@@ -21,7 +21,7 @@
 #include "Adaptor.hh"
 #include "ByteRLE.hh"
 #include "ColumnReader.hh"
-#include "Exceptions.hh"
+#include "orc/Exceptions.hh"
 #include "RLE.hh"
 
 #include <math.h>
@@ -75,7 +75,7 @@ namespace orc {
         uint64_t chunkSize =
           std::min(remaining,
                    static_cast<uint64_t>(bufferSize));
-        decoder->next(buffer, chunkSize, 0);
+        decoder->next(buffer, chunkSize, nullptr);
         remaining -= chunkSize;
         for(uint64_t i=0; i < chunkSize; ++i) {
           if (!buffer[i]) {
@@ -134,7 +134,7 @@ namespace orc {
 
   public:
     BooleanColumnReader(const Type& type, StripeStreams& stipe);
-    ~BooleanColumnReader();
+    ~BooleanColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -146,9 +146,11 @@ namespace orc {
   BooleanColumnReader::BooleanColumnReader(const Type& type,
                                            StripeStreams& stripe
                                            ): ColumnReader(type, stripe){
-    rle = createBooleanRleDecoder(stripe.getStream(columnId,
-                                                   proto::Stream_Kind_DATA,
-                                                   true));
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (stream == nullptr)
+      throw ParseError("DATA stream not found in Boolean column");
+    rle = createBooleanRleDecoder(std::move(stream));
   }
 
   BooleanColumnReader::~BooleanColumnReader() {
@@ -169,7 +171,7 @@ namespace orc {
     // we cheat here and use the long* and then expand it in a second pass.
     int64_t *ptr = dynamic_cast<LongVectorBatch&>(rowBatch).data.data();
     rle->next(reinterpret_cast<char*>(ptr),
-              numValues, rowBatch.hasNulls ? rowBatch.notNull.data() : 0);
+              numValues, rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr);
     expandBytesToLongs(ptr, numValues);
   }
 
@@ -179,7 +181,7 @@ namespace orc {
 
   public:
     ByteColumnReader(const Type& type, StripeStreams& stipe);
-    ~ByteColumnReader();
+    ~ByteColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -191,9 +193,11 @@ namespace orc {
   ByteColumnReader::ByteColumnReader(const Type& type,
                                            StripeStreams& stripe
                                            ): ColumnReader(type, stripe){
-    rle = createByteRleDecoder(stripe.getStream(columnId,
-                                                proto::Stream_Kind_DATA,
-                                                true));
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (stream == nullptr)
+      throw ParseError("DATA stream not found in Byte column");
+    rle = createByteRleDecoder(std::move(stream));
   }
 
   ByteColumnReader::~ByteColumnReader() {
@@ -214,7 +218,7 @@ namespace orc {
     // we cheat here and use the long* and then expand it in a second pass.
     int64_t *ptr = dynamic_cast<LongVectorBatch&>(rowBatch).data.data();
     rle->next(reinterpret_cast<char*>(ptr),
-              numValues, rowBatch.hasNulls ? rowBatch.notNull.data() : 0);
+              numValues, rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr);
     expandBytesToLongs(ptr, numValues);
   }
 
@@ -224,7 +228,7 @@ namespace orc {
 
   public:
     IntegerColumnReader(const Type& type, StripeStreams& stripe);
-    ~IntegerColumnReader();
+    ~IntegerColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -237,10 +241,11 @@ namespace orc {
                                            StripeStreams& stripe
                                            ): ColumnReader(type, stripe) {
     RleVersion vers = convertRleVersion(stripe.getEncoding(columnId).kind());
-    rle = createRleDecoder(stripe.getStream(columnId,
-                                            proto::Stream_Kind_DATA,
-                                            true),
-                           true, vers, memoryPool);
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (stream == nullptr)
+      throw ParseError("DATA stream not found in Integer column");
+    rle = createRleDecoder(std::move(stream), true, vers, memoryPool);
   }
 
   IntegerColumnReader::~IntegerColumnReader() {
@@ -258,7 +263,7 @@ namespace orc {
                                  char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
     rle->next(dynamic_cast<LongVectorBatch&>(rowBatch).data.data(),
-              numValues, rowBatch.hasNulls ? rowBatch.notNull.data() : 0);
+              numValues, rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr);
   }
 
   class TimestampColumnReader: public ColumnReader {
@@ -270,7 +275,7 @@ namespace orc {
 
   public:
     TimestampColumnReader(const Type& type, StripeStreams& stripe);
-    ~TimestampColumnReader();
+    ~TimestampColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -286,14 +291,15 @@ namespace orc {
                                   writerTimezone(stripe.getWriterTimezone()),
                                   epochOffset(writerTimezone.getEpoch()) {
     RleVersion vers = convertRleVersion(stripe.getEncoding(columnId).kind());
-    secondsRle = createRleDecoder(stripe.getStream(columnId,
-                                                   proto::Stream_Kind_DATA,
-                                                   true),
-                                  true, vers, memoryPool);
-    nanoRle = createRleDecoder(stripe.getStream(columnId,
-                                                proto::Stream_Kind_SECONDARY,
-                                                true),
-                               false, vers, memoryPool);
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (stream == nullptr)
+      throw ParseError("DATA stream not found in Timestamp column");
+    secondsRle = createRleDecoder(std::move(stream), true, vers, memoryPool);
+    stream = stripe.getStream(columnId, proto::Stream_Kind_SECONDARY, true);
+    if (stream == nullptr)
+      throw ParseError("SECONDARY stream not found in Timestamp column");
+    nanoRle = createRleDecoder(std::move(stream), false, vers, memoryPool);
   }
 
   TimestampColumnReader::~TimestampColumnReader() {
@@ -330,8 +336,7 @@ namespace orc {
           }
         }
         int64_t writerTime = secsBuffer[i] + epochOffset;
-        secsBuffer[i] = writerTime +
-          writerTimezone.getVariant(writerTime).gmtOffset;
+        secsBuffer[i] = writerTimezone.convertToUTC(writerTime);
         if (secsBuffer[i] < 0 && nanoBuffer[i] != 0) {
           secsBuffer[i] -= 1;
         }
@@ -342,7 +347,7 @@ namespace orc {
   class DoubleColumnReader: public ColumnReader {
   public:
     DoubleColumnReader(const Type& type, StripeStreams& stripe);
-    ~DoubleColumnReader();
+    ~DoubleColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -391,17 +396,14 @@ namespace orc {
   DoubleColumnReader::DoubleColumnReader(const Type& type,
                                          StripeStreams& stripe
                                          ): ColumnReader(type, stripe),
-                                            inputStream
-                                               (stripe.getStream
-                                                (columnId,
-                                                 proto::Stream_Kind_DATA,
-                                                 true)),
                                             columnKind(type.getKind()),
                                             bytesPerValue((type.getKind() ==
                                                            FLOAT) ? 4 : 8),
-                                            bufferPointer(NULL),
-                                            bufferEnd(NULL) {
-    // PASS
+                                            bufferPointer(nullptr),
+                                            bufferEnd(nullptr) {
+    inputStream = stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (inputStream == nullptr)
+      throw ParseError("DATA stream not found in Double column");
   }
 
   DoubleColumnReader::~DoubleColumnReader() {
@@ -413,13 +415,12 @@ namespace orc {
 
     if (static_cast<size_t>(bufferEnd - bufferPointer) >=
         bytesPerValue * numValues) {
-      bufferPointer+= bytesPerValue*numValues;
+      bufferPointer += bytesPerValue * numValues;
     } else {
-      inputStream->Skip(static_cast<int>(bytesPerValue*numValues -
-                                         static_cast<size_t>(bufferEnd -
-                                                             bufferPointer)));
-      bufferEnd = NULL;
-      bufferPointer = NULL;
+      inputStream->Skip(static_cast<int>(bytesPerValue * numValues -
+          static_cast<size_t>(bufferEnd - bufferPointer)));
+      bufferEnd = nullptr;
+      bufferPointer = nullptr;
     }
 
     return numValues;
@@ -430,7 +431,7 @@ namespace orc {
                                 char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
     // update the notNull from the parent class
-    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : 0;
+    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr;
     double* outArray = dynamic_cast<DoubleVectorBatch&>(rowBatch).data.data();
 
     if (columnKind == FLOAT) {
@@ -468,6 +469,9 @@ namespace orc {
       if (!stream->Next(&chunk, &length)) {
         throw ParseError("bad read in readFully");
       }
+      if (posn + length > bufferSize) {
+        throw ParseError("Corrupt dictionary blob in StringDictionaryColumn");
+      }
       memcpy(buffer + posn, chunk, static_cast<size_t>(length));
       posn += length;
     }
@@ -482,7 +486,7 @@ namespace orc {
 
   public:
     StringDictionaryColumnReader(const Type& type, StripeStreams& stipe);
-    ~StringDictionaryColumnReader();
+    ~StringDictionaryColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -500,26 +504,34 @@ namespace orc {
     RleVersion rleVersion = convertRleVersion(stripe.getEncoding(columnId)
                                                 .kind());
     dictionaryCount = stripe.getEncoding(columnId).dictionarysize();
-    rle = createRleDecoder(stripe.getStream(columnId,
-                                            proto::Stream_Kind_DATA,
-                                            true),
-                           false, rleVersion, memoryPool);
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (stream == nullptr)
+      throw ParseError("DATA stream not found in StringDictionaryColumn");
+    rle = createRleDecoder(std::move(stream), false, rleVersion, memoryPool);
+    stream = stripe.getStream(columnId, proto::Stream_Kind_LENGTH, false);
+    if (dictionaryCount > 0 && stream == nullptr) {
+      throw ParseError("LENGTH stream not found in StringDictionaryColumn");
+    }
     std::unique_ptr<RleDecoder> lengthDecoder =
-      createRleDecoder(stripe.getStream(columnId,
-                                        proto::Stream_Kind_LENGTH,
-                                        false),
-                       false, rleVersion, memoryPool);
+        createRleDecoder(std::move(stream), false, rleVersion, memoryPool);
     dictionaryOffset.resize(dictionaryCount+1);
     int64_t* lengthArray = dictionaryOffset.data();
-    lengthDecoder->next(lengthArray + 1, dictionaryCount, 0);
+    lengthDecoder->next(lengthArray + 1, dictionaryCount, nullptr);
     lengthArray[0] = 0;
-    for(uint64_t i=1; i < dictionaryCount + 1; ++i) {
-      lengthArray[i] += lengthArray[i-1];
+    for (uint64_t i = 1; i < dictionaryCount + 1; ++i) {
+      if (lengthArray[i] < 0)
+        throw ParseError("Negative dictionary entry length");
+      lengthArray[i] += lengthArray[i - 1];
     }
     int64_t blobSize = lengthArray[dictionaryCount];
     dictionaryBlob.resize(static_cast<uint64_t>(blobSize));
     std::unique_ptr<SeekableInputStream> blobStream =
-      stripe.getStream(columnId, proto::Stream_Kind_DICTIONARY_DATA, false);
+        stripe.getStream(columnId, proto::Stream_Kind_DICTIONARY_DATA, false);
+    if (blobSize > 0 && blobStream == nullptr) {
+      throw ParseError(
+          "DICTIONARY_DATA stream not found in StringDictionaryColumn");
+    }
     readFully(dictionaryBlob.data(), blobSize, blobStream.get());
   }
 
@@ -538,7 +550,7 @@ namespace orc {
                                           char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
     // update the notNull from the parent class
-    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : 0;
+    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr;
     StringVectorBatch& byteBatch = dynamic_cast<StringVectorBatch&>(rowBatch);
     char *blob = dictionaryBlob.data();
     int64_t *dictionaryOffsets = dictionaryOffset.data();
@@ -549,6 +561,9 @@ namespace orc {
       for(uint64_t i=0; i < numValues; ++i) {
         if (notNull[i]) {
           int64_t entry = outputLengths[i];
+          if (entry < 0 || static_cast<uint64_t>(entry) >= dictionaryCount) {
+            throw ParseError("Entry index out of range in StringDictionaryColumn");
+          }
           outputStarts[i] = blob + dictionaryOffsets[entry];
           outputLengths[i] = dictionaryOffsets[entry+1] -
             dictionaryOffsets[entry];
@@ -557,6 +572,9 @@ namespace orc {
     } else {
       for(uint64_t i=0; i < numValues; ++i) {
         int64_t entry = outputLengths[i];
+        if (entry < 0 || static_cast<uint64_t>(entry) >= dictionaryCount) {
+          throw ParseError("Entry index out of range in StringDictionaryColumn");
+        }
         outputStarts[i] = blob + dictionaryOffsets[entry];
         outputLengths[i] = dictionaryOffsets[entry+1] -
           dictionaryOffsets[entry];
@@ -584,7 +602,7 @@ namespace orc {
 
   public:
     StringDirectColumnReader(const Type& type, StripeStreams& stipe);
-    ~StringDirectColumnReader();
+    ~StringDirectColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -600,12 +618,16 @@ namespace orc {
                      blobBuffer(stripe.getMemoryPool()) {
     RleVersion rleVersion = convertRleVersion(stripe.getEncoding(columnId)
                                                 .kind());
-    lengthRle = createRleDecoder(stripe.getStream(columnId,
-                                                  proto::Stream_Kind_LENGTH,
-                                                  true),
-                                 false, rleVersion, memoryPool);
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_LENGTH, true);
+    if (stream == nullptr)
+      throw ParseError("LENGTH stream not found in StringDirectColumn");
+    lengthRle = createRleDecoder(
+        std::move(stream), false, rleVersion, memoryPool);
     blobStream = stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
-    lastBuffer = 0;
+    if (blobStream == nullptr)
+      throw ParseError("DATA stream not found in StringDirectColumn");
+    lastBuffer = nullptr;
     lastBufferLength = 0;
   }
 
@@ -623,8 +645,8 @@ namespace orc {
     while (done < numValues) {
       uint64_t step = std::min(BUFFER_SIZE,
                                     static_cast<size_t>(numValues - done));
-      lengthRle->next(buffer, step, 0);
-      totalBytes += computeSize(buffer, 0, step);
+      lengthRle->next(buffer, step, nullptr);
+      totalBytes += computeSize(buffer, nullptr, step);
       done += step;
     }
     if (totalBytes <= lastBufferLength) {
@@ -636,7 +658,7 @@ namespace orc {
       totalBytes -= lastBufferLength;
       blobStream->Skip(static_cast<int>(totalBytes));
       lastBufferLength = 0;
-      lastBuffer = 0;
+      lastBuffer = nullptr;
     }
     return numValues;
   }
@@ -664,7 +686,7 @@ namespace orc {
                                       char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
     // update the notNull from the parent class
-    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : 0;
+    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr;
     StringVectorBatch& byteBatch = dynamic_cast<StringVectorBatch&>(rowBatch);
     char **startPtr = byteBatch.data.data();
     int64_t *lengthPtr = byteBatch.length.data();
@@ -756,7 +778,7 @@ namespace orc {
 
   public:
     StructColumnReader(const Type& type, StripeStreams& stipe);
-    ~StructColumnReader();
+    ~StructColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -806,7 +828,7 @@ namespace orc {
                                 char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
     uint64_t i=0;
-    notNull = rowBatch.hasNulls? rowBatch.notNull.data() : 0;
+    notNull = rowBatch.hasNulls? rowBatch.notNull.data() : nullptr;
     for(std::vector<ColumnReader*>::iterator ptr=children.begin();
         ptr != children.end(); ++ptr, ++i) {
       (*ptr)->next(*(dynamic_cast<StructVectorBatch&>(rowBatch).fields[i]),
@@ -821,7 +843,7 @@ namespace orc {
 
   public:
     ListColumnReader(const Type& type, StripeStreams& stipe);
-    ~ListColumnReader();
+    ~ListColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -836,10 +858,11 @@ namespace orc {
     // count the number of selected sub-columns
     const std::vector<bool> selectedColumns = stripe.getSelectedColumns();
     RleVersion vers = convertRleVersion(stripe.getEncoding(columnId).kind());
-    rle = createRleDecoder(stripe.getStream(columnId,
-                                            proto::Stream_Kind_LENGTH,
-                                            true),
-                           false, vers, memoryPool);
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_LENGTH, true);
+    if (stream == nullptr)
+      throw ParseError("LENGTH stream not found in List column");
+    rle = createRleDecoder(std::move(stream), false, vers, memoryPool);
     const Type& childType = *type.getSubtype(0);
     if (selectedColumns[static_cast<uint64_t>(childType.getColumnId())]) {
       child = buildReader(childType, stripe);
@@ -860,7 +883,7 @@ namespace orc {
       uint64_t lengthsRead = 0;
       while (lengthsRead < numValues) {
         uint64_t chunk = std::min(numValues - lengthsRead, BUFFER_SIZE);
-        rle->next(buffer, chunk, 0);
+        rle->next(buffer, chunk, nullptr);
         for(size_t i=0; i < chunk; ++i) {
           childrenElements += static_cast<size_t>(buffer[i]);
         }
@@ -879,7 +902,7 @@ namespace orc {
     ColumnReader::next(rowBatch, numValues, notNull);
     ListVectorBatch &listBatch = dynamic_cast<ListVectorBatch&>(rowBatch);
     int64_t* offsets = listBatch.offsets.data();
-    notNull = listBatch.hasNulls ? listBatch.notNull.data() : 0;
+    notNull = listBatch.hasNulls ? listBatch.notNull.data() : nullptr;
     rle->next(offsets, numValues, notNull);
     uint64_t totalChildren = 0;
     if (notNull) {
@@ -902,7 +925,7 @@ namespace orc {
     offsets[numValues] = static_cast<int64_t>(totalChildren);
     ColumnReader *childReader = child.get();
     if (childReader) {
-      childReader->next(*(listBatch.elements.get()), totalChildren, 0);
+      childReader->next(*(listBatch.elements.get()), totalChildren, nullptr);
     }
   }
 
@@ -914,7 +937,7 @@ namespace orc {
 
   public:
     MapColumnReader(const Type& type, StripeStreams& stipe);
-    ~MapColumnReader();
+    ~MapColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -929,10 +952,11 @@ namespace orc {
     // Determine if the key and/or value columns are selected
     const std::vector<bool> selectedColumns = stripe.getSelectedColumns();
     RleVersion vers = convertRleVersion(stripe.getEncoding(columnId).kind());
-    rle = createRleDecoder(stripe.getStream(columnId,
-                                            proto::Stream_Kind_LENGTH,
-                                            true),
-                           false, vers, memoryPool);
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_LENGTH, true);
+    if (stream == nullptr)
+      throw ParseError("LENGTH stream not found in Map column");
+    rle = createRleDecoder(std::move(stream), false, vers, memoryPool);
     const Type& keyType = *type.getSubtype(0);
     if (selectedColumns[static_cast<uint64_t>(keyType.getColumnId())]) {
       keyReader = buildReader(keyType, stripe);
@@ -958,7 +982,7 @@ namespace orc {
       uint64_t lengthsRead = 0;
       while (lengthsRead < numValues) {
         uint64_t chunk = std::min(numValues - lengthsRead, BUFFER_SIZE);
-        rle->next(buffer, chunk, 0);
+        rle->next(buffer, chunk, nullptr);
         for(size_t i=0; i < chunk; ++i) {
           childrenElements += static_cast<size_t>(buffer[i]);
         }
@@ -982,7 +1006,7 @@ namespace orc {
     ColumnReader::next(rowBatch, numValues, notNull);
     MapVectorBatch &mapBatch = dynamic_cast<MapVectorBatch&>(rowBatch);
     int64_t* offsets = mapBatch.offsets.data();
-    notNull = mapBatch.hasNulls ? mapBatch.notNull.data() : 0;
+    notNull = mapBatch.hasNulls ? mapBatch.notNull.data() : nullptr;
     rle->next(offsets, numValues, notNull);
     uint64_t totalChildren = 0;
     if (notNull) {
@@ -1005,11 +1029,11 @@ namespace orc {
     offsets[numValues] = static_cast<int64_t>(totalChildren);
     ColumnReader *rawKeyReader = keyReader.get();
     if (rawKeyReader) {
-      rawKeyReader->next(*(mapBatch.keys.get()), totalChildren, 0);
+      rawKeyReader->next(*(mapBatch.keys.get()), totalChildren, nullptr);
     }
     ColumnReader *rawElementReader = elementReader.get();
     if (rawElementReader) {
-      rawElementReader->next(*(mapBatch.elements.get()), totalChildren, 0);
+      rawElementReader->next(*(mapBatch.elements.get()), totalChildren, nullptr);
     }
   }
 
@@ -1022,7 +1046,7 @@ namespace orc {
 
   public:
     UnionColumnReader(const Type& type, StripeStreams& stipe);
-    ~UnionColumnReader();
+    ~UnionColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -1038,9 +1062,11 @@ namespace orc {
     childrenReader.resize(numChildren);
     childrenCounts.resize(numChildren);
 
-    rle = createByteRleDecoder(stripe.getStream(columnId,
-                                                proto::Stream_Kind_DATA,
-                                                true));
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (stream == nullptr)
+      throw ParseError("LENGTH stream not found in Union column");
+    rle = createByteRleDecoder(std::move(stream));
     // figure out which types are selected
     const std::vector<bool> selectedColumns = stripe.getSelectedColumns();
     for(unsigned int i=0; i < numChildren; ++i) {
@@ -1067,14 +1093,14 @@ namespace orc {
     memset(counts, 0, sizeof(int64_t) * numChildren);
     while (lengthsRead < numValues) {
       uint64_t chunk = std::min(numValues - lengthsRead, BUFFER_SIZE);
-      rle->next(buffer, chunk, 0);
+      rle->next(buffer, chunk, nullptr);
       for(size_t i=0; i < chunk; ++i) {
         counts[static_cast<size_t>(buffer[i])] += 1;
       }
       lengthsRead += chunk;
     }
     for(size_t i=0; i < numChildren; ++i) {
-      if (counts[i] != 0 && childrenReader[i] != NULL) {
+      if (counts[i] != 0 && childrenReader[i] != nullptr) {
         childrenReader[i]->skip(static_cast<uint64_t>(counts[i]));
       }
     }
@@ -1090,7 +1116,7 @@ namespace orc {
     int64_t* counts = childrenCounts.data();
     memset(counts, 0, sizeof(int64_t) * numChildren);
     unsigned char* tags = unionBatch.tags.data();
-    notNull = unionBatch.hasNulls ? unionBatch.notNull.data() : 0;
+    notNull = unionBatch.hasNulls ? unionBatch.notNull.data() : nullptr;
     rle->next(reinterpret_cast<char *>(tags), numValues, notNull);
     // set the offsets for each row
     if (notNull) {
@@ -1171,16 +1197,20 @@ namespace orc {
         }
       }
       value = unZigZag(static_cast<uint64_t>(value));
-      if (scale > currentScale) {
+      if (scale > currentScale &&
+          static_cast<uint64_t>(scale - currentScale) <= MAX_PRECISION_64) {
         value *= POWERS_OF_TEN[scale - currentScale];
-      } else if (scale < currentScale) {
+      } else if (scale < currentScale &&
+          static_cast<uint64_t>(currentScale - scale) <= MAX_PRECISION_64) {
         value /= POWERS_OF_TEN[currentScale - scale];
+      } else if (scale != currentScale) {
+        throw ParseError("Decimal scale out of range");
       }
     }
 
   public:
     Decimal64ColumnReader(const Type& type, StripeStreams& stipe);
-    ~Decimal64ColumnReader();
+    ~Decimal64ColumnReader() override;
 
     uint64_t skip(uint64_t numValues) override;
 
@@ -1217,14 +1247,16 @@ namespace orc {
     scale = static_cast<int32_t>(type.getScale());
     precision = static_cast<int32_t>(type.getPrecision());
     valueStream = stripe.getStream(columnId, proto::Stream_Kind_DATA, true);
+    if (valueStream == nullptr)
+      throw ParseError("DATA stream not found in Decimal64Column");
     buffer = nullptr;
     bufferEnd = nullptr;
     RleVersion vers = convertRleVersion(stripe.getEncoding(columnId).kind());
-    scaleDecoder = createRleDecoder(stripe.getStream
-                                    (columnId,
-                                     proto::Stream_Kind_SECONDARY,
-                                     true),
-                                    true, vers, memoryPool);
+    std::unique_ptr<SeekableInputStream> stream =
+        stripe.getStream(columnId, proto::Stream_Kind_SECONDARY, true);
+    if (stream == nullptr)
+      throw ParseError("SECONDARY stream not found in Decimal64Column");
+    scaleDecoder = createRleDecoder(std::move(stream), true, vers, memoryPool);
   }
 
   Decimal64ColumnReader::~Decimal64ColumnReader() {
@@ -1248,7 +1280,7 @@ namespace orc {
                                    uint64_t numValues,
                                    char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
-    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : 0;
+    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr;
     Decimal64VectorBatch &batch =
       dynamic_cast<Decimal64VectorBatch&>(rowBatch);
     int64_t* values = batch.values.data();
@@ -1295,7 +1327,7 @@ namespace orc {
   class Decimal128ColumnReader: public Decimal64ColumnReader {
   public:
     Decimal128ColumnReader(const Type& type, StripeStreams& stipe);
-    ~Decimal128ColumnReader();
+    ~Decimal128ColumnReader() override;
 
     void next(ColumnVectorBatch& rowBatch,
               uint64_t numValues,
@@ -1338,7 +1370,7 @@ namespace orc {
                                    uint64_t numValues,
                                    char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
-    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : 0;
+    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr;
     Decimal128VectorBatch &batch =
       dynamic_cast<Decimal128VectorBatch&>(rowBatch);
     Int128* values = batch.values.data();
@@ -1405,7 +1437,7 @@ namespace orc {
 
   public:
     DecimalHive11ColumnReader(const Type& type, StripeStreams& stipe);
-    ~DecimalHive11ColumnReader();
+    ~DecimalHive11ColumnReader() override;
 
     void next(ColumnVectorBatch& rowBatch,
               uint64_t numValues,
@@ -1429,7 +1461,7 @@ namespace orc {
                                        uint64_t numValues,
                                        char *notNull) {
     ColumnReader::next(rowBatch, numValues, notNull);
-    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : 0;
+    notNull = rowBatch.hasNulls ? rowBatch.notNull.data() : nullptr;
     Decimal128VectorBatch &batch =
       dynamic_cast<Decimal128VectorBatch&>(rowBatch);
     Int128* values = batch.values.data();

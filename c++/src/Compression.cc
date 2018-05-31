@@ -18,7 +18,7 @@
 
 #include "Adaptor.hh"
 #include "Compression.hh"
-#include "Exceptions.hh"
+#include "orc/Exceptions.hh"
 #include "LzoDecompressor.hh"
 #include "lz4.h"
 
@@ -33,200 +33,256 @@
 
 namespace orc {
 
-  void printBuffer(std::ostream& out,
-                   const char *buffer,
-                   uint64_t length) {
-    const uint64_t width = 24;
-    out << std::hex;
-    for(uint64_t line = 0; line < (length + width - 1) / width; ++line) {
-      out << std::setfill('0') << std::setw(7) << (line * width);
-      for(uint64_t byte = 0;
-          byte < width && line * width + byte < length; ++byte) {
-        out << " " << std::setfill('0') << std::setw(2)
-                  << static_cast<uint64_t>(0xff & buffer[line * width +
-                                                             byte]);
-      }
-      out << "\n";
+  class CompressionStreamBase: public BufferedOutputStream {
+  public:
+    CompressionStreamBase(OutputStream * outStream,
+                          int compressionLevel,
+                          uint64_t capacity,
+                          uint64_t blockSize,
+                          MemoryPool& pool);
+
+    virtual bool Next(void** data, int*size) override = 0;
+    virtual void BackUp(int count) override;
+
+    virtual std::string getName() const override = 0;
+    virtual uint64_t flush() override;
+
+    virtual bool isCompressed() const override { return true; }
+    virtual uint64_t getSize() const override;
+
+  protected:
+    void writeHeader(char * buffer, size_t compressedSize, bool original) {
+      buffer[0] = static_cast<char>((compressedSize << 1) + (original ? 1 : 0));
+      buffer[1] = static_cast<char>(compressedSize >> 7);
+      buffer[2] = static_cast<char>(compressedSize >> 15);
     }
-    out << std::dec;
-  }
 
-  PositionProvider::PositionProvider(const std::list<uint64_t>& posns) {
-    position = posns.begin();
-  }
+    // Buffer to hold uncompressed data until user calls Next()
+    DataBuffer<unsigned char> rawInputBuffer;
 
-  uint64_t PositionProvider::next() {
-    uint64_t result = *position;
-    ++position;
-    return result;
-  }
+    // Compress level
+    int level;
 
-  SeekableInputStream::~SeekableInputStream() {
+    // Compressed data output buffer
+    char * outputBuffer;
+
+    // Size for compressionBuffer
+    int bufferSize;
+
+    // Compress output position
+    int outputPosition;
+
+    // Compress output buffer size
+    int outputSize;
+  };
+
+  CompressionStreamBase::CompressionStreamBase(OutputStream * outStream,
+                                               int compressionLevel,
+                                               uint64_t capacity,
+                                               uint64_t blockSize,
+                                               MemoryPool& pool) :
+                                                BufferedOutputStream(pool,
+                                                                     outStream,
+                                                                     capacity,
+                                                                     blockSize),
+                                                rawInputBuffer(pool, blockSize),
+                                                level(compressionLevel),
+                                                outputBuffer(nullptr),
+                                                bufferSize(0),
+                                                outputPosition(0),
+                                                outputSize(0) {
     // PASS
   }
 
-  SeekableArrayInputStream::~SeekableArrayInputStream() {
+  void CompressionStreamBase::BackUp(int count) {
+    if (count > bufferSize) {
+      throw std::logic_error("Can't backup that much!");
+    }
+    bufferSize -= count;
+  }
+
+  uint64_t CompressionStreamBase::flush() {
+    void * data;
+    int size;
+    if (!Next(&data, &size)) {
+      throw std::runtime_error("Failed to flush compression buffer.");
+    }
+    BufferedOutputStream::BackUp(outputSize - outputPosition);
+    bufferSize = outputSize = outputPosition = 0;
+    return BufferedOutputStream::flush();
+  }
+
+  uint64_t CompressionStreamBase::getSize() const {
+    return BufferedOutputStream::getSize() -
+           static_cast<uint64_t>(outputSize - outputPosition);
+  }
+
+  /**
+   * Streaming compression base class
+   */
+  class CompressionStream: public CompressionStreamBase {
+  public:
+    CompressionStream(OutputStream * outStream,
+                          int compressionLevel,
+                          uint64_t capacity,
+                          uint64_t blockSize,
+                          MemoryPool& pool);
+
+    virtual bool Next(void** data, int*size) override;
+    virtual std::string getName() const override = 0;
+
+  protected:
+    // return total compressed size
+    virtual uint64_t doStreamingCompression() = 0;
+  };
+
+  CompressionStream::CompressionStream(OutputStream * outStream,
+                                       int compressionLevel,
+                                       uint64_t capacity,
+                                       uint64_t blockSize,
+                                       MemoryPool& pool) :
+                                         CompressionStreamBase(outStream,
+                                                               compressionLevel,
+                                                               capacity,
+                                                               blockSize,
+                                                               pool) {
     // PASS
   }
 
-  SeekableArrayInputStream::SeekableArrayInputStream
-               (const unsigned char* values,
-                uint64_t size,
-                uint64_t blkSize
-                ): data(reinterpret_cast<const char*>(values)) {
-    length = size;
-    position = 0;
-    blockSize = blkSize == 0 ? length : static_cast<uint64_t>(blkSize);
-  }
-
-  SeekableArrayInputStream::SeekableArrayInputStream(const char* values,
-                                                     uint64_t size,
-                                                     uint64_t blkSize
-                                                     ): data(values) {
-    length = size;
-    position = 0;
-    blockSize = blkSize == 0 ? length : static_cast<uint64_t>(blkSize);
-  }
-
-  bool SeekableArrayInputStream::Next(const void** buffer, int*size) {
-    uint64_t currentSize = std::min(length - position, blockSize);
-    if (currentSize > 0) {
-      *buffer = data + position;
-      *size = static_cast<int>(currentSize);
-      position += currentSize;
-      return true;
-    }
-    *size = 0;
-    return false;
-  }
-
-  void SeekableArrayInputStream::BackUp(int count) {
-    if (count >= 0) {
-      uint64_t unsignedCount = static_cast<uint64_t>(count);
-      if (unsignedCount <= blockSize && unsignedCount <= position) {
-        position -= unsignedCount;
+  bool CompressionStream::Next(void** data, int*size) {
+    if (bufferSize != 0) {
+      // adjust 3 bytes for the compression header
+      if (outputPosition + 3 >= outputSize) {
+        int newPosition = outputPosition + 3 - outputSize;
+        if (!BufferedOutputStream::Next(
+          reinterpret_cast<void **>(&outputBuffer),
+          &outputSize)) {
+          throw std::runtime_error(
+            "Failed to get next output buffer from output stream.");
+        }
+        outputPosition = newPosition;
       } else {
-        throw std::logic_error("Can't backup that much!");
+        outputPosition += 3;
       }
-    }
-  }
 
-  bool SeekableArrayInputStream::Skip(int count) {
-    if (count >= 0) {
-      uint64_t unsignedCount = static_cast<uint64_t>(count);
-      if (unsignedCount + position <= length) {
-        position += unsignedCount;
-        return true;
+      uint64_t totalCompressedSize = doStreamingCompression();
+
+      char * header = outputBuffer + outputPosition - totalCompressedSize - 3;
+      if (totalCompressedSize >= static_cast<unsigned long>(bufferSize)) {
+        writeHeader(header, static_cast<size_t>(bufferSize), true);
+        memcpy(
+          header + 3,
+          rawInputBuffer.data(),
+          static_cast<size_t>(bufferSize));
+
+        int backup = static_cast<int>(totalCompressedSize) - bufferSize;
+        BufferedOutputStream::BackUp(backup);
+        outputPosition -= backup;
+        outputSize -= backup;
       } else {
-        position = length;
+        writeHeader(header, totalCompressedSize, false);
       }
     }
-    return false;
+
+    *data = rawInputBuffer.data();
+    *size = static_cast<int>(rawInputBuffer.size());
+    bufferSize = *size;
+
+    return true;
   }
 
-  google::protobuf::int64 SeekableArrayInputStream::ByteCount() const {
-    return static_cast<google::protobuf::int64>(position);
+  class ZlibCompressionStream: public CompressionStream {
+  public:
+    ZlibCompressionStream(OutputStream * outStream,
+                          int compressionLevel,
+                          uint64_t capacity,
+                          uint64_t blockSize,
+                          MemoryPool& pool);
+
+    virtual std::string getName() const override;
+
+  protected:
+    virtual uint64_t doStreamingCompression() override;
+
+  private:
+    void init();
+    z_stream strm;
+  };
+
+  ZlibCompressionStream::ZlibCompressionStream(
+                        OutputStream * outStream,
+                        int compressionLevel,
+                        uint64_t capacity,
+                        uint64_t blockSize,
+                        MemoryPool& pool)
+                        : CompressionStream(outStream,
+                                            compressionLevel,
+                                            capacity,
+                                            blockSize,
+                                            pool) {
+    init();
   }
 
-  void SeekableArrayInputStream::seek(PositionProvider& seekPosition) {
-    position = seekPosition.next();
-  }
+  uint64_t ZlibCompressionStream::doStreamingCompression() {
+    if (deflateReset(&strm) != Z_OK) {
+      throw std::runtime_error("Failed to reset inflate.");
+    }
 
-  std::string SeekableArrayInputStream::getName() const {
-    std::ostringstream result;
-    result << "SeekableArrayInputStream " << position << " of " << length;
-    return result.str();
-  }
+    strm.avail_in = static_cast<unsigned int>(bufferSize);
+    strm.next_in = rawInputBuffer.data();
 
-  static uint64_t computeBlock(uint64_t request, uint64_t length) {
-    return std::min(length, request == 0 ? 256 * 1024 : request);
-  }
-
-  SeekableFileInputStream::SeekableFileInputStream(InputStream* stream,
-                                                   uint64_t offset,
-                                                   uint64_t byteCount,
-                                                   MemoryPool& _pool,
-                                                   uint64_t _blockSize
-                                                   ):pool(_pool),
-                                                     input(stream),
-                                                     start(offset),
-                                                     length(byteCount),
-                                                     blockSize(computeBlock
-                                                               (_blockSize,
-                                                                length)) {
-
-    position = 0;
-    buffer.reset(new DataBuffer<char>(pool));
-    pushBack = 0;
-  }
-
-  SeekableFileInputStream::~SeekableFileInputStream() {
-    // PASS
-  }
-
-  bool SeekableFileInputStream::Next(const void** data, int*size) {
-    uint64_t bytesRead;
-    if (pushBack != 0) {
-      *data = buffer->data() + (buffer->size() - pushBack);
-      bytesRead = pushBack;
-    } else {
-      bytesRead = std::min(length - position, blockSize);
-      buffer->resize(bytesRead);
-      if (bytesRead > 0) {
-        input->read(buffer->data(), bytesRead, start+position);
-        *data = static_cast<void*>(buffer->data());
+    do {
+      if (outputPosition >= outputSize) {
+        if (!BufferedOutputStream::Next(
+          reinterpret_cast<void **>(&outputBuffer),
+          &outputSize)) {
+          throw std::runtime_error(
+            "Failed to get next output buffer from output stream.");
+        }
+        outputPosition = 0;
       }
-    }
-    position += bytesRead;
-    pushBack = 0;
-    *size = static_cast<int>(bytesRead);
-    return bytesRead != 0;
+      strm.next_out = reinterpret_cast<unsigned char *>
+      (outputBuffer + outputPosition);
+      strm.avail_out = static_cast<unsigned int>
+      (outputSize - outputPosition);
+
+      int ret = deflate(&strm, Z_FINISH);
+      outputPosition = outputSize - static_cast<int>(strm.avail_out);
+
+      if (ret == Z_STREAM_END) {
+        break;
+      } else if (ret == Z_OK) {
+        // needs more buffer so will continue the loop
+      } else {
+        throw std::runtime_error("Failed to deflate input data.");
+      }
+    } while (strm.avail_out == 0);
+
+    return strm.total_out;
   }
 
-  void SeekableFileInputStream::BackUp(int signedCount) {
-    if (signedCount < 0) {
-      throw std::logic_error("can't backup negative distances");
-    }
-    uint64_t count = static_cast<uint64_t>(signedCount);
-    if (pushBack > 0) {
-      throw std::logic_error("can't backup unless we just called Next");
-    }
-    if (count > blockSize || count > position) {
-      throw std::logic_error("can't backup that far");
-    }
-    pushBack = static_cast<uint64_t>(count);
-    position -= pushBack;
+  std::string ZlibCompressionStream::getName() const {
+    return "ZlibCompressionStream";
   }
 
-  bool SeekableFileInputStream::Skip(int signedCount) {
-    if (signedCount < 0) {
-      return false;
+DIAGNOSTIC_PUSH
+
+#if defined(__GNUC__) || defined(__clang__)
+  DIAGNOSTIC_IGNORE("-Wold-style-cast")
+#endif
+
+  void ZlibCompressionStream::init() {
+    strm.zalloc = nullptr;
+    strm.zfree = nullptr;
+    strm.opaque = nullptr;
+
+    if (deflateInit2(&strm, level, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY)
+        != Z_OK) {
+      throw std::runtime_error("Error while calling deflateInit2() for zlib.");
     }
-    uint64_t count = static_cast<uint64_t>(signedCount);
-    position = std::min(position + count, length);
-    pushBack = 0;
-    return position < length;
   }
 
-  int64_t SeekableFileInputStream::ByteCount() const {
-    return static_cast<int64_t>(position);
-  }
-
-  void SeekableFileInputStream::seek(PositionProvider& location) {
-    position = location.next();
-    if (position > length) {
-      position = length;
-      throw std::logic_error("seek too far");
-    }
-    pushBack = 0;
-  }
-
-  std::string SeekableFileInputStream::getName() const {
-    std::ostringstream result;
-    result << input->getName() << " from " << start << " for "
-           << length;
-    return result.str();
-  }
+DIAGNOSTIC_PUSH
 
   enum DecompressState { DECOMPRESS_HEADER,
                          DECOMPRESS_START,
@@ -239,7 +295,7 @@ namespace orc {
     ZlibDecompressionStream(std::unique_ptr<SeekableInputStream> inStream,
                             size_t blockSize,
                             MemoryPool& pool);
-    virtual ~ZlibDecompressionStream();
+    virtual ~ZlibDecompressionStream() override;
     virtual bool Next(const void** data, int*size) override;
     virtual void BackUp(int count) override;
     virtual bool Skip(int count) override;
@@ -317,7 +373,10 @@ namespace orc {
   };
 
 DIAGNOSTIC_PUSH
-DIAGNOSTIC_IGNORE("-Wold-style-cast")
+
+#if defined(__GNUC__) || defined(__clang__)
+  DIAGNOSTIC_IGNORE("-Wold-style-cast")
+#endif
 
   ZlibDecompressionStream::ZlibDecompressionStream
                    (std::unique_ptr<SeekableInputStream> inStream,
@@ -327,11 +386,11 @@ DIAGNOSTIC_IGNORE("-Wold-style-cast")
                        blockSize(_blockSize),
                        buffer(pool, _blockSize) {
     input.reset(inStream.release());
-    zstream.next_in = Z_NULL;
+    zstream.next_in = nullptr;
     zstream.avail_in = 0;
-    zstream.zalloc = Z_NULL;
-    zstream.zfree = Z_NULL;
-    zstream.opaque = Z_NULL;
+    zstream.zalloc = nullptr;
+    zstream.zfree = nullptr;
+    zstream.opaque = nullptr;
     zstream.next_out = reinterpret_cast<Bytef*>(buffer.data());
     zstream.avail_out = static_cast<uInt>(blockSize);
     int64_t result = inflateInit2(&zstream, -15);
@@ -486,7 +545,7 @@ DIAGNOSTIC_POP
 
   void ZlibDecompressionStream::seek(PositionProvider& position) {
     input->seek(position);
-    bytesReturned = input->ByteCount();
+    bytesReturned = static_cast<off_t>(input->ByteCount());
     if (!Skip(static_cast<int>(position.next()))) {
       throw ParseError("Bad skip in ZlibDecompressionStream::seek");
     }
@@ -504,7 +563,7 @@ DIAGNOSTIC_POP
                              size_t blockSize,
                              MemoryPool& pool);
 
-    virtual ~BlockDecompressionStream() {}
+    virtual ~BlockDecompressionStream() override {}
     virtual bool Next(const void** data, int*size) override;
     virtual void BackUp(int count) override;
     virtual bool Skip(int count) override;
@@ -599,11 +658,11 @@ DIAGNOSTIC_POP
                         inputBuffer(pool, bufferSize),
                         outputBuffer(pool, bufferSize),
                         state(DECOMPRESS_HEADER),
-                        outputBufferPtr(0),
+                        outputBufferPtr(nullptr),
                         outputBufferLength(0),
                         remainingLength(0),
-                        inputBufferPtr(0),
-                        inputBufferPtrEnd(0),
+                        inputBufferPtr(nullptr),
+                        inputBufferPtrEnd(nullptr),
                         bytesReturned(0) {
     input.reset(inStream.release());
   }
@@ -614,7 +673,7 @@ DIAGNOSTIC_POP
       *data = outputBufferPtr;
       *size = static_cast<int>(outputBufferLength);
       outputBufferPtr += outputBufferLength;
-      bytesReturned += outputBufferLength;
+      bytesReturned += static_cast<off_t>(outputBufferLength);
       outputBufferLength = 0;
       return true;
     }
@@ -826,9 +885,38 @@ DIAGNOSTIC_POP
     int result = LZ4_decompress_safe(input, output, static_cast<int>(length),
                                      static_cast<int>(maxOutputLength));
     if (result < 0) {
-      throw new ParseError(getName() + " - failed to decompress");
+      throw ParseError(getName() + " - failed to decompress");
     }
     return static_cast<uint64_t>(result);
+  }
+
+  std::unique_ptr<BufferedOutputStream>
+     createCompressor(
+                      CompressionKind kind,
+                      OutputStream * outStream,
+                      CompressionStrategy strategy,
+                      uint64_t bufferCapacity,
+                      uint64_t compressionBlockSize,
+                      MemoryPool& pool) {
+    switch (static_cast<int64_t>(kind)) {
+    case CompressionKind_NONE: {
+      return std::unique_ptr<BufferedOutputStream>
+        (new BufferedOutputStream(
+                pool, outStream, bufferCapacity, compressionBlockSize));
+    }
+    case CompressionKind_ZLIB: {
+      int level = (strategy == CompressionStrategy_SPEED) ?
+              Z_BEST_SPEED + 1 : Z_DEFAULT_COMPRESSION;
+      return std::unique_ptr<BufferedOutputStream>
+        (new ZlibCompressionStream(
+                outStream, level, bufferCapacity, compressionBlockSize, pool));
+    }
+    case CompressionKind_SNAPPY:
+    case CompressionKind_LZO:
+    case CompressionKind_LZ4:
+    default:
+      throw NotImplementedYet("compression codec");
+    }
   }
 
   std::unique_ptr<SeekableInputStream>

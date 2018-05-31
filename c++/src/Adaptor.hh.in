@@ -21,6 +21,7 @@
 
 #cmakedefine INT64_IS_LL
 #cmakedefine HAS_PREAD
+#cmakedefine HAS_STRPTIME
 #cmakedefine HAS_STOLL
 #cmakedefine HAS_DIAGNOSTIC_PUSH
 #cmakedefine HAS_PRE_1970
@@ -28,6 +29,7 @@
 #cmakedefine HAS_STD_ISNAN
 #cmakedefine HAS_STD_MUTEX
 #cmakedefine NEEDS_REDUNDANT_MOVE
+#cmakedefine NEEDS_Z_PREFIX
 
 #include "orc/orc-config.hh"
 #include <string>
@@ -39,8 +41,12 @@
   }
 #endif
 
+#ifndef HAS_STRPTIME
+  char* strptime(const char* buf, const char* format, struct tm* tm);
+#endif
+
 #ifndef HAS_PREAD
-  ssize_t pread(int fd, void *buf, size_t count, off_t offset);
+  ssize_t pread(int fd, void* buf, size_t count, off_t offset);
 #endif
 
 #ifdef INT64_IS_LL
@@ -64,6 +70,9 @@
   #elif defined(__GNUC__)
     #define DIAGNOSTIC_PUSH _Pragma("GCC diagnostic push")
     #define DIAGNOSTIC_POP _Pragma("GCC diagnostic pop")
+  #elif defined(_MSC_VER)
+    #define DIAGNOSTIC_PUSH __pragma(warning(push))
+    #define DIAGNOSTIC_POP __pragma(warning(pop))
   #else
     #error("Unknown compiler")
   #endif
@@ -78,6 +87,8 @@
   #define DIAGNOSTIC_IGNORE(XXX) PRAGMA(clang diagnostic ignored XXX)
 #elif defined(__GNUC__)
   #define DIAGNOSTIC_IGNORE(XXX) PRAGMA(GCC diagnostic ignored XXX)
+#elif defined(_MSC_VER)
+  #define DIAGNOSTIC_IGNORE(XXX) __pragma(warning(disable : XXX))
 #else
   #define DIAGNOSTIC_IGNORE(XXX)
 #endif
@@ -140,6 +151,10 @@
   #define std::lock_guard<std::mutex> LockORC
 #else
   #include <mutex>
+#endif
+
+#ifdef NEEDS_Z_PREFIX
+#define Z_PREFIX 1
 #endif
 
 #endif /* ADAPTER_HH */

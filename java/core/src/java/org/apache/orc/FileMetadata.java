@@ -20,10 +20,6 @@ package org.apache.orc;
 
 import java.util.List;
 
-import org.apache.orc.CompressionKind;
-import org.apache.orc.OrcProto;
-import org.apache.orc.StripeInformation;
-
 /**
  * Cached file metadata. Right now, it caches everything; we don't have to store all the
  * protobuf structs actually, we could just store what we need, but that would require that
@@ -49,6 +45,8 @@ public interface FileMetadata {
   List<Integer> getVersionList();
 
   int getMetadataSize();
+
+  int getWriterImplementation();
 
   int getWriterVersionNum();
 

@@ -16,20 +16,16 @@
  * limitations under the License.
  */
 
+#include "orc/OrcFile.hh"
 #include "Timezone.hh"
 
 #include <errno.h>
-#include <iostream>
-#include <fcntl.h>
 #include <map>
 #include <sstream>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
-#include <unistd.h>
 
 namespace orc {
 
@@ -238,7 +234,7 @@ namespace orc {
     }
 
   public:
-    virtual ~FutureRuleImpl();
+    virtual ~FutureRuleImpl() override;
     bool isDefined() const override;
     const TimezoneVariant& getVariant(int64_t clk) const override;
     void print(std::ostream& out) const override;
@@ -518,7 +514,7 @@ namespace orc {
 
   class Version1Parser: public VersionParser {
   public:
-    virtual ~Version1Parser();
+    virtual ~Version1Parser() override;
 
     virtual uint64_t getVersion() const override {
       return 1;
@@ -552,7 +548,7 @@ namespace orc {
 
   class Version2Parser: public VersionParser {
   public:
-    virtual ~Version2Parser();
+    virtual ~Version2Parser() override;
 
     virtual uint64_t getVersion() const override {
       return 2;
@@ -588,7 +584,7 @@ namespace orc {
   public:
     TimezoneImpl(const std::string& name,
                  const std::vector<unsigned char> bytes);
-    virtual ~TimezoneImpl();
+    virtual ~TimezoneImpl() override;
 
     /**
      * Get the variant for the given time (time_t).
@@ -603,6 +599,10 @@ namespace orc {
 
     int64_t getEpoch() const override {
       return epoch;
+    }
+
+    int64_t convertToUTC(int64_t clk) const override {
+      return clk + getVariant(clk).gmtOffset;
     }
 
   private:
@@ -694,40 +694,15 @@ namespace orc {
     if (itr != timezoneCache.end()) {
       return *(itr->second).get();
     }
-    int in = open(filename.c_str(), O_RDONLY);
-    if (in == -1) {
-      std::stringstream buffer;
-      buffer << "failed to open " << filename << " - " << strerror(errno);
-      throw TimezoneError(buffer.str());
+    try {
+      ORC_UNIQUE_PTR<InputStream> file = readFile(filename);
+      size_t size = static_cast<size_t>(file->getLength());
+      std::vector<unsigned char> buffer(size);
+      file->read(&buffer[0], size, 0);
+      timezoneCache[filename] = std::shared_ptr<Timezone>(new TimezoneImpl(filename, buffer));
+    } catch(ParseError& err) {
+      throw TimezoneError(err.what());
     }
-    struct stat fileInfo;
-    if (fstat(in, &fileInfo) == -1) {
-      std::stringstream buffer;
-      buffer << "failed to stat " << filename << " - " << strerror(errno);
-      throw TimezoneError(buffer.str());
-    }
-    if ((fileInfo.st_mode & S_IFMT) != S_IFREG) {
-      std::stringstream buffer;
-      buffer << "non-file in tzfile reader " << filename;
-      throw TimezoneError(buffer.str());
-    }
-    size_t size = static_cast<size_t>(fileInfo.st_size);
-    std::vector<unsigned char> buffer(size);
-    size_t posn = 0;
-    while (posn < size) {
-      ssize_t ret = read(in, &buffer[posn], size - posn);
-      if (ret == -1) {
-        throw TimezoneError(std::string("Failure to read timezone file ") +
-                            filename + " - " + strerror(errno));
-      }
-      posn += static_cast<size_t>(ret);
-    }
-    if (close(in) == -1) {
-      std::stringstream err;
-      err << "failed to close " << filename << " - " << strerror(errno);
-      throw TimezoneError(err.str());
-    }
-    timezoneCache[filename] = std::shared_ptr<Timezone>(new TimezoneImpl(filename, buffer));
     return *timezoneCache[filename].get();
   }
 

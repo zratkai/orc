@@ -18,7 +18,7 @@
 
 #include "Adaptor.hh"
 #include "ColumnReader.hh"
-#include "Exceptions.hh"
+#include "orc/Exceptions.hh"
 #include "OrcTest.hh"
 
 #include "wrap/orc-proto-wrapper.hh"
@@ -37,7 +37,7 @@ namespace orc {
 
 class MockStripeStreams: public StripeStreams {
 public:
-  ~MockStripeStreams();
+  ~MockStripeStreams() override;
   std::unique_ptr<SeekableInputStream> getStream(uint64_t columnId,
                                                  proto::Stream_Kind kind,
                                                  bool stream) const override;
@@ -208,11 +208,11 @@ TEST(TestColumnReader, testByteWithNulls) {
 
   // range(256)
   char buffer[258];
-  buffer[0] = static_cast<char>(0x80);
+  buffer[0] = '\x80';
   for (unsigned int i = 0; i < 128; ++i) {
     buffer[i + 1] = static_cast<char>(i);
   }
-  buffer[129] = static_cast<char>(0x80);
+  buffer[129] = '\x80';
   for (unsigned int i = 128; i < 256; ++i) {
     buffer[i + 2] = static_cast<char>(i);
   }
@@ -271,11 +271,11 @@ TEST(TestColumnReader, testByteSkipsWithNulls) {
 
   // range(256)
   char buffer[258];
-  buffer[0] = static_cast<char>(0x80);
+  buffer[0] = '\x80';
   for (unsigned int i = 0; i < 128; ++i) {
     buffer[i + 1] = static_cast<char>(i);
   }
-  buffer[129] = static_cast<char>(0x80);
+  buffer[129] = '\x80';
   for (unsigned int i = 128; i < 256; ++i) {
     buffer[i + 2] = static_cast<char>(i);
   }
@@ -2347,7 +2347,9 @@ TEST(TestColumnReader, testFloatWithNulls) {
       std::numeric_limits<float>::infinity(),
       std::numeric_limits<float>::quiet_NaN(),
       -std::numeric_limits<float>::infinity(),
-      3.4028235E38f, -3.4028235E38f, 1.4e-45f, -1.4e-45f };
+      std::numeric_limits<float>::max(),
+      -std::numeric_limits<float>::max(),
+      1.4e-45f, -1.4e-45f };
   const unsigned char buffer2[] = { 0x00, 0x00, 0x80, 0x3f,
                                     0x00, 0x00, 0x20, 0x40,
                                     0x00, 0x40, 0xc8, 0xc2,
@@ -2839,12 +2841,15 @@ TEST(TestColumnReader, testTimestamp) {
 
   for (size_t i = 0; i < batch.numElements; ++i) {
     time_t time = static_cast<time_t>(longBatch->data[i]);
+    EXPECT_EQ(expectedNano[i], longBatch->nanoseconds[i]);
+#ifndef HAS_PRE_1970
+    if (time < 0) continue;
+#endif
     tm timeStruct;
     ASSERT_PRED1(isNotNull, gmtime_r(&time, &timeStruct));
     char buffer[30];
     asctime_r(&timeStruct, buffer);
     EXPECT_STREQ(expected[i], buffer) << "Wrong value at " << i;
-    EXPECT_EQ(expectedNano[i], longBatch->nanoseconds[i]);
   }
 }
 

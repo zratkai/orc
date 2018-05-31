@@ -21,7 +21,7 @@
   </parent>
   <groupId>org.apache.orc</groupId>
   <artifactId>orc</artifactId>
-  <version>1.4.0.3.0.0.0-SNAPSHOT</version>
+  <version>1.5.2-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>Apache ORC</name>
@@ -54,9 +54,11 @@
   </mailingLists>
 
   <modules>
+    <module>shims</module>
     <module>core</module>
     <module>mapreduce</module>
     <module>tools</module>
+    <module>examples</module>
   </modules>
 
   <properties>
@@ -66,9 +68,10 @@
     <test.tmp.dir>${project.build.directory}/testing-tmp</test.tmp.dir>
     <example.dir>${project.basedir}/../../examples</example.dir>
 
-    <hadoop.version>3.0.0.3.0.0.0-SNAPSHOT</hadoop.version>
-    <storage-api.version>2.3.0.3.0.0.0-SNAPSHOT</storage-api.version>
-    <zookeeper.version>3.4.6.3.0.0.0-SNAPSHOT</zookeeper.version>
+    <min.hadoop.version>2.2.0</min.hadoop.version>
+    <hadoop.version>2.7.3</hadoop.version>
+    <storage-api.version>2.6.0</storage-api.version>
+    <zookeeper.version>3.4.6</zookeeper.version>
   </properties>
 
   <build>
@@ -145,7 +148,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>2.16</version>
+        <version>2.20.1</version>
         <configuration>
           <reuseForks>false</reuseForks>
           <argLine>-Xmx2048m</argLine>
@@ -165,46 +168,55 @@
         <artifactId>maven-project-info-reports-plugin</artifactId>
         <version>2.9</version>
       </plugin>
-      <plugin>
-        <groupId>org.codehaus.mojo</groupId>
-        <artifactId>findbugs-maven-plugin</artifactId>
-        <version>3.0.3</version>
-        <configuration>
-          <effort>Max</effort>
-          <excludeFilterFile>${basedir}/src/findbugs/exclude.xml</excludeFilterFile>
-          <xmlOutput>true</xmlOutput>
-          <findbugsXmlOutputDirectory>${project.build.directory}/findbugs</findbugsXmlOutputDirectory>
-        </configuration>
-        <executions>
-          <execution>
-            <id>analyze-compile</id>
-            <phase>compile</phase>
-            <goals>
-              <goal>check</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.rat</groupId>
-        <artifactId>apache-rat-plugin</artifactId>
-        <version>0.10</version>
-        <configuration>
-          <excludeSubProject>false</excludeSubProject>
-          <excludes>
-            <exclude>**/*.json</exclude>
-            <exclude>**/*.json.gz</exclude>
-            <exclude>**/*.orc</exclude>
-            <exclude>**/*.out</exclude>
-            <exclude>**/*.schema</exclude>
-            <exclude>**/target/**</exclude>
-            <exclude>.idea/**</exclude>
-          </excludes>
-        </configuration>
-      </plugin>
     </plugins>
     <pluginManagement>
       <plugins>
+        <plugin>
+          <groupId>org.codehaus.mojo</groupId>
+          <artifactId>findbugs-maven-plugin</artifactId>
+          <version>3.0.3</version>
+          <configuration>
+            <effort>Max</effort>
+            <excludeFilterFile>${basedir}/src/findbugs/exclude.xml</excludeFilterFile>
+            <xmlOutput>true</xmlOutput>
+            <findbugsXmlOutputDirectory>${project.build.directory}/findbugs</findbugsXmlOutputDirectory>
+          </configuration>
+          <executions>
+            <execution>
+              <id>analyze-compile</id>
+              <phase>compile</phase>
+              <goals>
+                <goal>check</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.rat</groupId>
+          <artifactId>apache-rat-plugin</artifactId>
+          <version>0.10</version>
+          <executions>
+            <execution>
+              <phase>package</phase>
+              <goals>
+                <goal>check</goal>
+              </goals>
+            </execution>
+          </executions>
+          <configuration>
+            <excludeSubProject>false</excludeSubProject>
+            <excludes>
+              <exclude>**/data/**</exclude>
+              <exclude>**/*.json</exclude>
+              <exclude>**/*.json.gz</exclude>
+              <exclude>**/*.orc</exclude>
+              <exclude>**/*.out</exclude>
+              <exclude>**/*.schema</exclude>
+              <exclude>**/target/**</exclude>
+              <exclude>.idea/**</exclude>
+            </excludes>
+          </configuration>
+        </plugin>
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>build-helper-maven-plugin</artifactId>
@@ -305,6 +317,29 @@
         <directory>${build.dir}</directory>
       </build>
     </profile>
+    <profile>
+      <!-- a profile to check the source for common problems -->
+      <id>analyze</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>findbugs-maven-plugin</artifactId>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.rat</groupId>
+            <artifactId>apache-rat-plugin</artifactId>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <!-- a developer profile to build some benchmarks -->
+      <id>benchmark</id>
+      <modules>
+        <module>bench</module>
+      </modules>
+    </profile>
   </profiles>
 
   <dependencyManagement>
@@ -312,13 +347,33 @@
       <!-- intra-project depedencies -->
       <dependency>
         <groupId>org.apache.orc</groupId>
+        <artifactId>orc-shims</artifactId>
+        <version>1.5.2-SNAPSHOT</version>
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-common</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-hdfs</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.orc</groupId>
         <artifactId>orc-core</artifactId>
-        <version>1.4.0.3.0.0.0-SNAPSHOT</version>
+        <version>1.5.2-SNAPSHOT</version>
       </dependency>
       <dependency>
         <groupId>org.apache.orc</groupId>
         <artifactId>orc-mapreduce</artifactId>
-        <version>1.4.0.3.0.0.0-SNAPSHOT</version>
+        <version>1.5.2-SNAPSHOT</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.orc</groupId>
+        <artifactId>orc-tools</artifactId>
+        <version>1.5.2-SNAPSHOT</version>
       </dependency>
 
       <!-- inter-project depedencies -->
@@ -338,11 +393,6 @@
         <version>11.0.2</version>
       </dependency>
       <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-core</artifactId>
-        <version>2.8.4</version>
-      </dependency>
-      <dependency>
         <groupId>com.google.protobuf</groupId>
         <artifactId>protobuf-java</artifactId>
         <version>2.5.0</version>
@@ -353,8 +403,8 @@
         <version>3.9</version>
         <exclusions>
           <exclusion>
-	    <groupId>commons-beanutils</groupId>
-	    <artifactId>commons-beanutils</artifactId>
+            <groupId>commons-beanutils</groupId>
+            <artifactId>commons-beanutils</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -376,11 +426,11 @@
       <dependency>
         <groupId>io.airlift</groupId>
         <artifactId>aircompressor</artifactId>
-        <version>0.8</version>
+        <version>0.10</version>
         <exclusions>
           <exclusion>
-	    <groupId>io.airlift</groupId>
-	    <artifactId>slice</artifactId>
+            <groupId>io.airlift</groupId>
+            <artifactId>slice</artifactId>
           </exclusion>
         </exclusions>
       </dependency>
@@ -392,7 +442,7 @@
       <dependency>
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-common</artifactId>
-        <version>${hadoop.version}</version>
+        <version>${min.hadoop.version}</version>
         <exclusions>
           <exclusion>
             <groupId>com.google.code.findbugs</groupId>
@@ -403,8 +453,8 @@
             <artifactId>jersey-json</artifactId>
           </exclusion>
           <exclusion>
-	    <groupId>commons-beanutils</groupId>
-	    <artifactId>commons-beanutils-core</artifactId>
+            <groupId>commons-beanutils</groupId>
+            <artifactId>commons-beanutils-core</artifactId>
           </exclusion>
           <exclusion>
             <groupId>commons-daemon</groupId>
@@ -439,10 +489,6 @@
             <artifactId>curator-recipes</artifactId>
           </exclusion>
           <exclusion>
-            <groupId>org.codehaus.jackson</groupId>
-            <artifactId>jackson-mapper-asl</artifactId>
-          </exclusion>
-          <exclusion>
             <groupId>org.mortbay.jetty</groupId>
             <artifactId>jetty</artifactId>
           </exclusion>
@@ -466,8 +512,8 @@
       </dependency>
       <dependency>
         <groupId>org.apache.hadoop</groupId>
-        <artifactId>hadoop-hdfs-client</artifactId>
-        <version>${hadoop.version}</version>
+        <artifactId>hadoop-hdfs</artifactId>
+        <version>${min.hadoop.version}</version>
         <exclusions>
           <exclusion>
             <groupId>com.google.code.findbugs</groupId>
@@ -494,8 +540,8 @@
             <artifactId>avro</artifactId>
           </exclusion>
           <exclusion>
-            <groupId>org.codehaus.jackson</groupId>
-            <artifactId>jackson-mapper-asl</artifactId>
+            <groupId>org.fusesource.leveldbjni</groupId>
+            <artifactId>leveldbjni-all</artifactId>
           </exclusion>
           <exclusion>
             <groupId>org.fusesource.leveldbjni</groupId>
@@ -522,7 +568,7 @@
       <dependency>
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-mapreduce-client-core</artifactId>
-        <version>${hadoop.version}</version>
+        <version>${min.hadoop.version}</version>
         <exclusions>
           <exclusion>
             <groupId>com.google.code.findbugs</groupId>
@@ -554,6 +600,12 @@
         <groupId>org.apache.hive</groupId>
         <artifactId>hive-storage-api</artifactId>
         <version>${storage-api.version}</version>
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-hdfs</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
       <dependency>
         <groupId>org.apache.zookeeper</groupId>
@@ -568,11 +620,6 @@
         </exclusions>
       </dependency>
       <dependency>
-        <groupId>org.apache.parquet</groupId>
-        <artifactId>parquet-hadoop-bundle</artifactId>
-        <version>1.8.2</version>
-      </dependency>
-      <dependency>
         <groupId>org.codehaus.jettison</groupId>
         <artifactId>jettison</artifactId>
         <version>1.1</version>
@@ -582,17 +629,6 @@
             <artifactId>stax-api</artifactId>
           </exclusion>
         </exclusions>
-      </dependency>
-      <dependency>
-        <groupId>org.jodd</groupId>
-        <artifactId>jodd-core</artifactId>
-        <version>3.5.2</version>
-        <scope>runtime</scope>
-      </dependency>
-      <dependency>
-        <groupId>org.openjdk.jmh</groupId>
-        <artifactId>jmh-core</artifactId>
-        <version>1.18</version>
       </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>

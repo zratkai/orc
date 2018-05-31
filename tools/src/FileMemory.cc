@@ -18,7 +18,7 @@
 
 #include "orc/orc-config.hh"
 #include "orc/ColumnPrinter.hh"
-#include "Exceptions.hh"
+#include "orc/Exceptions.hh"
 
 #include <string>
 #include <memory>
@@ -54,7 +54,7 @@ public:
   }
 
   TestMemoryPool(): totalMemory(0), maxMemory(0) {}
-  ~TestMemoryPool();
+  ~TestMemoryPool() override;
 };
 
 TestMemoryPool::~TestMemoryPool() {}
@@ -71,7 +71,7 @@ void processFile(const char* filename,
   readerOpts.setMemoryPool(*(pool.get()));
 
   std::unique_ptr<orc::Reader> reader =
-                  orc::createReader(orc::readLocalFile(std::string(filename)), readerOpts);
+                  orc::createReader(orc::readFile(std::string(filename)), readerOpts);
   std::unique_ptr<orc::RowReader> rowReader = reader->createRowReader(rowReaderOpts);
 
   std::unique_ptr<orc::ColumnVectorBatch> batch =

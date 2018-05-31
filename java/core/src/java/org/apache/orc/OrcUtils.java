@@ -19,6 +19,7 @@ package org.apache.orc;
 
 import org.apache.orc.impl.ReaderImpl;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -245,7 +246,7 @@ public class OrcUtils {
       {
         // Make room for MAP type.
         result.add(null);
-  
+
         // Add MAP type pair in order to determine their subtype values.
         appendOrcTypesRebuildSubtypes(result, children.get(0));
         int subtype2 = result.size();
@@ -383,7 +384,7 @@ public class OrcUtils {
       {
         // Make room for MAP type.
         result.add(null);
-  
+
         // Add MAP type pair in order to determine their subtype values.
         columnId = appendOrcTypesRebuildSubtypes(result, types, columnId);
         int subtype2 = result.size();
@@ -451,6 +452,57 @@ public class OrcUtils {
   }
 
   /**
+   * Checks whether the list of protobuf types from the file are valid or not.
+   * @param types the list of types from the protobuf
+   * @param root the top of the tree to check
+   * @return the next available id
+   * @throws java.io.IOException if the tree is invalid
+   */
+  public static int isValidTypeTree(List<OrcProto.Type> types,
+                                    int root) throws IOException  {
+    if (root < 0 || root >= types.size()) {
+      throw new IOException("Illegal type id " + root +
+          ". The valid range is 0 to " + (types.size() - 1));
+    }
+    OrcProto.Type rootType = types.get(root);
+    int current = root+1;
+    List<Integer> children = rootType.getSubtypesList();
+    if (!rootType.hasKind()) {
+      throw new IOException("Type " + root + " has an unknown kind.");
+    }
+    // ensure that we have the right number of children
+    switch(rootType.getKind()) {
+      case LIST:
+        if (children == null || children.size() != 1) {
+          throw new IOException("Wrong number of type children in list " + root);
+        }
+        break;
+      case MAP:
+        if (children == null || children.size() != 2) {
+          throw new IOException("Wrong number of type children in map " + root);
+        }
+        break;
+      case UNION:
+      case STRUCT:
+        break;
+      default:
+        if (children != null && children.size() != 0) {
+          throw new IOException("Type children under primitive type " + root);
+        }
+    }
+    // ensure the children are also correct
+    if (children != null) {
+      for(int child: children) {
+        if (child != current) {
+          throw new IOException("Unexpected child type id " + child + " when " +
+              current + " was expected.");
+        }
+        current = isValidTypeTree(types, current);
+      }
+    }
+    return current;
+  }
+  /**
    * Translate the given rootColumn from the list of types to a TypeDescription.
    * @param types all of the types
    * @param rootColumn translate this type
@@ -458,7 +510,8 @@ public class OrcUtils {
    */
   public static
         TypeDescription convertTypeFromProtobuf(List<OrcProto.Type> types,
-                                                int rootColumn) {
+                                                int rootColumn)
+          throws FileFormatException {
     OrcProto.Type type = types.get(rootColumn);
     switch (type.getKind()) {
       case BOOLEAN:
@@ -503,9 +556,17 @@ public class OrcUtils {
         return result;
       }
       case LIST:
+        if (type.getSubtypesCount() != 1) {
+          throw new FileFormatException("LIST type should contain exactly " +
+                  "one subtype but has " + type.getSubtypesCount());
+        }
         return TypeDescription.createList(
             convertTypeFromProtobuf(types, type.getSubtypes(0)));
       case MAP:
+        if (type.getSubtypesCount() != 2) {
+          throw new FileFormatException("MAP type should contain exactly " +
+                  "two subtypes but has " + type.getSubtypesCount());
+        }
         return TypeDescription.createMap(
             convertTypeFromProtobuf(types, type.getSubtypes(0)),
             convertTypeFromProtobuf(types, type.getSubtypes(1)));
@@ -518,6 +579,10 @@ public class OrcUtils {
         return result;
       }
       case UNION: {
+        if (type.getSubtypesCount() == 0) {
+          throw new FileFormatException("UNION type should contain at least" +
+                  " one subtype but has none");
+        }
         TypeDescription result = TypeDescription.createUnion();
         for(int f=0; f < type.getSubtypesCount(); ++f) {
           result.addUnionChild(

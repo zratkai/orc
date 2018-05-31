@@ -44,7 +44,7 @@ import org.apache.orc.TypeDescription;
  * Stateless methods shared between RecordReaderImpl and EncodedReaderImpl.
  */
 public class RecordReaderUtils {
-  private static final HadoopShims SHIMS = HadoopShims.Factory.get();
+  private static final HadoopShims SHIMS = HadoopShimsFactory.get();
   private static final Logger LOG = LoggerFactory.getLogger(RecordReaderUtils.class);
 
   static boolean hadBadBloomFilters(TypeDescription.Category category,
@@ -78,7 +78,7 @@ public class RecordReaderUtils {
    * @param bloomFilterKinds (output) the stream kind of the bloom filters
    * @return a list of merged disk ranges to read
    */
-  static DiskRangeList planIndexReading(TypeDescription fileSchema,
+  public static DiskRangeList planIndexReading(TypeDescription fileSchema,
                                         OrcProto.StripeFooter footer,
                                         boolean ignoreNonUtf8BloomFilter,
                                         boolean[] fileIncluded,

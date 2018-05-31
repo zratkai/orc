@@ -16,13 +16,34 @@ project(ORC)
 
 # Version number of package
 SET(CPACK_PACKAGE_VERSION_MAJOR "1")
-SET(CPACK_PACKAGE_VERSION_MINOR "4")
-SET(CPACK_PACKAGE_VERSION_PATCH "3")
+SET(CPACK_PACKAGE_VERSION_MINOR "5")
+SET(CPACK_PACKAGE_VERSION_PATCH "2-SNAPSHOT")
 SET(ORC_VERSION "${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}")
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake_modules")
 
 option (BUILD_JAVA
     "Include ORC Java library in the build process"
      ON)
+
+option (ANALYZE_JAVA
+    "Run static analysis of the Java"
+     OFF)
+
+option (BUILD_LIBHDFSPP
+    "Include LIBHDFSPP library in the build process"
+     ON)
+
+option(BUILD_CPP_TESTS
+    "Build the googletest unit tests"
+    ON)
+
+option(BUILD_TOOLS
+    "Build the tools"
+    ON)
+
+option(INSTALL_VENDORED_LIBS
+    "Install vendored thirdparty libraries along with liborc"
+    ON)
 
 # Make sure that a build type is selected
 if (NOT CMAKE_BUILD_TYPE)
@@ -34,47 +55,20 @@ endif ()
 
 # Set the package format
 SET(CPACK_GENERATOR "TGZ")
+SET(CPACK_PACKAGE_VENDOR "Apache ORC")
+SET(CPACK_PACKAGE_CONTACT "Apache ORC <dev@orc.apache.org>")
 
 INCLUDE(CPack)
-
-set (GMOCK_VERSION "1.7.0")
-set (GMOCK_INCLUDE_DIRS
-     "${CMAKE_SOURCE_DIR}/c++/libs/gmock-${GMOCK_VERSION}/include"
-     "${CMAKE_SOURCE_DIR}/c++/libs/gmock-${GMOCK_VERSION}/gtest/include"
-    )
-set (GMOCK_LIBRARIES gmock)
-if(NOT APPLE AND NOT MSVC)
-  list (APPEND GMOCK_LIBRARIES pthread)
-endif(NOT APPLE AND NOT MSVC)
-
-set (LZ4_VERSION "r131")
-set (LZ4_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/c++/libs/lz4-${LZ4_VERSION}/lib")
-set (LZ4_LIBRARIES lz4)
-
-set (PROTOBUF_VERSION "2.6.0")
-set (PROTOBUF_INCLUDE_DIRS
-     "${CMAKE_SOURCE_DIR}/c++/libs/protobuf-${PROTOBUF_VERSION}/src")
-set (PROTOBUF_LIBRARIES protobuf)
-set (PROTOBUF_EXECUTABLE "${CMAKE_BINARY_DIR}/c++/libs/protobuf-${PROTOBUF_VERSION}/protoc")
-
-set (SNAPPY_VERSION "1.1.2")
-set (SNAPPY_INCLUDE_DIRS
-     "${CMAKE_SOURCE_DIR}/c++/libs/snappy-${SNAPPY_VERSION}")
-set (SNAPPY_LIBRARIES snappy)
-
-set (ZLIB_VERSION "1.2.8")
-set (ZLIB_INCLUDE_DIRS
-     "${CMAKE_SOURCE_DIR}/c++/libs/zlib-${ZLIB_VERSION}"
-     "${CMAKE_BINARY_DIR}/c++/libs/zlib-${ZLIB_VERSION}"
-    )
-set (ZLIB_LIBRARIES zlib)
+INCLUDE(ExternalProject)
 
 #
 # Compiler specific flags
 #
-set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+if (NOT MSVC)
+  set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
+  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG")
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+endif ()
 message(STATUS "compiler ${CMAKE_CXX_COMPILER_ID} version ${CMAKE_CXX_COMPILER_VERSION}")
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   set (CXX11_FLAGS "-std=c++11")
@@ -82,6 +76,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   set (WARN_FLAGS "${WARN_FLAGS} -Wno-c++98-compat-pedantic -Wno-padded")
   set (WARN_FLAGS "${WARN_FLAGS} -Wno-covered-switch-default")
   set (WARN_FLAGS "${WARN_FLAGS} -Wno-missing-noreturn -Wno-unknown-pragmas")
+  set (WARN_FLAGS "${WARN_FLAGS} -Wno-gnu-zero-variadic-macro-arguments")
   set (WARN_FLAGS "${WARN_FLAGS} -Wconversion -Werror")
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set (WARN_FLAGS "-Wall -Wno-unknown-pragmas -Wconversion -Werror")
@@ -94,41 +89,43 @@ elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 elseif (MSVC)
   add_definitions (-D_SCL_SECURE_NO_WARNINGS)
   add_definitions (-D_CRT_SECURE_NO_WARNINGS)
-  # TODO: We assume MSVC debug mode. In the future, set these flags
-  # appropriately for all build mode.
-  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
-  set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /MTd")
-  set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /NODEFAULTLIB:libc.lib")
-  set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /NODEFAULTLIB:libcmt.lib")
-  set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /NODEFAULTLIB:msvcrt.lib")
-  set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /NODEFAULTLIB:libcd.lib")
-
-  set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /NODEFAULTLIB:msvcrtd.lib")
+  add_definitions (-D_CRT_NONSTDC_NO_DEPRECATE) # The POSIX name for this item is deprecated
+  set (WARN_FLAGS "${WARN_FLAGS} -wd4521") # multiple copy constructors specified
+  set (WARN_FLAGS "${WARN_FLAGS} -wd4146") # unary minus operator applied to unsigned type, result still unsigned
 endif ()
 
 enable_testing()
 
+INCLUDE(CheckSourceCompiles)
+INCLUDE(ThirdpartyToolchain)
+
 set (EXAMPLE_DIRECTORY ${CMAKE_SOURCE_DIR}/examples)
 
 add_subdirectory(c++)
-add_subdirectory(tools)
+
+install(
+  FILES LICENSE NOTICE
+  DESTINATION "share/doc/orc")
+
 if (BUILD_JAVA)
   add_subdirectory(java)
 endif()
 
-# Add another target called test-out that prints the results on failure
-if (CMAKE_CONFIGURATION_TYPES)
-  add_custom_target (test-out
-    COMMAND ${CMAKE_CTEST_COMMAND} --force-new-ctest-process
-      --output-on-failure --build-config "$<CONFIGURATION>"
-  )
-else (CMAKE_CONFIGURATION_TYPES)
-  add_custom_target (test-out
-    COMMAND ${CMAKE_CTEST_COMMAND} --force-new-ctest-process
-      --output-on-failure
-  )
-endif (CMAKE_CONFIGURATION_TYPES)
+if (BUILD_TOOLS)
+  add_subdirectory(tools)
+endif ()
 
-install(
-  FILES LICENSE NOTICE
-  DESTINATION .)
+if (BUILD_CPP_TESTS)
+  # Add another target called test-out that prints the results on failure
+  if (CMAKE_CONFIGURATION_TYPES)
+    add_custom_target (test-out
+      COMMAND ${CMAKE_CTEST_COMMAND} --force-new-ctest-process
+        --output-on-failure --build-config "$<CONFIGURATION>"
+    )
+  else ()
+    add_custom_target (test-out
+      COMMAND ${CMAKE_CTEST_COMMAND} --force-new-ctest-process
+        --output-on-failure
+    )
+  endif ()
+endif ()

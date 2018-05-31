@@ -42,7 +42,7 @@ namespace orc {
     const orc::TimestampColumnStatistics* footerColStats =
         reinterpret_cast<const orc::TimestampColumnStatistics*>(footerStats.get());
 
-    std::unique_ptr<orc::Statistics> stripeStats = reader->getStripeStatistics(0);
+    std::unique_ptr<orc::StripeStatistics> stripeStats = reader->getStripeStatistics(0);
     const orc::TimestampColumnStatistics* stripeColStats =
         reinterpret_cast<const orc::TimestampColumnStatistics*>(stripeStats->getColumnStatistics(0));
 
@@ -50,11 +50,11 @@ namespace orc {
     EXPECT_FALSE(footerColStats->hasMaximum());
     EXPECT_TRUE(footerColStats->hasLowerBound());
     EXPECT_TRUE(footerColStats->hasUpperBound());
-    EXPECT_EQ("Data type: Timestamp\nValues: 12\nMinimum is not defined\nLowerBound: 1994-12-31 07:00:00.688\nMaximum is not defined\nUpperBound: 2037-01-02 09:00:00.1\n", footerColStats->toString());
+    EXPECT_EQ("Data type: Timestamp\nValues: 12\nHas null: no\nMinimum is not defined\nLowerBound: 1994-12-31 07:00:00.688\nMaximum is not defined\nUpperBound: 2037-01-02 09:00:00.1\n", footerColStats->toString());
 
     EXPECT_TRUE(stripeColStats->hasMinimum());
     EXPECT_TRUE(stripeColStats->hasMaximum());
-    EXPECT_EQ("Data type: Timestamp\nValues: 12\nMinimum: 1995-01-01 00:00:00.688\nLowerBound: 1995-01-01 00:00:00.688\nMaximum: 2037-01-01 00:00:00.0\nUpperBound: 2037-01-01 00:00:00.1\n", stripeColStats->toString());
+    EXPECT_EQ("Data type: Timestamp\nValues: 12\nHas null: no\nMinimum: 1995-01-01 00:00:00.688\nLowerBound: 1995-01-01 00:00:00.688\nMaximum: 2037-01-01 00:00:00.0\nUpperBound: 2037-01-01 00:00:00.1\n", stripeColStats->toString());
   }
 
 }  // namespace

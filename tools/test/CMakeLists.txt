@@ -16,27 +16,30 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/tools-c++/src
   ${PROJECT_BINARY_DIR}/c++/include
   ${PROJECT_BINARY_DIR}/c++/src
-  ${PROTOBUF_INCLUDE_DIRS}
-  ${ZLIB_INCLUDE_DIRS}
-  ${GMOCK_INCLUDE_DIRS}
+  ${PROTOBUF_INCLUDE_DIR}
+  ${ZLIB_INCLUDE_DIR}
+  ${GTEST_INCLUDE_DIR}
 )
 
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX11_FLAGS} ${WARN_FLAGS}")
 
 add_executable (tool-test
   gzip.cc
+  TestCSVFileImport.cc
+  TestFileContents.cc
   TestFileMetadata.cc
   TestFileScan.cc
+  TestFileStatistics.cc
   TestMatch.cc
   ToolTest.cc
 )
 
 target_link_libraries (tool-test
   orc
-  ${PROTOBUF_LIBRARIES}
-  ${GMOCK_LIBRARIES}
-  ${ZLIB_LIBRARIES}
-  ${SNAPPY_LIBRARIES}
+  protobuf
+  zlib
+  snappy
+  ${GTEST_LIBRARIES}
 )
 
 add_test (tool-test tool-test ${EXAMPLE_DIRECTORY} ${PROJECT_BINARY_DIR})

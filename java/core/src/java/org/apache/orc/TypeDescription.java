@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,6 +20,7 @@ package org.apache.orc;
 
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.Decimal64ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
@@ -45,8 +46,11 @@ public class TypeDescription
   private static final int MAX_SCALE = 38;
   private static final int DEFAULT_PRECISION = 38;
   private static final int DEFAULT_SCALE = 10;
+  public static final int MAX_DECIMAL64_PRECISION = 18;
+  public static final long MAX_DECIMAL64 = 999_999_999_999_999_999L;
+  public static final long MIN_DECIMAL64 = -MAX_DECIMAL64;
   private static final int DEFAULT_LENGTH = 256;
-  private static final Pattern UNQUOTED_NAMES = Pattern.compile("^\\w+$");
+  static final Pattern UNQUOTED_NAMES = Pattern.compile("^[a-zA-Z0-9_]+$");
 
   @Override
   public int compareTo(TypeDescription other) {
@@ -275,7 +279,7 @@ public class TypeDescription
     } else {
       while (source.position < source.length) {
         char ch = source.value.charAt(source.position);
-        if (!Character.isLetterOrDigit(ch) && ch != '.' && ch != '_') {
+        if (!Character.isLetterOrDigit(ch) && ch != '_') {
           break;
         }
         source.position += 1;
@@ -622,7 +626,7 @@ public class TypeDescription
     return maxId;
   }
 
-  private ColumnVector createColumn(int maxSize) {
+  private ColumnVector createColumn(RowBatchVersion version, int maxSize) {
     switch (category) {
       case BOOLEAN:
       case BYTE:
@@ -637,7 +641,12 @@ public class TypeDescription
       case DOUBLE:
         return new DoubleColumnVector(maxSize);
       case DECIMAL:
-        return new DecimalColumnVector(maxSize, precision, scale);
+        if (version == RowBatchVersion.ORIGINAL ||
+            precision > MAX_DECIMAL64_PRECISION) {
+          return new DecimalColumnVector(maxSize, precision, scale);
+        } else {
+          return new Decimal64ColumnVector(maxSize, precision, scale);
+        }
       case STRING:
       case BINARY:
       case CHAR:
@@ -646,7 +655,7 @@ public class TypeDescription
       case STRUCT: {
         ColumnVector[] fieldVector = new ColumnVector[children.size()];
         for(int i=0; i < fieldVector.length; ++i) {
-          fieldVector[i] = children.get(i).createColumn(maxSize);
+          fieldVector[i] = children.get(i).createColumn(version, maxSize);
         }
         return new StructColumnVector(maxSize,
                 fieldVector);
@@ -654,40 +663,72 @@ public class TypeDescription
       case UNION: {
         ColumnVector[] fieldVector = new ColumnVector[children.size()];
         for(int i=0; i < fieldVector.length; ++i) {
-          fieldVector[i] = children.get(i).createColumn(maxSize);
+          fieldVector[i] = children.get(i).createColumn(version, maxSize);
         }
         return new UnionColumnVector(maxSize,
             fieldVector);
       }
       case LIST:
         return new ListColumnVector(maxSize,
-            children.get(0).createColumn(maxSize));
+            children.get(0).createColumn(version, maxSize));
       case MAP:
         return new MapColumnVector(maxSize,
-            children.get(0).createColumn(maxSize),
-            children.get(1).createColumn(maxSize));
+            children.get(0).createColumn(version, maxSize),
+            children.get(1).createColumn(version, maxSize));
       default:
         throw new IllegalArgumentException("Unknown type " + category);
     }
   }
 
-  public VectorizedRowBatch createRowBatch(int maxSize) {
+  /**
+   * Specify the version of the VectorizedRowBatch that the user desires.
+   */
+  public enum RowBatchVersion {
+    ORIGINAL,
+    USE_DECIMAL64;
+  }
+
+  public VectorizedRowBatch createRowBatch(RowBatchVersion version, int size) {
     VectorizedRowBatch result;
     if (category == Category.STRUCT) {
-      result = new VectorizedRowBatch(children.size(), maxSize);
+      result = new VectorizedRowBatch(children.size(), size);
       for(int i=0; i < result.cols.length; ++i) {
-        result.cols[i] = children.get(i).createColumn(maxSize);
+        result.cols[i] = children.get(i).createColumn(version, size);
       }
     } else {
-      result = new VectorizedRowBatch(1, maxSize);
-      result.cols[0] = createColumn(maxSize);
+      result = new VectorizedRowBatch(1, size);
+      result.cols[0] = createColumn(version, size);
     }
     result.reset();
     return result;
   }
 
+  /**
+   * Create a VectorizedRowBatch that uses Decimal64ColumnVector for
+   * short (p &le; 18) decimals.
+   * @return a new VectorizedRowBatch
+   */
+  public VectorizedRowBatch createRowBatchV2() {
+    return createRowBatch(RowBatchVersion.USE_DECIMAL64,
+        VectorizedRowBatch.DEFAULT_SIZE);
+  }
+
+  /**
+   * Create a VectorizedRowBatch with the original ColumnVector types
+   * @param maxSize the maximum size of the batch
+   * @return a new VectorizedRowBatch
+   */
+  public VectorizedRowBatch createRowBatch(int maxSize) {
+    return createRowBatch(RowBatchVersion.ORIGINAL, maxSize);
+  }
+
+  /**
+   * Create a VectorizedRowBatch with the original ColumnVector types
+   * @return a new VectorizedRowBatch
+   */
   public VectorizedRowBatch createRowBatch() {
-    return createRowBatch(VectorizedRowBatch.DEFAULT_SIZE);
+    return createRowBatch(RowBatchVersion.ORIGINAL,
+        VectorizedRowBatch.DEFAULT_SIZE);
   }
 
   /**
@@ -924,5 +965,126 @@ public class TypeDescription
       }
       return prev.findSubtype(goal);
     }
+  }
+
+  /**
+   * Split a compound name into parts separated by '.'.
+   * @param source the string to parse into simple names
+   * @return a list of simple names from the source
+   */
+  private static List<String> splitName(StringPosition source) {
+    List<String> result = new ArrayList<>();
+    do {
+      result.add(parseName(source));
+    } while (consumeChar(source, '.'));
+    return result;
+  }
+
+  private static final Pattern INTEGER_PATTERN = Pattern.compile("^[0-9]+$");
+
+  private TypeDescription findSubtype(StringPosition source) {
+    List<String> names = splitName(source);
+    if (names.size() == 1 && INTEGER_PATTERN.matcher(names.get(0)).matches()) {
+      return findSubtype(Integer.parseInt(names.get(0)));
+    }
+    TypeDescription current = this;
+    while (names.size() > 0) {
+      String first = names.remove(0);
+      switch (current.category) {
+        case STRUCT: {
+          int posn = current.fieldNames.indexOf(first);
+          if (posn == -1) {
+            throw new IllegalArgumentException("Field " + first +
+                " not found in " + current.toString());
+          }
+          current = current.children.get(posn);
+          break;
+        }
+        case LIST:
+          if (first.equals("_elem")) {
+            current = current.getChildren().get(0);
+          } else {
+            throw new IllegalArgumentException("Field " + first +
+                "not found in " + current.toString());
+          }
+          break;
+        case MAP:
+          if (first.equals("_key")) {
+            current = current.getChildren().get(0);
+          } else if (first.equals("_value")) {
+            current = current.getChildren().get(1);
+          } else {
+            throw new IllegalArgumentException("Field " + first +
+                "not found in " + current.toString());
+          }
+          break;
+        case UNION: {
+          try {
+            int posn = Integer.parseInt(first);
+            if (posn < 0 || posn >= current.getChildren().size()) {
+              throw new NumberFormatException("off end of union");
+            }
+            current = current.getChildren().get(posn);
+          } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Field " + first +
+                "not found in " + current.toString(), e);
+          }
+          break;
+        }
+        default:
+          throw new IllegalArgumentException("Field " + first +
+              "not found in " + current.toString());
+      }
+    }
+    return current;
+  }
+
+  /**
+   * Find a subtype of this schema by name.
+   * If the name is a simple integer, it will be used as a column number.
+   * Otherwise, this routine will recursively search for the name.
+   * <ul>
+   *   <li>Struct fields are selected by name.</li>
+   *   <li>List children are selected by "_elem".</li>
+   *   <li>Map children are selected by "_key" or "_value".</li>
+   *   <li>Union children are selected by number starting at 0.</li>
+   * </ul>
+   * Names are separated by '.'.
+   * @param columnName the name to search for
+   * @return the subtype
+   */
+  public TypeDescription findSubtype(String columnName) {
+    StringPosition source = new StringPosition(columnName);
+    TypeDescription result = findSubtype(source);
+    if (source.position != source.length) {
+      throw new IllegalArgumentException("Remaining text in parsing field name "
+          + source);
+    }
+    return result;
+  }
+
+  /**
+   * Find a list of subtypes from a string, including the empty list.
+   *
+   * Each column name is separated by ','.
+   * @param columnNameList the list of column names
+   * @return the list of subtypes that correspond to the column names
+   */
+  public List<TypeDescription> findSubtypes(String columnNameList) {
+    StringPosition source = new StringPosition(columnNameList);
+    List<TypeDescription> result = new ArrayList<>();
+    boolean needComma = false;
+    while (source.position != source.length) {
+      if (needComma) {
+        if (!consumeChar(source, ',')) {
+          throw new IllegalArgumentException("Comma expected in list of column"
+              + " names at " + source);
+        }
+      } else {
+        needComma = true;
+      }
+      result.add(findSubtype(source));
+    }
+    return result;
   }
 }

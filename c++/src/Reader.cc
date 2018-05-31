@@ -35,46 +35,9 @@
 
 namespace orc {
 
-  std::string compressionKindToString(CompressionKind kind) {
-    switch (static_cast<int>(kind)) {
-    case CompressionKind_NONE:
-      return "none";
-    case CompressionKind_ZLIB:
-      return "zlib";
-    case CompressionKind_SNAPPY:
-      return "snappy";
-    case CompressionKind_LZO:
-      return "lzo";
-    case CompressionKind_LZ4:
-      return "lz4";
-    case CompressionKind_ZSTD:
-      return "zstd";
-    }
-    std::stringstream buffer;
-    buffer << "unknown - " << kind;
-    return buffer.str();
-  }
-
-  std::string writerVersionToString(WriterVersion version) {
-    switch (static_cast<int>(version)) {
-    case WriterVersion_ORIGINAL:
-      return "original";
-    case WriterVersion_HIVE_8732:
-      return "HIVE-8732";
-    case WriterVersion_HIVE_4243:
-      return "HIVE-4243";
-    case WriterVersion_HIVE_12055:
-      return "HIVE-12055";
-    case WriterVersion_HIVE_13083:
-      return "HIVE-13083";
-    case WriterVersion_ORC_101:
-      return "ORC-101";
-    case WriterVersion_ORC_135:
-      return "ORC-135";
-    }
-    std::stringstream buffer;
-    buffer << "future - " << version;
-    return buffer.str();
+  const WriterVersionImpl &WriterVersionImpl::VERSION_HIVE_8732() {
+    static const WriterVersionImpl version(WriterVersion_HIVE_8732);
+    return version;
   }
 
   uint64_t getCompressionBlockSize(const proto::PostScript& ps) {
@@ -153,7 +116,8 @@ namespace orc {
     }
   }
 
-  void ColumnSelector::updateSelected(std::vector<bool>& selectedColumns, const RowReaderOptions& options) {
+  void ColumnSelector::updateSelected(std::vector<bool>& selectedColumns,
+                                      const RowReaderOptions& options) {
     selectedColumns.assign(static_cast<size_t>(contents->footer->types_size()), false);
     if (contents->schema->getKind() == STRUCT && options.getIndexesSet()) {
       for(std::list<uint64_t>::const_iterator field = options.getInclude().begin();
@@ -178,7 +142,8 @@ namespace orc {
     selectedColumns[0] = true; // column 0 is selected by default
   }
 
-  void ColumnSelector::updateSelectedByFieldId(std::vector<bool>& selectedColumns, uint64_t fieldId) {
+  void ColumnSelector::updateSelectedByFieldId(std::vector<bool>& selectedColumns,
+                                               uint64_t fieldId) {
     if (fieldId < contents->schema->getSubtypeCount()) {
       selectChildren(selectedColumns, *contents->schema->getSubtype(fieldId));
     } else {
@@ -201,7 +166,8 @@ namespace orc {
     }
   }
 
-  void ColumnSelector::updateSelectedByName(std::vector<bool>& selectedColumns, const std::string& fieldName) {
+  void ColumnSelector::updateSelectedByName(std::vector<bool>& selectedColumns,
+                                            const std::string& fieldName) {
     std::map<std::string, uint64_t>::const_iterator ite = nameIdMap.find(fieldName);
     if (ite != nameIdMap.end()) {
       updateSelectedByTypeId(selectedColumns, ite->second);
@@ -438,19 +404,37 @@ namespace orc {
         contents->blockSize));
   }
 
-  std::string ReaderImpl::getFormatVersion() const {
-    std::stringstream result;
-    for(int i=0; i < contents->postscript->version_size(); ++i) {
-      if (i != 0) {
-        result << ".";
-      }
-      result << contents->postscript->version(i);
+  FileVersion ReaderImpl::getFormatVersion() const {
+    if (contents->postscript->version_size() != 2) {
+      throw std::logic_error("Unrecognized file version.");
     }
-    return result.str();
+    return FileVersion(
+                contents->postscript->version(0),
+                contents->postscript->version(1));
   }
 
   uint64_t ReaderImpl::getNumberOfRows() const {
     return footer->numberofrows();
+  }
+
+  WriterId ReaderImpl::getWriterId() const {
+    if (footer->has_writer()) {
+      uint32_t id = footer->writer();
+      if (id > WriterId::PRESTO_WRITER) {
+        return WriterId::UNKNOWN_WRITER;
+      } else {
+	return static_cast<WriterId>(id);
+      }
+    }
+    return WriterId::ORC_JAVA_WRITER;
+  }
+
+  uint32_t ReaderImpl::getWriterIdValue() const {
+    if (footer->has_writer()) {
+      return footer->writer();
+    } else {
+      return WriterId::ORC_JAVA_WRITER;
+    }
   }
 
   WriterVersion ReaderImpl::getWriterVersion() const {
@@ -505,6 +489,40 @@ namespace orc {
     throw std::range_error("key not found");
   }
 
+  void ReaderImpl::getRowIndexStatistics(
+           uint64_t stripeOffset, const proto::StripeFooter& currentStripeFooter,
+           std::vector<std::vector<proto::ColumnStatistics> >* indexStats) const {
+    int num_streams = currentStripeFooter.streams_size();
+    uint64_t offset = stripeOffset;
+    for (int i = 0; i < num_streams; i++) {
+      const proto::Stream& stream = currentStripeFooter.streams(i);
+      uint64_t length = static_cast<uint64_t>(stream.length());
+      if (static_cast<StreamKind>(stream.kind()) == StreamKind::StreamKind_ROW_INDEX) {
+        std::unique_ptr<SeekableInputStream> pbStream =
+          createDecompressor(contents->compression,
+                  std::unique_ptr<SeekableInputStream>
+                  (new SeekableFileInputStream(contents->stream.get(),
+                                                offset,
+                                                length,
+                                                *contents->pool)),
+                  contents->blockSize,
+                  *(contents->pool));
+
+        proto::RowIndex rowIndex;
+        if (!rowIndex.ParseFromZeroCopyStream(pbStream.get())) {
+          throw ParseError("Failed to parse RowIndex from stripe footer");
+        }
+        int num_entries = rowIndex.entry_size();
+        size_t column = static_cast<size_t>(stream.column());
+        for (int j = 0; j < num_entries; j++) {
+          const proto::RowIndexEntry& entry = rowIndex.entry(j);
+          (*indexStats)[column].push_back(entry.statistics());
+        }
+      }
+      offset += length;
+    }
+  }
+
   bool ReaderImpl::hasMetadataValue(const std::string& key) const {
     for(int i=0; i < footer->metadata_size(); ++i) {
       if (footer->metadata(i).name() == key) {
@@ -518,7 +536,7 @@ namespace orc {
     return *(contents->schema.get());
   }
 
-  std::unique_ptr<Statistics>
+  std::unique_ptr<StripeStatistics>
   ReaderImpl::getStripeStatistics(uint64_t stripeIndex) const {
     if (!isMetadataLoaded) {
       readMetadata();
@@ -526,19 +544,26 @@ namespace orc {
     if (metadata.get() == nullptr) {
       throw std::logic_error("No stripe statistics in file");
     }
+    size_t num_cols = static_cast<size_t>(
+                          metadata->stripestats(
+                              static_cast<int>(stripeIndex)).colstats_size());
+    std::vector<std::vector<proto::ColumnStatistics> > indexStats(num_cols);
+
     proto::StripeInformation currentStripeInfo =
         footer->stripes(static_cast<int>(stripeIndex));
     proto::StripeFooter currentStripeFooter =
         getStripeFooter(currentStripeInfo, *contents.get());
+
+    getRowIndexStatistics(currentStripeInfo.offset(), currentStripeFooter, &indexStats);
 
     const Timezone& writerTZ =
       currentStripeFooter.has_writertimezone() ?
         getTimezoneByName(currentStripeFooter.writertimezone()) :
         getLocalTimezone();
     StatContext statContext(hasCorrectStatistics(), &writerTZ);
-    return std::unique_ptr<Statistics>
-      (new StatisticsImpl(metadata->stripestats
-                          (static_cast<int>(stripeIndex)), statContext));
+    return std::unique_ptr<StripeStatistics>
+           (new StripeStatisticsImpl(metadata->stripestats(static_cast<int>(stripeIndex)),
+                                                   indexStats, statContext));
   }
 
   std::unique_ptr<Statistics> ReaderImpl::getStatistics() const {
@@ -582,16 +607,16 @@ namespace orc {
   }
 
   bool ReaderImpl::hasCorrectStatistics() const {
-    return getWriterVersion() != WriterVersion_ORIGINAL;
+    return !WriterVersionImpl::VERSION_HIVE_8732().compareGT(getWriterVersion());
   }
 
   void ReaderImpl::checkOrcVersion() {
-    std::string version = getFormatVersion();
-    if (version != "0.11" && version != "0.12") {
+    FileVersion version = getFormatVersion();
+    if (version != FileVersion(0, 11) && version != FileVersion(0, 12)) {
       *(options.getErrorStream())
         << "Warning: ORC file " << contents->stream->getName()
         << " was written in an unknown format version "
-        << version << "\n";
+        << version.toString() << "\n";
     }
   }
 
@@ -804,7 +829,7 @@ namespace orc {
       std::min(static_cast<uint64_t>(data.capacity),
                rowsInCurrentStripe - currentRowInStripe);
     data.numElements = rowsToRead;
-    reader->next(data, rowsToRead, 0);
+    reader->next(data, rowsToRead, nullptr);
     // update row number
     previousRow = firstRowOfStripe[currentStripe] + currentRowInStripe;
     currentRowInStripe += rowsToRead;
@@ -873,6 +898,36 @@ namespace orc {
   }
 
   /**
+   * Check that indices in the type tree are valid, so we won't crash
+   * when we convert the proto::Types to TypeImpls.
+   */
+  void checkProtoTypeIds(const proto::Footer &footer) {
+    std::stringstream msg;
+    int maxId = footer.types_size();
+    for (int i = 0; i < maxId; ++i) {
+      const proto::Type& type = footer.types(i);
+      for (int j = 0; j < type.subtypes_size(); ++j) {
+        int subTypeId = static_cast<int>(type.subtypes(j));
+        if (subTypeId <= i) {
+          msg << "Footer is corrupt: malformed link from type " << i << " to "
+              << subTypeId;
+          throw ParseError(msg.str());
+        }
+        if (subTypeId >= maxId) {
+          msg << "Footer is corrupt: types(" << subTypeId << ") not exists";
+          throw ParseError(msg.str());
+        }
+        if (j > 0 && static_cast<int>(type.subtypes(j - 1)) >= subTypeId) {
+          msg << "Footer is corrupt: subType(" << (j-1) << ") >= subType(" << j
+              << ") in types(" << i << "). (" << type.subtypes(j - 1) << " >= "
+              << subTypeId << ")";
+          throw ParseError(msg.str());
+        }
+      }
+    }
+  }
+
+  /**
    * Parse the footer from the given buffer.
    * @param stream the file's stream
    * @param buffer the buffer to parse the footer from
@@ -901,6 +956,8 @@ namespace orc {
       throw ParseError("Failed to parse the footer from " +
                        stream->getName());
     }
+
+    checkProtoTypeIds(*footer);
     return REDUNDANT_MOVE(footer);
   }
 
@@ -959,46 +1016,6 @@ namespace orc {
                                                   options,
                                                   fileLength,
                                                   postscriptLength));
-  }
-
-  std::string streamKindToString(StreamKind kind) {
-    switch (static_cast<int>(kind)) {
-    case StreamKind_PRESENT:
-      return "present";
-    case StreamKind_DATA:
-      return "data";
-    case StreamKind_LENGTH:
-      return "length";
-    case StreamKind_DICTIONARY_DATA:
-      return "dictionary";
-    case StreamKind_DICTIONARY_COUNT:
-      return "dictionary count";
-    case StreamKind_SECONDARY:
-      return "secondary";
-    case StreamKind_ROW_INDEX:
-      return "index";
-    case StreamKind_BLOOM_FILTER:
-      return "bloom";
-    }
-    std::stringstream buffer;
-    buffer << "unknown - " << kind;
-    return buffer.str();
-  }
-
-  std::string columnEncodingKindToString(ColumnEncodingKind kind) {
-    switch (static_cast<int>(kind)) {
-    case ColumnEncodingKind_DIRECT:
-      return "direct";
-    case ColumnEncodingKind_DICTIONARY:
-      return "dictionary";
-    case ColumnEncodingKind_DIRECT_V2:
-      return "direct rle2";
-    case ColumnEncodingKind_DICTIONARY_V2:
-      return "dictionary rle2";
-    }
-    std::stringstream buffer;
-    buffer << "unknown - " << kind;
-    return buffer.str();
   }
 
   RowReader::~RowReader() {

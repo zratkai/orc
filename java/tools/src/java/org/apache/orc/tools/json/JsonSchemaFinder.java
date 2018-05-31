@@ -31,6 +31,7 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.orc.TypeDescription;
+import org.apache.orc.TypeDescriptionPrettyPrint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,6 +41,7 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -246,11 +248,74 @@ public class JsonSchemaFinder {
     } else {
       reader = new InputStreamReader(inputStream, StandardCharsets.UTF_8);
     }
+    addFile(reader);
+  }
+
+  public void addFile(java.io.Reader reader) throws IOException {
     JsonStreamParser parser = new JsonStreamParser(reader);
     while (parser.hasNext()) {
       records += 1;
       mergedType = mergeType(mergedType, pickType(parser.next()));
     }
+  }
+
+  HiveType makeHiveType(TypeDescription schema) {
+    switch (schema.getCategory()) {
+      case BOOLEAN:
+        return new BooleanType();
+      case BYTE:
+        return new NumericType(HiveType.Kind.BYTE, 3, 0);
+      case SHORT:
+        return new NumericType(HiveType.Kind.SHORT, 5, 0);
+      case INT:
+        return new NumericType(HiveType.Kind.INT, 10, 0);
+      case LONG:
+        return new NumericType(HiveType.Kind.LONG, 19, 0);
+      case FLOAT:
+        return new NumericType(HiveType.Kind.FLOAT, 0, 0);
+      case DOUBLE:
+        return new NumericType(HiveType.Kind.DOUBLE, 0, 0);
+      case DECIMAL: {
+        int scale = schema.getScale();
+        int intDigits = schema.getPrecision() - scale;
+        return new NumericType(HiveType.Kind.DECIMAL, intDigits, scale);
+      }
+      case CHAR:
+      case VARCHAR:
+      case STRING:
+        return new StringType(HiveType.Kind.STRING);
+      case TIMESTAMP:
+        return new StringType(HiveType.Kind.TIMESTAMP);
+      case DATE:
+        return new StringType(HiveType.Kind.DATE);
+      case BINARY:
+        return new StringType(HiveType.Kind.BINARY);
+      case LIST:
+        return new ListType(makeHiveType(schema.getChildren().get(0)));
+      case STRUCT: {
+        StructType result = new StructType();
+        List<String> fields = schema.getFieldNames();
+        List<TypeDescription> children = schema.getChildren();
+        for(int i = 0; i < fields.size(); ++i) {
+          result.addField(fields.get(i), makeHiveType(children.get(i)));
+        }
+        return result;
+      }
+      case UNION: {
+        UnionType result = new UnionType();
+        for(TypeDescription child: schema.getChildren()) {
+          result.addType(makeHiveType(child));
+        }
+        return result;
+      }
+      case MAP:
+      default:
+        throw new IllegalArgumentException("Unhandled type " + schema);
+    }
+  }
+
+  public void addSchema(TypeDescription schema) {
+    mergedType = mergeType(mergedType, makeHiveType(schema));
   }
 
   public TypeDescription getSchema() {
@@ -271,6 +336,8 @@ public class JsonSchemaFinder {
       result.mergedType.printFlat(System.out, "root");
     } else if (cli.hasOption('t')) {
       printAsTable(System.out, (StructType) result.mergedType);
+    } else if (cli.hasOption('p')) {
+      TypeDescriptionPrettyPrint.print(System.out, result.getSchema());
     } else {
       System.out.println(result.getSchema());
     }
@@ -285,6 +352,8 @@ public class JsonSchemaFinder {
         .desc("Print types as flat list of types").build());
     options.addOption(Option.builder("t").longOpt("table")
         .desc("Print types as Hive table declaration").build());
+    options.addOption(Option.builder("p").longOpt("pretty")
+        .desc("Pretty print the schema").build());
     CommandLine cli = new GnuParser().parse(options, args);
     if (cli.hasOption('h') || cli.getArgs().length == 0) {
       HelpFormatter formatter = new HelpFormatter();

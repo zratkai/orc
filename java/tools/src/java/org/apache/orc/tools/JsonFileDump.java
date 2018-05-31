@@ -190,7 +190,8 @@ public class JsonFileDump {
             for (int col : rowIndexCols) {
               writer.object();
               writer.key("columnId").value(col);
-              writeRowGroupIndexes(writer, col, indices.getRowGroupIndex());
+              writeRowGroupIndexes(writer, col, indices.getRowGroupIndex(),
+                  reader.getSchema());
               writeBloomFilterIndexes(writer, col, indices,
                   reader.getWriterVersion(),
                   reader.getSchema().findSubtype(col).getCategory(),
@@ -295,6 +296,9 @@ public class JsonFileDump {
     if (cs != null) {
       writer.key("count").value(cs.getNumberOfValues());
       writer.key("hasNull").value(cs.hasNull());
+      if (cs.getBytesOnDisk() != 0) {
+        writer.key("bytesOnDisk").value(cs.getBytesOnDisk());
+      }
       if (cs instanceof BinaryColumnStatistics) {
         writer.key("totalLength").value(((BinaryColumnStatistics) cs).getSum());
         writer.key("type").value(OrcProto.Type.Kind.BINARY);
@@ -395,7 +399,7 @@ public class JsonFileDump {
   }
 
   private static void writeRowGroupIndexes(JSONWriter writer, int col,
-      OrcProto.RowIndex[] rowGroupIndex)
+      OrcProto.RowIndex[] rowGroupIndex, TypeDescription schema)
       throws JSONException {
 
     OrcProto.RowIndex index;
@@ -413,7 +417,8 @@ public class JsonFileDump {
         continue;
       }
       OrcProto.ColumnStatistics colStats = entry.getStatistics();
-      writeColumnStatistics(writer, ColumnStatisticsImpl.deserialize(colStats));
+      writeColumnStatistics(writer, ColumnStatisticsImpl.deserialize(
+          schema.findSubtype(col), colStats));
       writer.key("positions").array();
       for (int posIx = 0; posIx < entry.getPositionsCount(); ++posIx) {
         writer.value(entry.getPositions(posIx));

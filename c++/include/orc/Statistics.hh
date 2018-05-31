@@ -40,6 +40,12 @@ namespace orc {
     virtual uint64_t getNumberOfValues() const = 0;
 
     /**
+     * Check whether column has null value
+     * @return true if has null value
+     */
+    virtual bool hasNull() const = 0;
+
+    /**
      * print out statistics of column if any
      */
     virtual std::string toString() const = 0;
@@ -367,7 +373,24 @@ namespace orc {
     virtual uint32_t getNumberOfColumns() const = 0;
   };
 
+  class StripeStatistics : public Statistics {
+  public:
+    virtual ~StripeStatistics();
 
+    /**
+     * Get the RowIndex statistics of a column id.
+     * @return one stripe RowIndex statistics
+     */
+    virtual const ColumnStatistics*
+                      getRowIndexStatistics(
+                          uint32_t columnId, uint32_t IndexId) const = 0;
+
+    /**
+     * Get the number of RowIndexes
+     * @return the number of RowIndex Statistics
+     */
+    virtual uint32_t getNumberOfRowIndexStats(uint32_t columnId) const = 0;
+  };
 }
 
 #endif
