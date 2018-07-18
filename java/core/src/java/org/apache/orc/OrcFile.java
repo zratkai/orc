@@ -172,6 +172,7 @@ public class OrcFile {
     ORC_101(WriterImplementation.ORC_JAVA, 5),   // bloom filters use utf8
     ORC_135(WriterImplementation.ORC_JAVA, 6),   // timestamp stats use utc
     ORC_517(WriterImplementation.ORC_JAVA, 7),   // decimal64 min/max are fixed
+    ORC_203(WriterImplementation.ORC_JAVA, 8),   // trim long strings & record they were trimmed
 
     // C++ ORC Writer
     ORC_CPP_ORIGINAL(WriterImplementation.ORC_CPP, 6),
@@ -255,7 +256,7 @@ public class OrcFile {
   /**
    * The WriterVersion for this version of the software.
    */
-  public static final WriterVersion CURRENT_WRITER = WriterVersion.ORC_517;
+  public static final WriterVersion CURRENT_WRITER = WriterVersion.ORC_203;
 
   public enum EncodingStrategy {
     SPEED, COMPRESSION
