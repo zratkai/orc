@@ -25,6 +25,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -2179,5 +2180,27 @@ public class TestRecordReaderImpl {
     boolean[] result = new boolean[numColumns];
     Arrays.fill(result, true);
     return result;
+  }
+
+  @Test
+  public void testSkipDataReaderOpen() throws Exception {
+    IOException ioe = new IOException("Don't open when there is no stripe");
+
+    DataReader mockedDataReader = mock(DataReader.class);
+    doThrow(ioe).when(mockedDataReader).open();
+    when(mockedDataReader.clone()).thenReturn(mockedDataReader);
+    doNothing().when(mockedDataReader).close();
+
+    Configuration conf = new Configuration();
+    Path path = new Path(workDir, "empty.orc");
+    FileSystem.get(conf).delete(path, true);
+    OrcFile.WriterOptions options = OrcFile.writerOptions(conf).setSchema(TypeDescription.createLong());
+    Writer writer = OrcFile.createWriter(path, options);
+    writer.close();
+
+    Reader reader = OrcFile.createReader(path, OrcFile.readerOptions(conf));
+    Reader.Options readerOptions = reader.options().dataReader(mockedDataReader);
+    RecordReader recordReader = reader.rows(readerOptions);
+    recordReader.close();
   }
 }
