@@ -138,8 +138,11 @@ public interface TreeWriter {
           return new BinaryTreeWriter(schema.getId(),
               schema, streamFactory, nullable);
         case TIMESTAMP:
-          return new TimestampTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
+          return new TimestampTreeWriter(schema.getId(), schema,
+                                         streamFactory, nullable, false);
+        case TIMESTAMP_INSTANT:
+            return new TimestampTreeWriter(schema.getId(), schema,
+                                           streamFactory, nullable, true);
         case DATE:
           return new DateTreeWriter(schema.getId(),
               schema, streamFactory, nullable);
