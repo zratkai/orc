@@ -119,7 +119,8 @@ public class TypeDescription
     LIST("array", false),
     MAP("map", false),
     STRUCT("struct", false),
-    UNION("uniontype", false);
+    UNION("uniontype", false),
+    TIMESTAMP_INSTANT("timestamp with local time zone", false);
 
     Category(String name, boolean isPrimitive) {
       this.name = name;
@@ -178,6 +179,10 @@ public class TypeDescription
     return new TypeDescription(Category.TIMESTAMP);
   }
 
+  public static TypeDescription createTimestampInstant() {
+    return new TypeDescription(Category.TIMESTAMP_INSTANT);
+  }
+
   public static TypeDescription createBinary() {
     return new TypeDescription(Category.BINARY);
   }
@@ -210,18 +215,31 @@ public class TypeDescription
   }
 
   static Category parseCategory(StringPosition source) {
-    int start = source.position;
+    StringBuilder word = new StringBuilder();
+    boolean hadSpace = true;
     while (source.position < source.length) {
       char ch = source.value.charAt(source.position);
-      if (!Character.isLetter(ch)) {
+      if (Character.isLetter(ch)) {
+        word.append(Character.toLowerCase(ch));
+        hadSpace = false;
+      } else if (ch == ' ') {
+        if (!hadSpace) {
+          hadSpace = true;
+          word.append(ch);
+        }
+      } else {
         break;
       }
       source.position += 1;
     }
-    if (source.position != start) {
-      String word = source.value.substring(start, source.position).toLowerCase();
+    String catString = word.toString();
+    // if there were trailing spaces, remove them.
+    if (hadSpace) {
+      catString = catString.trim();
+    }
+    if (!catString.isEmpty()) {
       for (Category cat : Category.values()) {
-        if (cat.getName().equals(word)) {
+        if (cat.getName().equals(catString)) {
           return cat;
         }
       }
@@ -348,6 +366,7 @@ public class TypeDescription
       case SHORT:
       case STRING:
       case TIMESTAMP:
+      case TIMESTAMP_INSTANT:
         break;
       case CHAR:
       case VARCHAR:
@@ -639,6 +658,7 @@ public class TypeDescription
       case DATE:
         return new DateColumnVector(maxSize);
       case TIMESTAMP:
+      case TIMESTAMP_INSTANT:
         return new TimestampColumnVector(maxSize);
       case FLOAT:
       case DOUBLE:

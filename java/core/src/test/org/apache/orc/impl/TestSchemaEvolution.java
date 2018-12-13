@@ -17,8 +17,11 @@
  */
 package org.apache.orc.impl;
 
-import static junit.framework.TestCase.assertSame;
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -35,6 +38,13 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoField;
+import java.util.Arrays;
 import java.util.TimeZone;
 
 import org.apache.hadoop.conf.Configuration;
@@ -78,7 +88,7 @@ public class TestSchemaEvolution {
     conf = new Configuration();
     options = new Reader.Options(conf);
     fs = FileSystem.getLocal(conf);
-    testFilePath = new Path(workDir, "TestOrcFile." +
+    testFilePath = new Path(workDir, "TestSchemaEvolution." +
         testCaseName.getMethodName() + ".orc");
     fs.delete(testFilePath, false);
   }
@@ -1636,6 +1646,15 @@ public class TestSchemaEvolution {
     ranges.add(new BufferChunk(ByteBuffer.wrap(buffer), 0));
     streams.put(name, InStream.create(name.toString(), ranges, values.length, null,
         values.length));
+  }
+
+  static ByteBuffer createBuffer(int... values) {
+    ByteBuffer result = ByteBuffer.allocate(values.length);
+    for(int v: values) {
+      result.put((byte) v);
+    }
+    result.flip();
+    return result;
   }
 
   @Test

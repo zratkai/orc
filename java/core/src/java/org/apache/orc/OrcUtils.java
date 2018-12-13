@@ -149,6 +149,9 @@ public class OrcUtils {
     case TIMESTAMP:
       type.setKind(OrcProto.Type.Kind.TIMESTAMP);
       break;
+    case TIMESTAMP_INSTANT:
+        type.setKind(OrcProto.Type.Kind.TIMESTAMP_INSTANT);
+        break;
     case DATE:
       type.setKind(OrcProto.Type.Kind.DATE);
       break;
@@ -563,6 +566,8 @@ public class OrcUtils {
         return TypeDescription.createBinary();
       case TIMESTAMP:
         return TypeDescription.createTimestamp();
+      case TIMESTAMP_INSTANT:
+        return TypeDescription.createTimestampInstant();
       case DATE:
         return TypeDescription.createDate();
       case DECIMAL: {

@@ -705,7 +705,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     List<OrcProto.ColumnStatistics> fileStats = builder.getStatisticsList();
     ColumnStatistics[] result = new ColumnStatistics[fileStats.size()];
     for(int i=0; i < result.length; ++i) {
-      result[i] = ColumnStatisticsImpl.deserialize(schema, fileStats.get(i));
+      result[i] = ColumnStatisticsImpl.deserialize(schema.findSubtype(i), fileStats.get(i));
     }
     return result;
   }

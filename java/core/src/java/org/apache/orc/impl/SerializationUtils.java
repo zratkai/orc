@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.sql.Date;
 import java.util.TimeZone;
 
 public final class SerializationUtils {
@@ -1358,5 +1359,43 @@ public final class SerializationUtils {
     return vector.noNulls || !vector.isNull[elementNum] ?
                new String(vector.vector[elementNum], vector.start[elementNum],
                    vector.length[elementNum], StandardCharsets.UTF_8) : null;
+  }
+
+  /**
+   * Find the relative offset when moving between timezones at a particular
+   * point in time.
+   *
+   * This is a function of ORC v0 and v1 writing timestamps relative to the
+   * local timezone. Therefore, when we read, we need to convert from the
+   * writer's timezone to the reader's timezone.
+   *
+   * @param writer the timezone we are moving from
+   * @param reader the timezone we are moving to
+   * @param millis the point in time
+   * @return the change in milliseconds
+   */
+  public static long convertBetweenTimezones(TimeZone writer, TimeZone reader,
+                                             long millis) {
+    final long writerOffset = writer.getOffset(millis);
+    final long readerOffset = reader.getOffset(millis);
+    long adjustedMillis = millis + writerOffset - readerOffset;
+    // If the timezone adjustment moves the millis across a DST boundary, we
+    // need to reevaluate the offsets.
+    long adjustedReader = reader.getOffset(adjustedMillis);
+    return writerOffset - adjustedReader;
+  }
+
+  /**
+   * Parse a date from a string.
+   * @param string the date to parse (YYYY-MM-DD)
+   * @return the Date parsed, or null if there was a parse error.
+   */
+  public static Date parseDateFromString(String string) {
+    try {
+      Date value = Date.valueOf(string);
+      return value;
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
   }
 }
