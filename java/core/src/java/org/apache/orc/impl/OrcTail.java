@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,6 +27,7 @@ import org.apache.orc.CompressionCodec;
 import org.apache.orc.CompressionKind;
 import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
+import org.apache.orc.OrcUtils;
 import org.apache.orc.StripeInformation;
 import org.apache.orc.StripeStatistics;
 
@@ -77,11 +78,7 @@ public final class OrcTail {
   }
 
   public List<StripeInformation> getStripes() {
-    List<StripeInformation> result = new ArrayList<>(fileTail.getFooter().getStripesCount());
-    for (OrcProto.StripeInformation stripeProto : fileTail.getFooter().getStripesList()) {
-      result.add(new ReaderImpl.StripeInformationImpl(stripeProto));
-    }
-    return result;
+    return OrcUtils.convertProtoStripesToStripes(getFooter().getStripesList());
   }
 
   public CompressionKind getCompressionKind() {
@@ -99,21 +96,21 @@ public final class OrcTail {
    * @deprecated Use {@link #getStripeStatistics(boolean, boolean)} instead
    */
   @Deprecated
-  public List<StripeStatistics> getStripeStatistics()
+  public List<StripeStatistics> getStripeStatistics(InStream.StreamOptions options)
       throws IOException {
     OrcProto.Footer footer = fileTail.getFooter();
     boolean writerUsedProlepticGregorian =
         footer.hasCalendar() ?
             footer.getCalendar() == OrcProto.CalendarKind.PROLEPTIC_GREGORIAN :
             false;
-    return getStripeStatistics(writerUsedProlepticGregorian, false);
+    return getStripeStatistics(options, writerUsedProlepticGregorian, false);
   }
 
-  public List<StripeStatistics> getStripeStatistics(
+  public List<StripeStatistics> getStripeStatistics(InStream.StreamOptions options,
       boolean writerUsedProlepticGregorian, boolean convertToProlepticGregorian)
       throws IOException {
     List<StripeStatistics> result = new ArrayList<>();
-    List<OrcProto.StripeStatistics> ssProto = getStripeStatisticsProto();
+    List<OrcProto.StripeStatistics> ssProto = getStripeStatisticsProto(options);
     if (ssProto != null) {
       for (OrcProto.StripeStatistics ss : ssProto) {
         result.add(new StripeStatistics(ss.getColStatsList(), writerUsedProlepticGregorian, convertToProlepticGregorian));
@@ -122,17 +119,12 @@ public final class OrcTail {
     return result;
   }
 
-  public List<OrcProto.StripeStatistics> getStripeStatisticsProto() throws IOException {
+  public List<OrcProto.StripeStatistics> getStripeStatisticsProto(InStream.StreamOptions options) throws IOException {
     if (serializedTail == null) return null;
     if (metadata == null) {
-      CompressionCodec codec = OrcCodecPool.getCodec(getCompressionKind());
-      try {
-        metadata = extractMetadata(serializedTail, 0,
-            (int) fileTail.getPostscript().getMetadataLength(),
-            InStream.options().withCodec(codec).withBufferSize(getCompressionBufferSize()));
-      } finally {
-        OrcCodecPool.returnCodec(getCompressionKind(), codec);
-      }
+      metadata = extractMetadata(serializedTail, 0,
+          (int) fileTail.getPostscript().getMetadataLength(),
+          options);
       // clear does not clear the contents but sets position to 0 and limit = capacity
       serializedTail.clear();
     }
@@ -156,7 +148,6 @@ public final class OrcTail {
     OrcProto.Footer.Builder footerBuilder = OrcProto.Footer.newBuilder(fileTail.getFooter());
     footerBuilder.clearStatistics();
     fileTailBuilder.setFooter(footerBuilder.build());
-    OrcProto.FileTail result = fileTailBuilder.build();
-    return result;
+    return fileTailBuilder.build();
   }
 }
