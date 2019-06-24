@@ -36,7 +36,6 @@ import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -65,7 +64,6 @@ import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
@@ -1643,7 +1641,17 @@ public class TestSchemaEvolution {
       buffer[i] = (byte) values[i];
     }
     ranges.add(new BufferChunk(ByteBuffer.wrap(buffer), 0));
-    streams.put(name, InStream.create(name.toString(), ranges.get(), values.length));
+    streams.put(name, InStream.create(name.toString(), ranges.get(), 0,
+        values.length));
+  }
+
+  static ByteBuffer createBuffer(int... values) {
+    ByteBuffer result = ByteBuffer.allocate(values.length);
+    for(int v: values) {
+      result.put((byte) v);
+    }
+    result.flip();
+    return result;
   }
 
   static ByteBuffer createBuffer(int... values) {
