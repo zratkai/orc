@@ -1654,15 +1654,6 @@ public class TestSchemaEvolution {
     return result;
   }
 
-  static ByteBuffer createBuffer(int... values) {
-    ByteBuffer result = ByteBuffer.allocate(values.length);
-    for(int v: values) {
-      result.put((byte) v);
-    }
-    result.flip();
-    return result;
-  }
-
   @Test
   public void testTypeConversion() throws IOException {
     TypeDescription fileType = TypeDescription.fromString("struct<x:int,y:string>");
