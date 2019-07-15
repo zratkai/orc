@@ -334,8 +334,8 @@ message Encryption {
 
 enum CalendarKind {
   UNKNOWN_CALENDAR = 0;
-   // The Java default calendar changes from Julian to Gregorian
-   // in 1583.
+  // The Java default calendar changes from Julian to Gregorian
+  // in 1583.
   JULIAN_GREGORIAN = 1;
   // A calendar that extends the Gregorian calendar back forever.
   PROLEPTIC_GREGORIAN = 2;
@@ -362,9 +362,6 @@ message Footer {
   optional Encryption encryption = 10;
 
   optional CalendarKind calendar = 11;
-
-  // the number of bytes in the encrypted stripe statistics
-  optional uint64 stripeStatisticsLength = 12;
 }
 
 enum CompressionKind {
@@ -404,7 +401,6 @@ message PostScript {
   //   4 = HIVE-13083 fixed (decimals write present stream correctly)
   //   5 = ORC-101 fixed (bloom filters use utf8 consistently)
   //   6 = ORC-135 fixed (timestamp statistics use utc)
-  //   7 = ORC-14 added (column encryption)
   //   7 = ORC-517 fixed (decimal64 min/max incorrect)
   //   8 = ORC-203 added (trim very long string statistics)
   //   9 = ORC-14 added (column encryption)
@@ -419,6 +415,9 @@ message PostScript {
   //   6 = original
   //
   optional uint32 writerVersion = 6;
+
+  // the number of bytes in the encrypted stripe statistics
+  optional uint64 stripeStatisticsLength = 7;
 
   // Leave this last in the record
   optional string magic = 8000;

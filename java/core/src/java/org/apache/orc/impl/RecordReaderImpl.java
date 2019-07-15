@@ -40,6 +40,7 @@ import org.apache.orc.util.BloomFilterIO;
 import org.apache.orc.BooleanColumnStatistics;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.CompressionCodec;
+import org.apache.orc.CompressionKind;
 import org.apache.orc.DataReader;
 import org.apache.orc.DateColumnStatistics;
 import org.apache.orc.DecimalColumnStatistics;
@@ -164,10 +165,6 @@ public class RecordReaderImpl implements RecordReader {
     }
     this.schema = evolution.getReaderSchema();
     this.path = fileReader.path;
-    List<OrcProto.Type> types = fileReader.types;
-    InStream.StreamOptions unencryptedOptions = InStream.options()
-                                                    .withCodec(OrcCodecPool.getCodec(fileReader.getCompressionKind()))
-                                                    .withBufferSize(fileReader.getCompressionSize());
     this.rowIndexStride = fileReader.rowIndexStride;
     boolean ignoreNonUtf8BloomFilter = OrcConf.IGNORE_NON_UTF8_BLOOM_FILTERS.getBoolean(fileReader.conf);
     ReaderEncryption encryption = fileReader.getEncryption();
@@ -206,6 +203,10 @@ public class RecordReaderImpl implements RecordReader {
     if (options.getDataReader() != null) {
       this.dataReader = options.getDataReader().clone();
     } else {
+      InStream.StreamOptions unencryptedOptions =
+          InStream.options()
+              .withCodec(OrcCodecPool.getCodec(fileReader.getCompressionKind()))
+              .withBufferSize(fileReader.getCompressionSize());
       this.dataReader = RecordReaderUtils.createDefaultDataReader(
           DataReaderProperties.builder()
               .withCompression(unencryptedOptions)
@@ -251,13 +252,14 @@ public class RecordReaderImpl implements RecordReader {
     reader = TreeReaderFactory.createTreeReader(evolution.getReaderSchema(),
         readerContext);
 
-    indexes = new OrcIndex(new OrcProto.RowIndex[types.size()],
-        new OrcProto.Stream.Kind[types.size()],
-        new OrcProto.BloomFilterIndex[types.size()]);
+    int columns = schema.getMaximumId() + 1;
+    indexes = new OrcIndex(new OrcProto.RowIndex[columns],
+        new OrcProto.Stream.Kind[columns],
+        new OrcProto.BloomFilterIndex[columns]);
 
     planner = new StripePlanner(evolution.getFileSchema(), encryption,
-        unencryptedOptions, dataReader, writerVersion,
-        ignoreNonUtf8BloomFilter,  maxDiskRangeChunkLimit);
+        dataReader, writerVersion, ignoreNonUtf8BloomFilter,
+        maxDiskRangeChunkLimit);
 
     try {
       advanceToNextRow(reader, 0L, true);
@@ -1400,7 +1402,7 @@ public class RecordReaderImpl implements RecordReader {
   }
 
   public CompressionCodec getCompressionCodec() {
-    return dataReader.getCompressionCodec();
+    return dataReader.getCompressionOptions().getCodec();
   }
 
   public int getMaxDiskRangeChunkLimit() {
