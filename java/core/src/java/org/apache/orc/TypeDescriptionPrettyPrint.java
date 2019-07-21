@@ -92,7 +92,6 @@ public class TypeDescriptionPrettyPrint {
       case SHORT:
       case STRING:
       case TIMESTAMP:
-      case TIMESTAMP_INSTANT:
         break;
 
       case DECIMAL:

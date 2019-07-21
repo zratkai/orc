@@ -231,8 +231,7 @@ public class ReaderImpl implements Reader {
       List<OrcProto.ColumnStatistics> fileStats) {
     ColumnStatistics[] result = new ColumnStatistics[fileStats.size()];
     for(int i=0; i < result.length; ++i) {
-      TypeDescription subschema = schema == null ? null : schema.findSubtype(i);
-      result[i] = ColumnStatisticsImpl.deserialize(subschema, fileStats.get(i));
+      result[i] = ColumnStatisticsImpl.deserialize(schema, fileStats.get(i));
     }
     return result;
   }

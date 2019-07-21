@@ -80,8 +80,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.TimeZone;
-import java.util.function.IntFunction;
 
 import static junit.framework.TestCase.assertNotNull;
 import static org.junit.Assert.*;
@@ -1478,7 +1476,7 @@ public class TestVectorOrcFile {
 
   private static void setUnion(VectorizedRowBatch batch, int rowId,
                                Timestamp ts, Integer tag, Integer i, String s,
-                               HiveDecimalWritable dec, Timestamp instant) {
+                               HiveDecimalWritable dec) {
     UnionColumnVector union = (UnionColumnVector) batch.cols[1];
     if (ts != null) {
       TimestampColumnVector timestampColVector = (TimestampColumnVector) batch.cols[0];
@@ -1515,12 +1513,6 @@ public class TestVectorOrcFile {
     } else {
       batch.cols[2].isNull[rowId] = true;
       batch.cols[2].noNulls = false;
-    }
-    if (instant == null) {
-      batch.cols[3].isNull[rowId] = true;
-      batch.cols[3].noNulls = false;
-    } else {
-      ((TimestampColumnVector) batch.cols[3]).set(rowId, instant);
     }
   }
 
@@ -1688,14 +1680,14 @@ public class TestVectorOrcFile {
      */
   @Test
   public void testUnionAndTimestamp() throws Exception {
-    final TimeZone original = TimeZone.getDefault();
-    TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
-    TypeDescription schema = TypeDescription.fromString(
-        "struct<time:timestamp," +
-               "union:uniontype<int,string>," +
-               "decimal:decimal(38,18)," +
-               "instant:timestamp with local time zone>"
-    );
+    TypeDescription schema = TypeDescription.createStruct()
+        .addField("time", TypeDescription.createTimestamp())
+        .addField("union", TypeDescription.createUnion()
+            .addUnionChild(TypeDescription.createInt())
+            .addUnionChild(TypeDescription.createString()))
+        .addField("decimal", TypeDescription.createDecimal()
+            .withPrecision(38)
+            .withScale(18));
     HiveDecimal maxValue = HiveDecimal.create("10000000000000000000");
     Writer writer = OrcFile.createWriter(testFilePath,
                                          OrcFile.writerOptions(conf)
@@ -1708,19 +1700,16 @@ public class TestVectorOrcFile {
     VectorizedRowBatch batch = schema.createRowBatch();
     batch.size = 6;
     setUnion(batch, 0, Timestamp.valueOf("2000-03-12 15:00:00"), 0, 42, null,
-             new HiveDecimalWritable("12345678.6547456"),
-             Timestamp.valueOf("2014-12-12 6:00:00"));
+             new HiveDecimalWritable("12345678.6547456"));
     setUnion(batch, 1, Timestamp.valueOf("2000-03-20 12:00:00.123456789"),
-        1, null, "hello", new HiveDecimalWritable("-5643.234"),
-        Timestamp.valueOf("1996-12-11 11:00:00"));
+        1, null, "hello", new HiveDecimalWritable("-5643.234"));
 
-    setUnion(batch, 2, null, null, null, null, null, null);
-    setUnion(batch, 3, null, 0, null, null, null, null);
-    setUnion(batch, 4, null, 1, null, null, null, null);
+    setUnion(batch, 2, null, null, null, null, null);
+    setUnion(batch, 3, null, 0, null, null, null);
+    setUnion(batch, 4, null, 1, null, null, null);
 
     setUnion(batch, 5, Timestamp.valueOf("1970-01-01 00:00:00"), 0, 200000,
-        null, new HiveDecimalWritable("10000000000000000000"),
-        Timestamp.valueOf("2011-07-01 09:00:00"));
+        null, new HiveDecimalWritable("10000000000000000000"));
     writer.addRowBatch(batch);
 
     batch.reset();
@@ -1731,10 +1720,10 @@ public class TestVectorOrcFile {
           HiveDecimal.create(new BigInteger(64, rand), rand.nextInt(18));
       if ((i & 1) == 0) {
         setUnion(batch, batch.size++, ts, 0, i*i, null,
-            new HiveDecimalWritable(dec), null);
+            new HiveDecimalWritable(dec));
       } else {
         setUnion(batch, batch.size++, ts, 1, null, Integer.toString(i*i),
-            new HiveDecimalWritable(dec), null);
+            new HiveDecimalWritable(dec));
       }
       if (maxValue.compareTo(dec) < 0) {
         maxValue = dec;
@@ -1749,77 +1738,42 @@ public class TestVectorOrcFile {
       batch.cols[c].setRepeating(true);
     }
     ((UnionColumnVector) batch.cols[1]).fields[0].isRepeating = true;
-    setUnion(batch, 0, null, 0, 1732050807, null, null, null);
+    setUnion(batch, 0, null, 0, 1732050807, null, null);
     for(int i=0; i < 5; ++i) {
       writer.addRowBatch(batch);
     }
 
     batch.reset();
     batch.size = 3;
-    setUnion(batch, 0, null, 0, 0, null, null, null);
-    setUnion(batch, 1, null, 0, 10, null, null, null);
-    setUnion(batch, 2, null, 0, 138, null, null, null);
+    setUnion(batch, 0, null, 0, 0, null, null);
+    setUnion(batch, 1, null, 0, 10, null, null);
+    setUnion(batch, 2, null, 0, 138, null, null);
     writer.addRowBatch(batch);
-    // check the stats on the writer side
-    ColumnStatistics[] stats = writer.getStatistics();
-    assertEquals("1996-12-11 11:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMinimum().toString());
-    assertEquals("1996-12-11 11:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMinimumUTC().toString());
-    assertEquals("2014-12-12 06:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMaximum().toString());
-    assertEquals("2014-12-12 06:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMaximumUTC().toString());
-
     writer.close();
-
-    TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"));
     Reader reader = OrcFile.createReader(testFilePath,
         OrcFile.readerOptions(conf).filesystem(fs));
-    stats = reader.getStatistics();
-
-    // check the timestamp statistics
-    assertEquals("1970-01-01 00:00:00.0",
-        ((TimestampColumnStatistics) stats[1]).getMinimum().toString());
-    assertEquals("1969-12-31 19:00:00.0",
-        ((TimestampColumnStatistics) stats[1]).getMinimumUTC().toString());
-    assertEquals("2037-05-05 12:34:56.203",
-        ((TimestampColumnStatistics) stats[1]).getMaximum().toString());
-    assertEquals("2037-05-05 08:34:56.203",
-        ((TimestampColumnStatistics) stats[1]).getMaximumUTC().toString());
-
-    // check the instant statistics
-    assertEquals("1996-12-11 14:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMinimum().toString());
-    assertEquals("1996-12-11 14:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMinimumUTC().toString());
-    assertEquals("2014-12-12 09:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMaximum().toString());
-    assertEquals("2014-12-12 09:00:00.0",
-        ((TimestampColumnStatistics) stats[6]).getMaximumUTC().toString());
-
 
     schema = writer.getSchema();
-    assertEquals(6, schema.getMaximumId());
-    boolean[] expected = new boolean[] {false, false, false, false, false, false, false};
+    assertEquals(5, schema.getMaximumId());
+    boolean[] expected = new boolean[] {false, false, false, false, false, false};
     boolean[] included = OrcUtils.includeColumns("", schema);
     assertEquals(true, Arrays.equals(expected, included));
 
-    expected = new boolean[] {false, true, false, false, false, true, false};
+    expected = new boolean[] {false, true, false, false, false, true};
     included = OrcUtils.includeColumns("time,decimal", schema);
     assertEquals(true, Arrays.equals(expected, included));
 
-    expected = new boolean[] {false, false, true, true, true, false, false};
+    expected = new boolean[] {false, false, true, true, true, false};
     included = OrcUtils.includeColumns("union", schema);
     assertEquals(true, Arrays.equals(expected, included));
 
     Assert.assertEquals(false, reader.getMetadataKeys().iterator().hasNext());
     Assert.assertEquals(5077, reader.getNumberOfRows());
-    DecimalColumnStatistics decStats =
+    DecimalColumnStatistics stats =
         (DecimalColumnStatistics) reader.getStatistics()[5];
-    assertEquals(71, decStats.getNumberOfValues());
-    assertEquals(HiveDecimal.create("-5643.234"), decStats.getMinimum());
-    assertEquals(maxValue, decStats.getMaximum());
+    assertEquals(71, stats.getNumberOfValues());
+    assertEquals(HiveDecimal.create("-5643.234"), stats.getMinimum());
+    assertEquals(maxValue, stats.getMaximum());
     // TODO: fix this
 //    assertEquals(null,stats.getSum());
     int stripeCount = 0;
@@ -1853,22 +1807,18 @@ public class TestVectorOrcFile {
     LongColumnVector longs = (LongColumnVector) union.fields[0];
     BytesColumnVector strs = (BytesColumnVector) union.fields[1];
     DecimalColumnVector decs = (DecimalColumnVector) batch.cols[2];
-    TimestampColumnVector instant = (TimestampColumnVector) batch.cols[3];
 
-    assertEquals("struct<time:timestamp,union:uniontype<int,string>,decimal:decimal(38,18)," +
-                     "instant:timestamp with local time zone>",
+    assertEquals("struct<time:timestamp,union:uniontype<int,string>,decimal:decimal(38,18)>",
         schema.toString());
     assertEquals("2000-03-12 15:00:00.0", ts.asScratchTimestamp(0).toString());
     assertEquals(0, union.tags[0]);
     assertEquals(42, longs.vector[0]);
     assertEquals("12345678.6547456", decs.vector[0].toString());
-    assertEquals("2014-12-12 09:00:00.0", instant.asScratchTimestamp(0).toString());
 
     assertEquals("2000-03-20 12:00:00.123456789", ts.asScratchTimestamp(1).toString());
     assertEquals(1, union.tags[1]);
     assertEquals("hello", strs.toString(1));
     assertEquals("-5643.234", decs.vector[1].toString());
-    assertEquals("1996-12-11 14:00:00.0", instant.asScratchTimestamp(1).toString());
 
     assertEquals(false, ts.noNulls);
     assertEquals(false, union.noNulls);
@@ -1897,7 +1847,6 @@ public class TestVectorOrcFile {
     assertEquals(200000, longs.vector[5]);
     assertEquals(false, decs.isNull[5]);
     assertEquals("10000000000000000000", decs.vector[5].toString());
-    assertEquals("2011-07-01 12:00:00.0", instant.asScratchTimestamp(5).toString());
 
     rand = new Random(42);
     for(int i=1970; i < 2038; ++i) {
@@ -1956,7 +1905,6 @@ public class TestVectorOrcFile {
     assertEquals("hello", strs.toString(0));
     assertEquals(new HiveDecimalWritable(HiveDecimal.create("-5643.234")), decs.vector[0]);
     rows.close();
-    TimeZone.setDefault(original);
   }
 
   /**

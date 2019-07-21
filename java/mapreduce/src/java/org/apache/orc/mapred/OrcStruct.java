@@ -189,7 +189,6 @@ public final class OrcStruct implements WritableComparable<OrcStruct> {
       case DATE:
         return new DateWritable();
       case TIMESTAMP:
-      case TIMESTAMP_INSTANT:
         return new OrcTimestamp();
       case DECIMAL:
         return new HiveDecimalWritable();

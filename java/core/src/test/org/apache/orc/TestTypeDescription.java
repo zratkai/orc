@@ -105,14 +105,12 @@ public class TestTypeDescription {
            .addField("u", TypeDescription.createUnion()
                .addUnionChild(TypeDescription.createTimestamp())
                .addUnionChild(TypeDescription.createVarchar()
-                   .withMaxLength(100))))
-        .addField("tz", TypeDescription.createTimestampInstant())
-        .addField("ts", TypeDescription.createTimestamp());
+                   .withMaxLength(100))));
     String expectedStr =
         "struct<b1:binary,b2:boolean,b3:tinyint,c:char(10),d1:date," +
             "d2:decimal(20,5),d3:double,fff:float,int:int,l:array<bigint>," +
             "map:map<smallint,string>,str:struct<u:uniontype<timestamp," +
-            "varchar(100)>>,tz:timestamp with local time zone,ts:timestamp>";
+            "varchar(100)>>>";
     assertEquals(expectedStr, expected.toString());
     TypeDescription actual = TypeDescription.fromString(expectedStr);
     assertEquals(expected, actual);
@@ -128,9 +126,9 @@ public class TestTypeDescription {
     assertEquals("MY_FIELD", type.getFieldNames().get(0));
     assertEquals(TypeDescription.Category.INT,
         type.getChildren().get(0).getCategory());
-    type = TypeDescription.fromString("UNIONTYPE<   TIMESTAMP WITH LOCAL   TIME ZONE    >");
+    type = TypeDescription.fromString("UNIONTYPE<STRING>");
     assertEquals(TypeDescription.Category.UNION, type.getCategory());
-    assertEquals(TypeDescription.Category.TIMESTAMP_INSTANT,
+    assertEquals(TypeDescription.Category.STRING,
         type.getChildren().get(0).getCategory());
   }
 

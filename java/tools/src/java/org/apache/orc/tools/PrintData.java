@@ -151,7 +151,6 @@ public class PrintData {
               (int) ((LongColumnVector) vector).vector[row]).toString());
           break;
         case TIMESTAMP:
-        case TIMESTAMP_INSTANT:
           writer.value(((TimestampColumnVector) vector)
               .asScratchTimestamp(row).toString());
           break;

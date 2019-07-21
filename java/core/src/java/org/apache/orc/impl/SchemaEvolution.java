@@ -452,7 +452,6 @@ public class SchemaEvolution {
         case FLOAT:
         case STRING:
         case TIMESTAMP:
-        case TIMESTAMP_INSTANT:
         case BINARY:
         case DATE:
           // these are always a match
