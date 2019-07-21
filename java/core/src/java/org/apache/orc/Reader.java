@@ -18,7 +18,6 @@
 
 package org.apache.orc;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -31,7 +30,7 @@ import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
  *
  * One Reader can support multiple concurrent RecordReader.
  */
-public interface Reader extends Closeable {
+public interface Reader {
 
   /**
    * Get the number of rows in the file.
