@@ -276,7 +276,7 @@ public class TestPhysicalFsWriter {
     }
 
     @Override
-    public KeyProvider getKeyProvider(Configuration conf, Random random) {
+    public KeyProvider getHadoopKeyProvider(Configuration conf, Random random) {
       return null;
     }
   }
