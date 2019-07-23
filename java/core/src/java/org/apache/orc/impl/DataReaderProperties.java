@@ -34,6 +34,7 @@ public final class DataReaderProperties {
   private final boolean isVectoredRead;
 
   private DataReaderProperties(Builder builder) {
+    this.file = builder.file;
     this.fileSystemSupplier = builder.fileSystemSupplier;
     this.path = builder.path;
     this.compression = builder.compression;
