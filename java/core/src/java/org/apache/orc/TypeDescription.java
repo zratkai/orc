@@ -452,13 +452,23 @@ public class TypeDescription
   }
 
   /**
-   * Set an attribute on this type
+   * Set an attribute on this type.
    * @param key the attribute name
    * @param value the attribute value
    * @return this for method chaining
    */
   public TypeDescription setAttribute(String key, String value) {
     attributes.put(key, value);
+    return this;
+  }
+
+  /**
+   * Remove attribute on this type, if it is set.
+   * @param key the attribute name
+   * @return this for method chaining
+   */
+  public TypeDescription removeAttribute(String key) {
+    attributes.remove(key);
     return this;
   }
 
@@ -574,6 +584,9 @@ public class TypeDescription
         result.children.add(clone);
       }
     }
+    for (Map.Entry<String,String> pair: attributes.entrySet()) {
+      result.attributes.put(pair.getKey(), pair.getValue());
+    }
     return result;
   }
 
@@ -603,6 +616,18 @@ public class TypeDescription
         precision != castOther.precision) {
       return false;
     }
+    // make sure the attributes are the same
+    List<String> attributeNames = getAttributeNames();
+    if (castOther.getAttributeNames().size() != attributeNames.size()) {
+      return false;
+    }
+    for(String attribute: attributeNames) {
+      if (!getAttributeValue(attribute).equals(
+          castOther.getAttributeValue(attribute))) {
+        return false;
+      }
+    }
+    // check the children
     if (children != null) {
       if (children.size() != castOther.children.size()) {
         return false;
