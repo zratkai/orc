@@ -442,6 +442,7 @@
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-common</artifactId>
         <version>${min.hadoop.version}</version>
+        <scope>provided</scope>
         <exclusions>
           <exclusion>
             <groupId>com.google.code.findbugs</groupId>
@@ -513,6 +514,7 @@
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-hdfs</artifactId>
         <version>${min.hadoop.version}</version>
+        <scope>provided</scope>
         <exclusions>
           <exclusion>
             <groupId>com.google.code.findbugs</groupId>
@@ -568,6 +570,7 @@
         <groupId>org.apache.hadoop</groupId>
         <artifactId>hadoop-mapreduce-client-core</artifactId>
         <version>${min.hadoop.version}</version>
+        <scope>provided</scope>
         <exclusions>
           <exclusion>
             <groupId>com.google.code.findbugs</groupId>
