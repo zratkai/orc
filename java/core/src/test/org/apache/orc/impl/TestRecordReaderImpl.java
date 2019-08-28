@@ -1377,7 +1377,7 @@ public class TestRecordReaderImpl {
             .withBufferSize(1024);
     int stretchFactor = 2 + (MAX_VALUES_LENGTH * MAX_BYTE_WIDTH - 1) / options.getBufferSize();
     final int SLOP = stretchFactor * (OutStream.HEADER_SIZE + options.getBufferSize());
-    MockDataReader dataReader = new MockDataReader(schema)
+    MockDataReader dataReader = new MockDataReader(schema, options)
       .addStream(1, OrcProto.Stream.Kind.ROW_INDEX,
           createRowIndex(options,
               entry(0,   -1, -1, -1, 0),
