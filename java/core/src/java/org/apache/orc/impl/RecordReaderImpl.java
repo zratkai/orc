@@ -99,6 +99,7 @@ public class RecordReaderImpl implements RecordReader {
   private final DataReader dataReader;
   private final boolean ignoreNonUtf8BloomFilter;
   private final OrcFile.WriterVersion writerVersion;
+  private final int maxDiskRangeChunkLimit;
 
   /**
    * Given a list of column names, find the given column and return the index.
@@ -240,7 +241,7 @@ public class RecordReaderImpl implements RecordReader {
         rows += stripe.getNumberOfRows();
       }
     }
-
+    this.maxDiskRangeChunkLimit = OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getInt(fileReader.conf);
     Boolean zeroCopy = options.getUseZeroCopy();
     if (zeroCopy == null) {
       zeroCopy = OrcConf.USE_ZEROCOPY.getBoolean(fileReader.conf);
@@ -256,6 +257,7 @@ public class RecordReaderImpl implements RecordReader {
               .withPath(fileReader.path)
               .withTypeCount(types.size())
               .withZeroCopy(zeroCopy)
+              .withMaxDiskRangeChunkLimit(maxDiskRangeChunkLimit)
               .build());
     }
     this.dataReader.open();
@@ -1456,5 +1458,9 @@ public class RecordReaderImpl implements RecordReader {
 
   public CompressionCodec getCompressionCodec() {
     return dataReader.getCompressionCodec();
+  }
+
+  public int getMaxDiskRangeChunkLimit() {
+    return maxDiskRangeChunkLimit;
   }
 }
