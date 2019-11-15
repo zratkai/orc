@@ -63,6 +63,7 @@ import org.apache.orc.TestVectorOrcFile;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
 import org.apache.orc.impl.RecordReaderImpl.Location;
+import org.apache.orc.impl.RecordReaderImpl.SargApplier;
 import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument.TruthValue;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
