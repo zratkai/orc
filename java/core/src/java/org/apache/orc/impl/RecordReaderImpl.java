@@ -253,7 +253,7 @@ public class RecordReaderImpl implements RecordReader {
           DataReaderProperties.builder()
               .withBufferSize(bufferSize)
               .withCompression(fileReader.compressionKind)
-              .withFileSystem(fileReader.getFileSystem())
+              .withFileSystemSupplier(fileReader.getFileSystemSupplier())
               .withPath(fileReader.path)
               .withTypeCount(types.size())
               .withZeroCopy(zeroCopy)
