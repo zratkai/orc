@@ -455,4 +455,9 @@ public interface Reader {
    * @return Serialized file metadata read from disk for the purposes of caching, etc.
    */
   ByteBuffer getSerializedFileFooter();
+
+  /**
+   * Was the file written using the proleptic Gregorian calendar.
+   */
+  boolean writerUsedProlepticGregorian();
 }
