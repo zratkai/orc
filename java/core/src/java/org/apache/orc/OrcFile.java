@@ -277,9 +277,11 @@ public class OrcFile {
     // For now keeping this around to avoid complex surgery
     private FileMetadata fileMetadata;
     private boolean useUTCTimestamp;
+    private boolean useProlepticGregorian;
 
     public ReaderOptions(Configuration conf) {
       this.conf = conf;
+      this.useProlepticGregorian = OrcConf.PROLEPTIC_GREGORIAN.getBoolean(conf);
     }
 
     public ReaderOptions filesystem(FileSystem fs) {
@@ -294,6 +296,17 @@ public class OrcFile {
 
     public ReaderOptions orcTail(OrcTail tail) {
       this.orcTail = tail;
+      return this;
+    }
+
+    /**
+     * Should the reader convert dates and times to the proleptic Gregorian
+     * calendar?
+     * @param newValue should it use the proleptic Gregorian calendar?
+     * @return this
+     */
+    public ReaderOptions convertToProlepticGregorian(boolean newValue) {
+      this.useProlepticGregorian = newValue;
       return this;
     }
 
@@ -331,6 +344,9 @@ public class OrcFile {
       return useUTCTimestamp;
     }
 
+    public boolean getConvertToProlepticGregorian() {
+      return useProlepticGregorian;
+    }
   }
 
   public static ReaderOptions readerOptions(Configuration conf) {
@@ -408,6 +424,7 @@ public class OrcFile {
     private boolean writeVariableLengthBlocks;
     private HadoopShims shims;
     private String directEncodingColumns;
+    private boolean useProlepticGregorian;
 
     protected WriterOptions(Properties tableProperties, Configuration conf) {
       configuration = conf;
@@ -452,6 +469,7 @@ public class OrcFile {
           OrcConf.WRITE_VARIABLE_LENGTH_BLOCKS.getBoolean(tableProperties,conf);
       directEncodingColumns = OrcConf.DIRECT_ENCODING_COLUMNS.getString(
           tableProperties, conf);
+      useProlepticGregorian = OrcConf.PROLEPTIC_GREGORIAN.getBoolean(conf);
     }
 
     /**
@@ -700,6 +718,17 @@ public class OrcFile {
       return this;
     }
 
+    /**
+     * Should the writer use the proleptic Gregorian calendar for
+     * times and dates.
+     * @param newValue true if we should use the proleptic calendar
+     * @return this
+     */
+    public WriterOptions setProlepticGregorian(boolean newValue) {
+      this.useProlepticGregorian = newValue;
+      return this;
+    }
+
     public boolean getBlockPadding() {
       return blockPaddingValue;
     }
@@ -803,6 +832,10 @@ public class OrcFile {
     public String getDirectEncodingColumns() {
       return directEncodingColumns;
     }
+
+    public boolean getProlepticGregorian() {
+      return useProlepticGregorian;
+    }
   }
 
   /**
@@ -902,6 +935,7 @@ public class OrcFile {
                                     int rowIndexStride,
                                     CompressionKind compression,
                                     Map<String, ByteBuffer> userMetadata,
+                                    boolean writerUsedProlepticGregorian,
                                     Path path,
                                     Reader reader) {
     // now we have to check compatibility
@@ -940,6 +974,10 @@ public class OrcFile {
           return false;
         }
       }
+    }
+    if (writerUsedProlepticGregorian != reader.writerUsedProlepticGregorian()) {
+      LOG.info("Can't merge {} because it uses a different calendar", path);
+      return false;
     }
     return true;
   }
@@ -982,6 +1020,7 @@ public class OrcFile {
       int rowIndexStride = 0;
       List<Path> result = new ArrayList<>(inputFiles.size());
       Map<String, ByteBuffer> userMetadata = new HashMap<>();
+      boolean writerUsedProlepticGregorian = false;
 
       for (Path input : inputFiles) {
         FileSystem fs = input.getFileSystem(conf);
@@ -998,6 +1037,7 @@ public class OrcFile {
           rowIndexStride = reader.getRowIndexStride();
           fileVersion = reader.getFileVersion();
           writerVersion = reader.getWriterVersion();
+          writerUsedProlepticGregorian = reader.writerUsedProlepticGregorian();
           options.bufferSize(bufferSize)
               .version(fileVersion)
               .writerVersion(writerVersion)
@@ -1010,7 +1050,8 @@ public class OrcFile {
           mergeMetadata(userMetadata, reader);
           output = createWriter(outputPath, options);
         } else if (!readerIsCompatible(schema, fileVersion, writerVersion,
-            rowIndexStride, compression, userMetadata, input, reader)) {
+            rowIndexStride, compression, userMetadata,
+            writerUsedProlepticGregorian, input, reader)) {
           continue;
         } else {
           mergeMetadata(userMetadata, reader);
