@@ -19,6 +19,7 @@ package org.apache.orc;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.apache.hadoop.conf.Configuration;
@@ -372,5 +373,38 @@ public class TestTypeDescription {
     assertEquals("pii", street.getAttributeValue("encrypt"));
     assertEquals("nullify", street.getAttributeValue("mask"));
     assertEquals(null, street.getAttributeValue("foobar"));
+  }
+
+  @Test
+  public void testAttributesEquality() {
+    TypeDescription schema = TypeDescription.fromString(
+        "struct<" +
+            "name:struct<first:string,last:string>," +
+            "address:struct<street:string,city:string,country:string,post_code:string>," +
+            "credit_cards:array<struct<card_number:string,expire:date,ccv:string>>>");
+    // set some attributes
+    schema.findSubtype("name").setAttribute("iceberg.id", "12");
+    schema.findSubtype("address.street").setAttribute("mask", "nullify")
+        .setAttribute("context", "pii");
+
+    TypeDescription clone = schema.clone();
+    assertEquals(3, clearAttributes(clone));
+    assertFalse(clone.equals(schema));
+    assertTrue(clone.equals(schema, false));
+  }
+
+  static int clearAttributes(TypeDescription schema) {
+    int result = 0;
+    for(String attribute: schema.getAttributeNames()) {
+      schema.removeAttribute(attribute);
+      result += 1;
+    }
+    List<TypeDescription> children = schema.getChildren();
+    if (children != null) {
+      for (TypeDescription child : children) {
+        result += clearAttributes(child);
+      }
+    }
+    return result;
   }
 }
