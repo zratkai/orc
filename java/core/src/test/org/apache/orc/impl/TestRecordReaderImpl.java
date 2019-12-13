@@ -490,7 +490,7 @@ public class TestRecordReaderImpl {
     return RecordReaderImpl.evaluatePredicateProto(stats, predicate, null,
         encoding, null,
         include135 ? OrcFile.WriterVersion.ORC_135: OrcFile.WriterVersion.ORC_101,
-        TypeDescription.Category.TIMESTAMP, useUTCTimestamp);
+        TypeDescription.createTimestamp().getCategory(), useUTCTimestamp);
   }
 
   static TruthValue evaluateTimestampBloomfilter(OrcProto.ColumnStatistics stats,
@@ -513,7 +513,7 @@ public class TestRecordReaderImpl {
     BloomFilterIO.serialize(builder, bloom);
     return RecordReaderImpl.evaluatePredicateProto(stats, predicate, kind,
         encoding.build(), builder.build(), version,
-        TypeDescription.Category.TIMESTAMP, useUTCTimestamp);
+        TypeDescription.createTimestamp().getCategory(), useUTCTimestamp);
   }
 
   @Test
