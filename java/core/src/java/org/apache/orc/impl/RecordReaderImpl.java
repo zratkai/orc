@@ -451,7 +451,7 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription.Category type) {
     return evaluatePredicateProto(statsProto, predicate, kind, encoding, bloomFilter,
-        writerVersion, type, false);
+        writerVersion, type, false, false, false);
   }
 
   /**
@@ -475,8 +475,11 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcProto.BloomFilter bloomFilter,
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription.Category type,
-                                           boolean useUTCTimestamp) {
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, statsProto);
+                                           boolean useUTCTimestamp,
+                                           boolean writerUsedProlepticGregorian,
+                                           boolean convertToProlepticGregorian) {
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(
+        null, statsProto, writerUsedProlepticGregorian, convertToProlepticGregorian);
     Object minValue = getMin(cs, useUTCTimestamp);
     Object maxValue = getMax(cs, useUTCTimestamp);
     // files written before ORC-135 stores timestamp wrt to local timezone causing issues with PPD.
@@ -958,7 +961,9 @@ public class RecordReaderImpl implements RecordReader {
                     predicate, bfk, encodings.get(columnIx), bf,
                     writerVersion, evolution.getFileSchema().
                     findSubtype(columnIx).getCategory(),
-                    useUTCTimestamp);
+                    useUTCTimestamp,
+                    writerUsedProlepticGregorian,
+                    convertToProlepticGregorian);
               } catch (Exception e) {
                 exceptionCount[pred] += 1;
                 if (e instanceof SargCastException) {
