@@ -24,9 +24,18 @@ import java.util.List;
 
 public class StripeStatistics {
   private final List<OrcProto.ColumnStatistics> cs;
+  private final boolean writerUsedProlepticGregorian;
+  private final boolean convertToProlepticGregorian;
 
   public StripeStatistics(List<OrcProto.ColumnStatistics> list) {
+    this(list, false, false);
+  }
+
+  public StripeStatistics(List<OrcProto.ColumnStatistics> list,
+      boolean writerUsedProlepticGregorian, boolean convertToProlepticGregorian) {
     this.cs = list;
+    this.writerUsedProlepticGregorian = writerUsedProlepticGregorian;
+    this.convertToProlepticGregorian = convertToProlepticGregorian;
   }
 
   /**
@@ -37,7 +46,8 @@ public class StripeStatistics {
   public ColumnStatistics[] getColumnStatistics() {
     ColumnStatistics[] result = new ColumnStatistics[cs.size()];
     for (int i = 0; i < result.length; ++i) {
-      result[i] = ColumnStatisticsImpl.deserialize(null, cs.get(i));
+      result[i] = ColumnStatisticsImpl.deserialize(
+          null, cs.get(i), writerUsedProlepticGregorian, convertToProlepticGregorian);
     }
     return result;
   }
