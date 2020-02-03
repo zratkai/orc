@@ -92,14 +92,12 @@ public final class OrcTail {
     return (int) fileTail.getPostscript().getCompressionBlockSize();
   }
 
-  public List<StripeStatistics> getStripeStatistics(
-      boolean writerUsedProlepticGregorian, boolean convertToProlepticGregorian)
-      throws IOException {
+  public List<StripeStatistics> getStripeStatistics() throws IOException {
     List<StripeStatistics> result = new ArrayList<>();
     List<OrcProto.StripeStatistics> ssProto = getStripeStatisticsProto();
     if (ssProto != null) {
       for (OrcProto.StripeStatistics ss : ssProto) {
-        result.add(new StripeStatistics(ss.getColStatsList(), writerUsedProlepticGregorian, convertToProlepticGregorian));
+        result.add(new StripeStatistics(ss.getColStatsList()));
       }
     }
     return result;

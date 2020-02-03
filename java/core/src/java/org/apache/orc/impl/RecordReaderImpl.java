@@ -111,10 +111,13 @@ public class RecordReaderImpl implements RecordReader {
   static int findColumns(SchemaEvolution evolution,
                          String columnName) {
     try {
-      TypeDescription readerColumn =
-          evolution.getReaderBaseSchema().findSubtype(columnName);
-      TypeDescription fileColumn = evolution.getFileType(readerColumn);
-      return fileColumn == null ? -1 : fileColumn.getId();
+      final TypeDescription targetSchema;
+      if (evolution.getPositionalColumns()) {
+        targetSchema = evolution.getReaderBaseSchema();
+      } else {
+        targetSchema = evolution.getFileSchema();
+      }
+      return targetSchema.findSubtype(columnName).getId();
     } catch (IllegalArgumentException e) {
       if (LOG.isDebugEnabled()){
         LOG.debug("{}", e.getMessage());
@@ -220,9 +223,7 @@ public class RecordReaderImpl implements RecordReader {
           rowIndexStride,
           evolution,
           writerVersion,
-          fileReader.useUTCTimestamp,
-          fileReader.writerUsedProlepticGregorian(),
-          fileReader.options.getConvertToProlepticGregorian());
+          fileReader.useUTCTimestamp);
     } else {
       sargApp = null;
     }
@@ -272,9 +273,7 @@ public class RecordReaderImpl implements RecordReader {
           .setSchemaEvolution(evolution)
           .skipCorrupt(skipCorrupt)
           .fileFormat(fileReader.getFileVersion())
-          .useUTCTimestamp(fileReader.useUTCTimestamp)
-          .setProlepticGregorian(fileReader.writerUsedProlepticGregorian(),
-                                 fileReader.options.getConvertToProlepticGregorian());
+          .useUTCTimestamp(fileReader.useUTCTimestamp);
     reader = TreeReaderFactory.createTreeReader(evolution.getReaderSchema(),
         readerContext);
 
@@ -451,7 +450,7 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription.Category type) {
     return evaluatePredicateProto(statsProto, predicate, kind, encoding, bloomFilter,
-        writerVersion, type, false, false, false);
+        writerVersion, type, false);
   }
 
   /**
@@ -475,11 +474,8 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcProto.BloomFilter bloomFilter,
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription.Category type,
-                                           boolean useUTCTimestamp,
-                                           boolean writerUsedProlepticGregorian,
-                                           boolean convertToProlepticGregorian) {
-    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(
-        null, statsProto, writerUsedProlepticGregorian, convertToProlepticGregorian);
+                                           boolean useUTCTimestamp) {
+    ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, statsProto);
     Object minValue = getMin(cs, useUTCTimestamp);
     Object maxValue = getMax(cs, useUTCTimestamp);
     // files written before ORC-135 stores timestamp wrt to local timezone causing issues with PPD.
@@ -878,21 +874,15 @@ public class RecordReaderImpl implements RecordReader {
     private SchemaEvolution evolution;
     private final long[] exceptionCount;
     private final boolean useUTCTimestamp;
-    private final boolean writerUsedProlepticGregorian;
-    private final boolean convertToProlepticGregorian;
 
     public SargApplier(SearchArgument sarg,
                        long rowIndexStride,
                        SchemaEvolution evolution,
                        OrcFile.WriterVersion writerVersion,
-                       boolean useUTCTimestamp,
-                       boolean writerUsedProlepticGregorian,
-                       boolean convertToProlepticGregorian) {
+                       boolean useUTCTimestamp) {
       this.writerVersion = writerVersion;
       this.sarg = sarg;
       sargLeaves = sarg.getLeaves();
-      this.writerUsedProlepticGregorian = writerUsedProlepticGregorian;
-      this.convertToProlepticGregorian = convertToProlepticGregorian;
       filterColumns = mapSargColumnsToOrcInternalColIdx(sargLeaves,
                                                         evolution);
       this.rowIndexStride = rowIndexStride;
@@ -961,9 +951,7 @@ public class RecordReaderImpl implements RecordReader {
                     predicate, bfk, encodings.get(columnIx), bf,
                     writerVersion, evolution.getFileSchema().
                     findSubtype(columnIx).getCategory(),
-                    useUTCTimestamp,
-                    writerUsedProlepticGregorian,
-                    convertToProlepticGregorian);
+                    useUTCTimestamp);
               } catch (Exception e) {
                 exceptionCount[pred] += 1;
                 if (e instanceof SargCastException) {

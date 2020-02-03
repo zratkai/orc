@@ -22,9 +22,6 @@ import com.google.common.base.Preconditions;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
-import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
-import org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory;
 import org.apache.hadoop.io.*;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.orc.*;
@@ -35,8 +32,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.junit.rules.TestName;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
 
 import java.io.File;
 import java.io.IOException;
@@ -48,7 +43,6 @@ import static org.mockito.Mockito.mock;
 /**
  * Test the behavior of ORC's schema evolution
  */
-@RunWith(Parameterized.class)
 public class TestOrcFileEvolution {
 
   // These utility methods are just to make writing tests easier. The values
@@ -82,20 +76,6 @@ public class TestOrcFileEvolution {
   FileSystem fs;
   Path testFilePath;
 
-  private boolean addSarg;
-
-  public TestOrcFileEvolution(boolean addSarg) {
-    this.addSarg = addSarg;
-  }
-
-  @Parameterized.Parameters
-  public static Collection params() {
-    return Arrays.asList(new Object[][] {
-      { true },
-      { false }
-    });
-  }
-
   @Rule
   public TestName testCaseName = new TestName();
 
@@ -114,86 +94,62 @@ public class TestOrcFileEvolution {
   @Test
   public void testAddFieldToEnd() {
     checkEvolution("struct<a:int,b:string>", "struct<a:int,b:string,c:double>",
-        struct(11, "foo"),
-        addSarg ? struct(0, "", 0.0) : struct(11, "foo", null),
-        addSarg);
-  }
-
-  @Test
-  public void testAddFieldToEndWithSarg() {
-    SearchArgument sArg = SearchArgumentFactory
-      .newBuilder()
-      .lessThan("c", PredicateLeaf.Type.LONG, 10L)
-      .build();
-    String[] sCols = new String[]{null, null, "c"};
-
-    checkEvolution("struct<a:int,b:string>", "struct<a:int,b:string,c:int>",
-                   struct(1, "foo"),
-                   struct(1, "foo", null),
-                   (boolean) OrcConf.TOLERATE_MISSING_SCHEMA.getDefaultValue(),
-                   sArg, sCols, false);
+        struct(1, "foo"),
+        struct(1, "foo", null));
   }
 
   @Test
   public void testAddFieldBeforeEnd() {
     checkEvolution("struct<a:int,b:string>", "struct<a:int,c:double,b:string>",
         struct(1, "foo"),
-        struct(1, null, "foo"),
-                   addSarg);
+        struct(1, null, "foo"));
   }
 
   @Test
   public void testRemoveLastField() {
     checkEvolution("struct<a:int,b:string,c:double>", "struct<a:int,b:string>",
         struct(1, "foo", 3.14),
-        struct(1, "foo"),
-                   addSarg);
+        struct(1, "foo"));
   }
 
   @Test
   public void testRemoveFieldBeforeEnd() {
     checkEvolution("struct<a:int,b:string,c:double>", "struct<a:int,c:double>",
         struct(1, "foo", 3.14),
-        struct(1, 3.14),
-                   addSarg);
+        struct(1, 3.14));
   }
 
   @Test
   public void testRemoveAndAddField() {
     checkEvolution("struct<a:int,b:string>", "struct<a:int,c:double>",
-        struct(1, "foo"), struct(1, null),
-                   addSarg);
+        struct(1, "foo"), struct(1, null));
   }
 
   @Test
   public void testReorderFields() {
     checkEvolution("struct<a:int,b:string>", "struct<b:string,a:int>",
-        struct(1, "foo"), struct("foo", 1),
-                   addSarg);
+        struct(1, "foo"), struct("foo", 1));
   }
 
   @Test
   public void testAddFieldEndOfStruct() {
     checkEvolution("struct<a:struct<b:int>,c:string>",
         "struct<a:struct<b:int,d:double>,c:string>",
-        struct(struct(2), "foo"), struct(struct(2, null), "foo"),
-                   addSarg);
+        struct(struct(2), "foo"), struct(struct(2, null), "foo"));
   }
 
   @Test
   public void testAddFieldBeforeEndOfStruct() {
     checkEvolution("struct<a:struct<b:int>,c:string>",
         "struct<a:struct<d:double,b:int>,c:string>",
-        struct(struct(2), "foo"), struct(struct(null, 2), "foo"),
-                   addSarg);
+        struct(struct(2), "foo"), struct(struct(null, 2), "foo"));
   }
 
   @Test
   public void testAddSimilarField() {
     checkEvolution("struct<a:struct<b:int>>",
         "struct<a:struct<b:int>,c:struct<b:int>>", struct(struct(2)),
-        struct(struct(2), null),
-                   addSarg);
+        struct(struct(2), null));
   }
 
   @Test
@@ -201,8 +157,7 @@ public class TestOrcFileEvolution {
     checkEvolution("struct<a:struct<a:int,b:string>,c:struct<a:int>>",
         "struct<a:struct<a:int,b:string>,c:struct<a:int,b:string>>",
         struct(struct(2, "foo"), struct(3)),
-        struct(struct(2, "foo"), struct(3, null)),
-                   addSarg);
+        struct(struct(2, "foo"), struct(3, null)));
   }
 
   @Test
@@ -210,8 +165,7 @@ public class TestOrcFileEvolution {
     checkEvolution("struct<a:map<struct<a:int>,int>>",
         "struct<a:map<struct<a:int,b:string>,int>>",
         struct(map(struct(1), 2)),
-        struct(map(struct(1, null), 2)),
-                   addSarg);
+        struct(map(struct(1, null), 2)));
   }
 
   @Test
@@ -219,8 +173,7 @@ public class TestOrcFileEvolution {
     checkEvolution("struct<a:map<int,struct<a:int>>>",
         "struct<a:map<int,struct<a:int,b:string>>>",
         struct(map(2, struct(1))),
-        struct(map(2, struct(1, null))),
-                   addSarg);
+        struct(map(2, struct(1, null))));
   }
 
   @Test
@@ -228,17 +181,16 @@ public class TestOrcFileEvolution {
     checkEvolution("struct<a:array<struct<b:int>>>",
         "struct<a:array<struct<b:int,c:string>>>",
         struct(list(struct(1), struct(2))),
-        struct(list(struct(1, null), struct(2, null))),
-                   addSarg);
+        struct(list(struct(1, null), struct(2, null))));
   }
 
   @Test
   public void testPreHive4243CheckEqual() {
     // Expect success on equal schemas
     checkEvolution("struct<_col0:int,_col1:string>",
-                   "struct<_col0:int,_col1:string>",
-                   struct(1, "foo"),
-                   struct(1, "foo", null), false, addSarg, false);
+        "struct<_col0:int,_col1:string>",
+        struct(1, "foo"),
+        struct(1, "foo", null), false);
   }
 
   @Test
@@ -246,17 +198,17 @@ public class TestOrcFileEvolution {
     // Expect exception on strict compatibility check
     thrown.expectMessage("HIVE-4243");
     checkEvolution("struct<_col0:int,_col1:string>",
-                   "struct<_col0:int,_col1:string,_col2:double>",
-                   struct(1, "foo"),
-                   struct(1, "foo", null), false, addSarg, false);
+        "struct<_col0:int,_col1:string,_col2:double>",
+        struct(1, "foo"),
+        struct(1, "foo", null), false);
   }
 
   @Test
   public void testPreHive4243AddColumn() {
     checkEvolution("struct<_col0:int,_col1:string>",
-                   "struct<_col0:int,_col1:string,_col2:double>",
-                   struct(1, "foo"),
-                   struct(1, "foo", null), true, addSarg, false);
+        "struct<_col0:int,_col1:string,_col2:double>",
+        struct(1, "foo"),
+        struct(1, "foo", null), true);
   }
 
   @Test
@@ -264,17 +216,17 @@ public class TestOrcFileEvolution {
     // Expect exception on type mismatch
     thrown.expect(SchemaEvolution.IllegalEvolutionException.class);
     checkEvolution("struct<_col0:int,_col1:double>",
-                   "struct<_col0:int,_col1:date,_col2:double>",
-                   struct(1, 1.0),
-                   null, true, addSarg, false);
+        "struct<_col0:int,_col1:date,_col2:double>",
+        struct(1, 1.0),
+        null, true);
   }
 
   @Test
   public void testPreHive4243AddColumnWithFix() {
     checkEvolution("struct<_col0:int,_col1:string>",
-                   "struct<a:int,b:string,c:double>",
-                   struct(1, "foo"),
-                   struct(1, "foo", null), true, addSarg, false);
+        "struct<a:int,b:string,c:double>",
+        struct(1, "foo"),
+        struct(1, "foo", null), true);
   }
 
   @Test
@@ -287,65 +239,15 @@ public class TestOrcFileEvolution {
         null, true);
   }
 
-  /**
-   * Test positional schema evolution.
-   * With the sarg, it eliminates the row and we don't get the row.
-   */
-  @Test
-  public void testPositional() {
-    checkEvolution("struct<x:int,y:int,z:int>", "struct<a:int,b:int,c:int,d:int>",
-        struct(11, 2, 3),
-        // if the sarg works, we get the default value
-        addSarg ? struct(0, 0, 0, 0) : struct(11, 2, 3, null),
-        false, addSarg, true);
-  }
-
-  /**
-   * Make the sarg try to use a column past the end of the file schema, since
-   * it will get null, the predicate doesn't hit.
-   */
-  @Test
-  public void testPositional2() {
-    checkEvolution("struct<x:int,y:int,z:int>", "struct<b:int,c:int,d:int,a:int>",
-        struct(11, 2, 3),
-        struct(11, 2, 3, null),
-        false, addSarg, true);
-  }
-
   private void checkEvolution(String writerType, String readerType,
-                              Object inputRow, Object expectedOutput,
-                              boolean tolerateSchema, boolean addSarg,
-                              boolean positional) {
-    SearchArgument sArg = null;
-    String[] sCols = null;
-    if (addSarg) {
-      sArg = SearchArgumentFactory
-        .newBuilder()
-        .lessThan("a", PredicateLeaf.Type.LONG, 10L)
-        .build();
-      sCols = new String[]{null, "a", null};
-    }
-
+      Object inputRow, Object expectedOutput) {
     checkEvolution(writerType, readerType,
-                   inputRow, expectedOutput,
-                   tolerateSchema,
-                   sArg, sCols, positional);
+        inputRow, expectedOutput,
+        (boolean) OrcConf.TOLERATE_MISSING_SCHEMA.getDefaultValue());
   }
 
   private void checkEvolution(String writerType, String readerType,
-                              Object inputRow, Object expectedOutput,
-                              boolean addSarg) {
-
-    checkEvolution(writerType, readerType,
-      inputRow, expectedOutput,
-      (boolean) OrcConf.TOLERATE_MISSING_SCHEMA.getDefaultValue(),
-        addSarg, false);
-  }
-
-  private void checkEvolution(String writerType, String readerType,
-                              Object inputRow, Object expectedOutput,
-                              boolean tolerateSchema, SearchArgument sArg,
-                              String[] sCols, boolean positional) {
+      Object inputRow, Object expectedOutput, boolean tolerateSchema) {
     TypeDescription readTypeDescr = TypeDescription.fromString(readerType);
     TypeDescription writerTypeDescr = TypeDescription.fromString(writerType);
 
@@ -361,19 +263,12 @@ public class TestOrcFileEvolution {
           new OrcMapredRecordWriter<OrcStruct>(writer);
       recordWriter.write(NullWritable.get(), inputStruct);
       recordWriter.close(mock(Reporter.class));
-
       Reader reader = OrcFile.createReader(testFilePath,
-                                           OrcFile.readerOptions(conf).filesystem(fs));
-
-      Reader.Options options = reader.options().schema(readTypeDescr);
-      if (sArg != null && sCols != null) {
-        options.searchArgument(sArg, sCols);
-      }
-
+          OrcFile.readerOptions(conf).filesystem(fs));
       OrcMapredRecordReader<OrcStruct> recordReader =
           new OrcMapredRecordReader<>(reader,
-              options.tolerateMissingSchema(tolerateSchema)
-                  .forcePositionalEvolution(positional));
+              reader.options().schema(readTypeDescr)
+                  .tolerateMissingSchema(tolerateSchema));
       OrcStruct result = recordReader.createValue();
       recordReader.next(recordReader.createKey(), result);
       assertEquals(expectedStruct, result);
