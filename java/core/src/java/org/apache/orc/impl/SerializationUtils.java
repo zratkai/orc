@@ -18,6 +18,7 @@
 
 package org.apache.orc.impl;
 
+import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 
 import java.io.EOFException;
@@ -89,6 +90,10 @@ public final class SerializationUtils {
     return Float.intBitsToFloat(val);
   }
 
+  public void skipFloat(InputStream in, int numOfFloats) throws IOException {
+    IOUtils.skipFully(in, numOfFloats * 4L);
+  }
+
   public void writeFloat(OutputStream output,
                          float value) throws IOException {
     int ser = Float.floatToIntBits(value);
@@ -125,6 +130,10 @@ public final class SerializationUtils {
       }
       n += count;
     }
+  }
+
+  public void skipDouble(InputStream in, int numOfDoubles) throws IOException {
+    IOUtils.skipFully(in, numOfDoubles * 8L);
   }
 
   public void writeDouble(OutputStream output,
