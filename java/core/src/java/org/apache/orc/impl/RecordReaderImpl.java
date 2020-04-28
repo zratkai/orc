@@ -28,9 +28,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.SortedSet;
 import java.util.TimeZone;
-import java.util.TreeSet;
 
 import org.apache.orc.OrcFile;
 import org.apache.orc.util.BloomFilter;
@@ -269,25 +267,9 @@ public class RecordReaderImpl implements RecordReader {
       skipCorrupt = OrcConf.SKIP_CORRUPT_DATA.getBoolean(fileReader.conf);
     }
 
-    // Map columnNames to ColumnIds
-    SortedSet<Integer> filterColIds = new TreeSet<>();
-    if (options.getPreFilterColumnNames() != null) {
-      for (String colName : options.getPreFilterColumnNames()) {
-        int expandColId = findColumns(evolution, colName);
-        if (expandColId != -1) {
-          filterColIds.add(expandColId);
-        } else {
-          throw new IllegalArgumentException("Filter could not find column with name: " +
-              colName + " on " + evolution.getReaderBaseSchema());
-        }
-      }
-      LOG.info("Filter Columns: " + filterColIds);
-    }
-
     TreeReaderFactory.ReaderContext readerContext =
         new TreeReaderFactory.ReaderContext()
           .setSchemaEvolution(evolution)
-          .setFilterCallback(filterColIds, options.getFilterCallback())
           .skipCorrupt(skipCorrupt)
           .fileFormat(fileReader.getFileVersion())
           .useUTCTimestamp(fileReader.useUTCTimestamp)
@@ -1320,18 +1302,18 @@ public class RecordReaderImpl implements RecordReader {
           batch.size = 0;
           return false;
         }
-        // Read stripe in Memory
         readStripe();
       }
 
       int batchSize = computeBatchSize(batch.getMaxSize());
-      rowInStripe += batchSize;
-      batch.size = batchSize;
 
+      rowInStripe += batchSize;
       reader.setVectorColumnCount(batch.getDataColumnCount());
       reader.nextBatch(batch, batchSize);
+      batch.selectedInUse = false;
+      batch.size = batchSize;
       advanceToNextRow(reader, rowInStripe + rowBaseInStripe, true);
-      return batchSize != 0;
+      return batch.size  != 0;
     } catch (IOException e) {
       // Rethrow exception with file name in log message
       throw new IOException("Error reading file: " + path, e);

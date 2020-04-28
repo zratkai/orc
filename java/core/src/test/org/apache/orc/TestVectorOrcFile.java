@@ -159,7 +159,7 @@ public class TestVectorOrcFile {
     return result;
   }
 
-  protected static BytesWritable bytes(int... items) {
+  private static BytesWritable bytes(int... items) {
     BytesWritable result = new BytesWritable();
     result.setSize(items.length);
     for(int i=0; i < items.length; ++i) {
@@ -168,7 +168,7 @@ public class TestVectorOrcFile {
     return result;
   }
 
-  protected static byte[] bytesArray(int... items) {
+  private static byte[] bytesArray(int... items) {
     byte[] result = new byte[items.length];
     for(int i=0; i < items.length; ++i) {
       result[i] = (byte) items[i];
@@ -867,7 +867,7 @@ public class TestVectorOrcFile {
     return ((DoubleColumnVector) batch.cols[6]).vector[rowId];
   }
 
-  protected static BytesWritable getBinary(BytesColumnVector column, int rowId) {
+  private static BytesWritable getBinary(BytesColumnVector column, int rowId) {
     if (column.isRepeating) {
       rowId = 0;
     }

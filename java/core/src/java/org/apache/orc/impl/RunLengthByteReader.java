@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,7 +20,6 @@ package org.apache.orc.impl;
 import java.io.EOFException;
 import java.io.IOException;
 
-import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 
 /**
@@ -44,7 +43,7 @@ public class RunLengthByteReader {
     this.input = input;
   }
 
-  private void readValues(boolean ignoreEof, int numSkipRows) throws IOException {
+  private void readValues(boolean ignoreEof) throws IOException {
     int control = input.read();
     used = 0;
     if (control == -1) {
@@ -52,26 +51,19 @@ public class RunLengthByteReader {
         throw new EOFException("Read past end of buffer RLE byte from " + input);
       }
       used = numLiterals = 0;
+      return;
     } else if (control < 0x80) {
       repeat = true;
       numLiterals = control + RunLengthByteWriter.MIN_REPEAT_SIZE;
-      if (numSkipRows >= numLiterals) {
-        IOUtils.skipFully(input,1);
-      } else {
-        int val = input.read();
-        if (val == -1) {
-          throw new EOFException("Reading RLE byte got EOF");
-        }
-        literals[0] = (byte) val;
+      int val = input.read();
+      if (val == -1) {
+        throw new EOFException("Reading RLE byte got EOF");
       }
+      literals[0] = (byte) val;
     } else {
       repeat = false;
       numLiterals = 0x100 - control;
-      numSkipRows = Math.min(numSkipRows, numLiterals);
-      if (numSkipRows > 0) {
-        IOUtils.skipFully(input, numSkipRows);
-      }
-      int bytes = numSkipRows;
+      int bytes = 0;
       while (bytes < numLiterals) {
         int result = input.read(literals, bytes, numLiterals - bytes);
         if (result == -1) {
@@ -89,7 +81,7 @@ public class RunLengthByteReader {
   public byte next() throws IOException {
     byte result;
     if (used == numLiterals) {
-      readValues(false, 0);
+      readValues(false);
     }
     if (repeat) {
       result = literals[0];
@@ -153,7 +145,7 @@ public class RunLengthByteReader {
     if (consumed != 0) {
       // a loop is required for cases where we break the run into two parts
       while (consumed > 0) {
-        readValues(false, 0);
+        readValues(false);
         used = consumed;
         consumed -= numLiterals;
       }
@@ -166,7 +158,7 @@ public class RunLengthByteReader {
   public void skip(long items) throws IOException {
     while (items > 0) {
       if (used == numLiterals) {
-        readValues(false, (int) items);
+        readValues(false);
       }
       long consume = Math.min(items, numLiterals - used);
       used += consume;
