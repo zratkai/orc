@@ -40,6 +40,10 @@ import java.sql.Timestamp;
 import java.text.DateFormat;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.chrono.ChronoLocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -79,7 +83,6 @@ import org.apache.orc.impl.RecordReaderImpl.Location;
 import org.apache.orc.impl.RecordReaderImpl.SargApplier;
 import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument.TruthValue;
-import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.orc.ColumnStatistics;
@@ -94,6 +97,13 @@ import static org.apache.orc.impl.RecordReaderUtils.MAX_BYTE_WIDTH;
 import static org.apache.orc.impl.RecordReaderUtils.MAX_VALUES_LENGTH;
 
 public class TestRecordReaderImpl {
+
+  // This is a work around until we update storage-api to allow ChronoLocalDate in
+  // predicates.
+  static Date toDate(ChronoLocalDate date) {
+    return new Date(date.atTime(LocalTime.MIDNIGHT).atZone(ZoneId.systemDefault())
+        .toEpochSecond() * 1000);
+  }
 
   @Test
   public void testFindColumn() throws Exception {
@@ -154,6 +164,9 @@ public class TestRecordReaderImpl {
                                                   String columnName,
                                                   Object literal,
                                                   List<Object> literalList) {
+    if (literal instanceof ChronoLocalDate) {
+      literal = toDate((ChronoLocalDate) literal);
+    }
     return new SearchArgumentImpl.PredicateLeafImpl(operator, type, columnName,
         literal, literalList);
   }
@@ -404,7 +417,8 @@ public class TestRecordReaderImpl {
     OrcProto.DateStatistics.Builder dateStats = OrcProto.DateStatistics.newBuilder();
     dateStats.setMinimum(min);
     dateStats.setMaximum(max);
-    return OrcProto.ColumnStatistics.newBuilder().setDateStatistics(dateStats.build()).build();
+    return OrcProto.ColumnStatistics.newBuilder().setNumberOfValues(1)
+               .setDateStatistics(dateStats.build()).build();
   }
 
   private static final TimeZone utcTz = TimeZone.getTimeZone("UTC");
@@ -586,7 +600,7 @@ public class TestRecordReaderImpl {
 
     // Integer stats will not be converted date because of days/seconds/millis ambiguity
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
-        PredicateLeaf.Type.DATE, "x", new DateWritable(15).get(), null);
+        PredicateLeaf.Type.DATE, "x", LocalDate.ofEpochDay(15), null);
     try {
       evaluateInteger(createIntStats(10, 100), pred);
       fail("evaluate should throw");
@@ -629,7 +643,7 @@ public class TestRecordReaderImpl {
 
     // Double is not converted to date type because of days/seconds/millis ambiguity
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
-        PredicateLeaf.Type.DATE, "x", new DateWritable(15).get(), null);
+        PredicateLeaf.Type.DATE, "x", LocalDate.ofEpochDay(15), null);
     try {
       evaluateDouble(createDoubleStats(10.0, 100.0), pred);
       fail("evaluate should throw");
@@ -672,7 +686,7 @@ public class TestRecordReaderImpl {
 
     // IllegalArgumentException is thrown when converting String to Date, hence YES_NO
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
-        PredicateLeaf.Type.DATE, "x", new DateWritable(100).get(), null);
+        PredicateLeaf.Type.DATE, "x", LocalDate.ofEpochDay(100), null);
     assertEquals(TruthValue.YES_NO,
         evaluateInteger(createDateStats(10, 1000), pred));
 
@@ -700,7 +714,7 @@ public class TestRecordReaderImpl {
       evaluateInteger(createDateStats(10, 100), pred);
       fail("evaluate should throw");
     } catch (RecordReaderImpl.SargCastException ia) {
-      assertEquals("ORC SARGS could not convert from Date to LONG", ia.getMessage());
+      assertEquals("ORC SARGS could not convert from LocalDate to LONG", ia.getMessage());
     }
 
     // Date to Float conversion is also not possible.
@@ -710,7 +724,7 @@ public class TestRecordReaderImpl {
       evaluateInteger(createDateStats(10, 100), pred);
       fail("evaluate should throw");
     } catch (RecordReaderImpl.SargCastException ia) {
-      assertEquals("ORC SARGS could not convert from Date to FLOAT", ia.getMessage());
+      assertEquals("ORC SARGS could not convert from LocalDate to FLOAT", ia.getMessage());
     }
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
@@ -744,12 +758,12 @@ public class TestRecordReaderImpl {
         evaluateInteger(createDateStats(10, 100), pred));
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
-        PredicateLeaf.Type.DATE, "x", new DateWritable(15).get(), null);
+        PredicateLeaf.Type.DATE, "x", LocalDate.ofEpochDay(15), null);
     assertEquals(TruthValue.YES_NO,
         evaluateInteger(createDateStats(10, 100), pred));
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
-        PredicateLeaf.Type.DATE, "x", new DateWritable(150).get(), null);
+        PredicateLeaf.Type.DATE, "x", LocalDate.ofEpochDay(150), null);
     assertEquals(TruthValue.NO,
         evaluateInteger(createDateStats(10, 100), pred));
 
@@ -760,7 +774,7 @@ public class TestRecordReaderImpl {
       evaluateInteger(createDateStats(10, 100), pred);
       fail("evaluate should throw");
     } catch (RecordReaderImpl.SargCastException ia) {
-      assertEquals("ORC SARGS could not convert from Date to DECIMAL", ia.getMessage());
+      assertEquals("ORC SARGS could not convert from LocalDate to DECIMAL", ia.getMessage());
     }
 
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
@@ -794,7 +808,7 @@ public class TestRecordReaderImpl {
 
     // Decimal to Date not possible.
     pred = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
-        PredicateLeaf.Type.DATE, "x", new DateWritable(15).get(), null);
+        PredicateLeaf.Type.DATE, "x", LocalDate.ofEpochDay(15), null);
     try {
       evaluateInteger(createDecimalStats("10.0", "100.0"), pred);
       fail("evaluate should throw");
@@ -1705,15 +1719,15 @@ public class TestRecordReaderImpl {
   public void testDateWritableNullSafeEqualsBloomFilter() throws Exception {
     PredicateLeaf pred = createPredicateLeaf(
         PredicateLeaf.Operator.NULL_SAFE_EQUALS, PredicateLeaf.Type.DATE, "x",
-        new DateWritable(15).get(), null);
+        LocalDate.ofEpochDay(15), null);
     BloomFilter bf = new BloomFilter(10000);
     for (int i = 20; i < 1000; i++) {
-      bf.addLong((new DateWritable(i)).getDays());
+      bf.addLong(i);
     }
     ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDateStats(10, 100));
     assertEquals(TruthValue.NO, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
-    bf.addLong((new DateWritable(15)).getDays());
+    bf.addLong(15);
     assertEquals(TruthValue.YES_NO, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
   }
 
@@ -1721,37 +1735,37 @@ public class TestRecordReaderImpl {
   public void testDateWritableEqualsBloomFilter() throws Exception {
     PredicateLeaf pred = createPredicateLeaf(
         PredicateLeaf.Operator.EQUALS, PredicateLeaf.Type.DATE, "x",
-        new DateWritable(15).get(), null);
+        LocalDate.ofEpochDay(15), null);
     BloomFilter bf = new BloomFilter(10000);
     for (int i = 20; i < 1000; i++) {
-      bf.addLong((new DateWritable(i)).getDays());
+      bf.addLong(i);
     }
     ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDateStats(10, 100));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
-    bf.addLong((new DateWritable(15)).getDays());
+    bf.addLong(15);
     assertEquals(TruthValue.YES_NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
   }
 
   @Test
   public void testDateWritableInBloomFilter() throws Exception {
-    List<Object> args = new ArrayList<Object>();
-    args.add(new DateWritable(15).get());
-    args.add(new DateWritable(19).get());
+    List<Object> args = new ArrayList<>();
+    args.add(toDate(LocalDate.ofEpochDay(15)));
+    args.add(toDate(LocalDate.ofEpochDay(19)));
     PredicateLeaf pred = createPredicateLeaf
         (PredicateLeaf.Operator.IN, PredicateLeaf.Type.DATE,
             "x", null, args);
     BloomFilter bf = new BloomFilter(10000);
     for (int i = 20; i < 1000; i++) {
-      bf.addLong((new DateWritable(i)).getDays());
+      bf.addLong(i);
     }
     ColumnStatistics cs = ColumnStatisticsImpl.deserialize(null, createDateStats(10, 100));
     assertEquals(TruthValue.NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
-    bf.addLong((new DateWritable(19)).getDays());
+    bf.addLong(19);
     assertEquals(TruthValue.YES_NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
 
-    bf.addLong((new DateWritable(15)).getDays());
+    bf.addLong(15);
     assertEquals(TruthValue.YES_NO_NULL, RecordReaderImpl.evaluatePredicate(cs, pred, bf));
   }
 
