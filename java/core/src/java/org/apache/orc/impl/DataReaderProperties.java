@@ -40,7 +40,6 @@ public final class DataReaderProperties {
     this.compression = builder.compression;
     this.zeroCopy = builder.zeroCopy;
     this.maxDiskRangeChunkLimit = builder.maxDiskRangeChunkLimit;
-    this.file = builder.file;
   }
 
   public Supplier<FileSystem> getFileSystemSupplier() {
@@ -78,7 +77,7 @@ public final class DataReaderProperties {
     private FSDataInputStream file;
     private InStream.StreamOptions compression;
     private boolean zeroCopy;
-    private int maxDiskRangeChunkLimit = (int) OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getDefaultValue();;
+    private int maxDiskRangeChunkLimit = (int) OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getDefaultValue();
 
     private Builder() {
 
