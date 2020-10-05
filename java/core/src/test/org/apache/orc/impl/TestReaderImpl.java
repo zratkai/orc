@@ -20,17 +20,21 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
+import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PositionedReadable;
 import org.apache.hadoop.fs.Seekable;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.orc.FileFormatException;
 import org.apache.hadoop.io.Text;
 import org.apache.orc.OrcFile;
+import org.apache.orc.OrcProto;
 import org.apache.orc.Reader;
 import org.apache.orc.RecordReader;
+import org.apache.orc.StripeStatistics;
 import org.apache.orc.TestVectorOrcFile;
 import org.junit.Test;
 import org.junit.Before;
@@ -40,6 +44,8 @@ import org.junit.rules.ExpectedException;
 import static org.junit.Assert.assertEquals;
 
 public class TestReaderImpl {
+  private Path workDir = new Path(System.getProperty("example.dir",
+      "../../examples/"));
 
   @Rule
   public ExpectedException thrown = ExpectedException.none();
@@ -166,6 +172,23 @@ public class TestReaderImpl {
     public void readFully(long position, byte[] buffer)
             throws IOException {
       readFully(position, buffer, 0, buffer.length);
+    }
+  }
+
+  @Test
+  public void testOrcTailStripeStats() throws Exception {
+    Configuration conf = new Configuration();
+    Path path = new Path(workDir, "orc_split_elim_new.orc");
+    FileSystem fs = path.getFileSystem(conf);
+    try (ReaderImpl reader = (ReaderImpl) OrcFile.createReader(path,
+        OrcFile.readerOptions(conf).filesystem(fs))) {
+      OrcTail tail = reader.extractFileTail(fs, path, Long.MAX_VALUE);
+      List<StripeStatistics> stats = tail.getStripeStatistics();
+      assertEquals(1, stats.size());
+      OrcProto.TimestampStatistics tsStats =
+          stats.get(0).getColumn(5).getTimestampStatistics();
+      assertEquals(-28800000, tsStats.getMinimumUtc());
+      assertEquals(-28550000, tsStats.getMaximumUtc());
     }
   }
 }
