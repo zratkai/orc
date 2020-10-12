@@ -650,8 +650,10 @@ public class RecordReaderImpl implements RecordReader {
           return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
         }
       case LESS_THAN_EQUALS:
+        // TODO: Replace with isSingleton when porting ValueRange
         loc = compareToRange((Comparable) predObj, minValue, maxValue);
-        if (loc == Location.AFTER || loc == Location.MAX) {
+        if (loc == Location.AFTER || loc == Location.MAX ||
+            (loc == Location.MIN && minValue.equals(maxValue))) {
           return hasNull ? TruthValue.YES_NULL : TruthValue.YES;
         } else if (loc == Location.BEFORE) {
           return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
