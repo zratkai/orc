@@ -501,7 +501,22 @@ public class TestRecordReaderImpl {
     return RecordReaderImpl.evaluatePredicateProto(stats, predicate, null,
         encoding, null,
         include135 ? OrcFile.WriterVersion.ORC_135: OrcFile.WriterVersion.ORC_101,
-        TypeDescription.createTimestamp(), useUTCTimestamp, false, false);
+        TypeDescription.createTimestamp(), useUTCTimestamp, true, false);
+  }
+
+  static TruthValue evaluateTimestampWithWriterCalendar(OrcProto.ColumnStatistics stats,
+                                                        PredicateLeaf predicate,
+                                                        boolean include135,
+                                                        boolean writerUsedProlepticGregorian,
+                                                        boolean useUTCTimestamp) {
+    OrcProto.ColumnEncoding encoding =
+            OrcProto.ColumnEncoding.newBuilder()
+                    .setKind(OrcProto.ColumnEncoding.Kind.DIRECT)
+                    .build();
+    return RecordReaderImpl.evaluatePredicateProto(stats, predicate, null,
+            encoding, null,
+            include135 ? OrcFile.WriterVersion.ORC_135: OrcFile.WriterVersion.ORC_101,
+            TypeDescription.createTimestamp(), useUTCTimestamp, writerUsedProlepticGregorian, true);
   }
 
   static TruthValue evaluateTimestampBloomfilter(OrcProto.ColumnStatistics stats,
@@ -524,7 +539,7 @@ public class TestRecordReaderImpl {
     BloomFilterIO.serialize(builder, bloom);
     return RecordReaderImpl.evaluatePredicateProto(stats, predicate, kind,
         encoding.build(), builder.build(), version,
-        TypeDescription.createTimestamp(), useUTCTimestamp, false, false);
+        TypeDescription.createTimestamp(), useUTCTimestamp, true, false);
   }
 
   @Test
@@ -801,6 +816,41 @@ public class TestRecordReaderImpl {
         PredicateLeaf.Type.TIMESTAMP, "x", new Timestamp(150 * 1000L), null);
     assertEquals(TruthValue.NO,
         evaluateInteger(createDecimalStats("10.0", "100.0"), pred));
+  }
+
+  @Test
+  public void testPredEvalTimestampStatsDiffWriter() {
+    // Proleptic - NoUTC
+    PredicateLeaf pred = createPredicateLeaf(
+        PredicateLeaf.Operator.NULL_SAFE_EQUALS, PredicateLeaf.Type.TIMESTAMP, "x",
+        Timestamp.valueOf("1017-01-01 00:00:00"), null);
+    assertEquals(TruthValue.YES_NO,
+        evaluateTimestampWithWriterCalendar(createTimestampStats("1017-01-01 00:00:00", "1017-01-01 00:00:00"),
+            pred, true, true, false));
+
+    // NoProleptic - NoUTC -> 1016-12-26 00:00:00.0
+    long predTime = DateUtils.convertTimeToProleptic(Timestamp.valueOf("1017-01-01 00:00:00").getTime(), false);
+    PredicateLeaf pred2 = createPredicateLeaf(
+        PredicateLeaf.Operator.NULL_SAFE_EQUALS, PredicateLeaf.Type.TIMESTAMP, "x", new Timestamp(predTime), null);
+    assertEquals(TruthValue.YES_NO,
+        evaluateTimestampWithWriterCalendar(createTimestampStats("1017-01-01 00:00:00", "1017-01-01 00:00:00"),
+            pred2, true, false, false));
+
+    // NoProleptic - UTC -> 1016-12-25 16:00:00.0
+    predTime = DateUtils.convertTimeToProleptic(getUtcTimestamp("1017-01-01 00:00:00"), true);
+    PredicateLeaf pred3 = createPredicateLeaf(
+        PredicateLeaf.Operator.NULL_SAFE_EQUALS, PredicateLeaf.Type.TIMESTAMP, "x", new Timestamp(predTime), null);
+    assertEquals(TruthValue.YES_NO,
+        evaluateTimestampWithWriterCalendar(createTimestampStats("1017-01-01 00:00:00", "1017-01-01 00:00:00"),
+            pred3, true, false, true));
+
+    // Proleptic - UTC -> 1016-12-31 16:00:00.0
+    predTime = getUtcTimestamp("1017-01-01 00:00:00");
+    PredicateLeaf pred4 = createPredicateLeaf(PredicateLeaf.Operator.NULL_SAFE_EQUALS,
+        PredicateLeaf.Type.TIMESTAMP, "x", new Timestamp(predTime), null);
+    assertEquals(TruthValue.YES_NO,
+        evaluateTimestampWithWriterCalendar(createTimestampStats("1017-01-01 00:00:00", "1017-01-01 00:00:00"),
+            pred4, true, true, true));
   }
 
   @Test
