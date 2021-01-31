@@ -20,7 +20,7 @@
   </parent>
   <groupId>org.apache.orc</groupId>
   <artifactId>orc</artifactId>
-  <version>1.5.1.7.2.8.0-SNAPSHOT</version>
+  <version>1.5.1.7.0.2.1-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>Apache ORC</name>
@@ -68,9 +68,9 @@
     <example.dir>${project.basedir}/../../examples</example.dir>
 
     <min.hadoop.version>2.2.0</min.hadoop.version>
-    <hadoop.version>3.1.1.7.2.8.0-SNAPSHOT</hadoop.version>
-    <storage-api.version>3.1.3000.7.2.8.0-SNAPSHOT</storage-api.version>
-    <zookeeper.version>3.5.5.7.2.8.0-SNAPSHOT</zookeeper.version>
+    <hadoop.version>3.1.1.7.0.2.1-SNAPSHOT</hadoop.version>
+    <storage-api.version>3.1.3000.7.0.2.1-SNAPSHOT</storage-api.version>
+    <zookeeper.version>3.5.5.7.0.2.1-SNAPSHOT</zookeeper.version>
   </properties>
 
   <build>
@@ -347,7 +347,7 @@
       <dependency>
         <groupId>org.apache.orc</groupId>
         <artifactId>orc-shims</artifactId>
-        <version>1.5.1.7.2.8.0-SNAPSHOT</version>
+        <version>1.5.1.7.0.2.1-SNAPSHOT</version>
         <exclusions>
           <exclusion>
             <groupId>org.apache.hadoop</groupId>
@@ -362,17 +362,17 @@
       <dependency>
         <groupId>org.apache.orc</groupId>
         <artifactId>orc-core</artifactId>
-        <version>1.5.1.7.2.8.0-SNAPSHOT</version>
+        <version>1.5.1.7.0.2.1-SNAPSHOT</version>
       </dependency>
       <dependency>
         <groupId>org.apache.orc</groupId>
         <artifactId>orc-mapreduce</artifactId>
-        <version>1.5.1.7.2.8.0-SNAPSHOT</version>
+        <version>1.5.1.7.0.2.1-SNAPSHOT</version>
       </dependency>
       <dependency>
         <groupId>org.apache.orc</groupId>
         <artifactId>orc-tools</artifactId>
-        <version>1.5.1.7.2.8.0-SNAPSHOT</version>
+        <version>1.5.1.7.0.2.1-SNAPSHOT</version>
       </dependency>
 
       <!-- inter-project depedencies -->
