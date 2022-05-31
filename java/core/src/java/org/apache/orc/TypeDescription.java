@@ -548,8 +548,7 @@ public class TypeDescription
       throw new IllegalArgumentException("Can only add types to union type" +
           " and not " + category);
     }
-    children.add(child);
-    child.parent = this;
+    addChild(child);
     return this;
   }
 
@@ -565,8 +564,7 @@ public class TypeDescription
           " and not " + category);
     }
     fieldNames.add(field);
-    children.add(fieldType);
-    fieldType.parent = this;
+    addChild(fieldType);
     return this;
   }
 
@@ -888,6 +886,30 @@ public class TypeDescription
     }
     maxId = startId - 1;
     return startId;
+  }
+
+  /**
+   * Add a child to a type.
+   * @param child the child to add
+   */
+  public void addChild(TypeDescription child) {
+    switch (category) {
+      case LIST:
+        if (children.size() >= 1) {
+          throw new IllegalArgumentException("Can't add more children to list");
+        }
+      case MAP:
+        if (children.size() >= 2) {
+          throw new IllegalArgumentException("Can't add more children to map");
+        }
+      case UNION:
+      case STRUCT:
+        children.add(child);
+        child.parent = this;
+        break;
+      default:
+        throw new IllegalArgumentException("Can't add children to " + category);
+    }
   }
 
   public TypeDescription(Category category) {
