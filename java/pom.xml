@@ -67,6 +67,7 @@
     <test.tmp.dir>${project.build.directory}/testing-tmp</test.tmp.dir>
     <example.dir>${project.basedir}/../../examples</example.dir>
 
+    <junit.version>4.13.3</junit.version>
     <min.hadoop.version>2.2.0</min.hadoop.version>
     <hadoop.version>3.1.1.7.1.8.0-SNAPSHOT</hadoop.version>
     <storage-api.version>3.1.3000.7.1.8.0-SNAPSHOT</storage-api.version>
@@ -658,7 +659,7 @@
       <dependency>
         <groupId>junit</groupId>
         <artifactId>junit</artifactId>
-        <version>4.11</version>
+        <version>${junit.version}</version>
         <scope>test</scope>
       </dependency>
       <dependency>
