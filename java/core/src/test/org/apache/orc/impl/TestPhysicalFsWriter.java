@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.orc.impl;
 
 import org.apache.hadoop.conf.Configuration;
@@ -31,7 +30,7 @@ import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.PhysicalWriter;
 import org.apache.orc.TypeDescription;
-import org.junit.Test;
+ import org.junit.Test;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
@@ -92,7 +91,7 @@ public class TestPhysicalFsWriter {
                                      Progressable progress) throws IOException {
       List<byte[]> contents = new ArrayList<>();
       fileContents.put(f, contents);
-      return new FSDataOutputStream(new MemoryOutputStream(contents));
+      return new FSDataOutputStream(new MemoryOutputStream(contents), new Statistics(getUri().getScheme()));
     }
 
     @Override

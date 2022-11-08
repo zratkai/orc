@@ -17,7 +17,17 @@
  */
 package org.apache.orc.impl;
 
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.SortedSet;
+import java.util.TimeZone;
 import java.util.TreeSet;
 
 import org.apache.hadoop.fs.Path;
@@ -54,17 +64,6 @@ import org.apache.orc.util.BloomFilterIO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.io.DiskRange;
-
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.sql.Date;
-import java.sql.Timestamp;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TimeZone;
 
 public class RecordReaderImpl implements RecordReader {
   static final Logger LOG = LoggerFactory.getLogger(RecordReaderImpl.class);
@@ -258,6 +257,7 @@ public class RecordReaderImpl implements RecordReader {
               .withTypeCount(types.size())
               .withZeroCopy(zeroCopy)
               .withMaxDiskRangeChunkLimit(maxDiskRangeChunkLimit)
+              .withVectoredRead(options.getIsVectoredRead())
               .build());
     }
     firstRow = skippedRows;
@@ -634,7 +634,6 @@ public class RecordReaderImpl implements RecordReader {
     Object minValue = getBaseObjectForComparison(predicate.getType(), min);
     Object maxValue = getBaseObjectForComparison(predicate.getType(), max);
     Object predObj = getBaseObjectForComparison(predicate.getType(), baseObj);
-
     result = evaluatePredicateMinMax(predicate, predObj, minValue, maxValue, hasNull, lowerBound, upperBound);
     if (shouldEvaluateBloomFilter(predicate, result, bloomFilter)) {
       return evaluatePredicateBloomFilter(predicate, predObj, bloomFilter, hasNull, useUTCTimestamp);
@@ -666,7 +665,6 @@ public class RecordReaderImpl implements RecordReader {
       Object lowerBound,
       Object upperBound) {
     Location loc;
-
     switch (predicate.getOperator()) {
       case NULL_SAFE_EQUALS:
         loc = compareToRange((Comparable) predObj, minValue, maxValue, lowerBound, upperBound);
