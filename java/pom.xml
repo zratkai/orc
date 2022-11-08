@@ -68,7 +68,7 @@
     <example.dir>${project.basedir}/../../examples</example.dir>
 
     <junit.version>4.13.1</junit.version>
-    <min.hadoop.version>2.2.0</min.hadoop.version>
+    <min.hadoop.version>3.1.1.7.2.17.0-SNAPSHOT</min.hadoop.version>
     <hadoop.version>3.1.1.7.2.16.0-287</hadoop.version>
     <storage-api.version>3.1.3000.2023.0.14.0-SNAPSHOT</storage-api.version>
     <zookeeper.version>3.5.5.7.2.16.0-287</zookeeper.version>

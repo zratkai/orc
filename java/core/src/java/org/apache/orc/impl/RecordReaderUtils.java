@@ -17,6 +17,8 @@
  */
 package org.apache.orc.impl;
 
+
+import org.apache.orc.impl.HadoopShims.ZeroCopyReaderShim;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -26,12 +28,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
+import java.util.function.IntFunction;
 import java.util.function.Supplier;
 
 import org.apache.commons.lang.builder.HashCodeBuilder;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.FileRange;
+import org.apache.hadoop.fs.impl.FileRangeImpl;
 import org.apache.hadoop.hive.common.io.DiskRange;
 import org.apache.hadoop.hive.common.io.DiskRangeList;
 import org.apache.orc.CompressionCodec;
@@ -157,6 +163,7 @@ public class RecordReaderUtils {
     private final int typeCount;
     private CompressionKind compressionKind;
     private final int maxDiskRangeChunkLimit;
+    private final boolean isVectoredRead;
 
     private DefaultDataReader(DataReaderProperties properties) {
       this.fileSystemSupplier = properties.getFileSystemSupplier();
@@ -167,6 +174,7 @@ public class RecordReaderUtils {
       this.bufferSize = properties.getBufferSize();
       this.typeCount = properties.getTypeCount();
       this.maxDiskRangeChunkLimit = properties.getMaxDiskRangeChunkLimit();
+      this.isVectoredRead = properties.getIsVectoredRead();
     }
 
     @Override
@@ -213,7 +221,8 @@ public class RecordReaderUtils {
       DiskRangeList ranges = planIndexReading(fileSchema, footer,
           ignoreNonUtf8BloomFilter, included, sargColumns, version,
           bloomFilterKinds);
-      ranges = readDiskRanges(file, zcr, stripe.getOffset(), ranges, false, maxDiskRangeChunkLimit);
+      ranges = readDiskRangesNormalOrVectored(file, zcr, ranges,
+          stripe.getOffset(), false, maxDiskRangeChunkLimit);
       long offset = 0;
       DiskRangeList range = ranges;
       for(OrcProto.Stream stream: footer.getStreamsList()) {
@@ -231,7 +240,7 @@ public class RecordReaderUtils {
             case ROW_INDEX:
               if (included == null || included[column]) {
                 ByteBuffer bb = range.getData().duplicate();
-                bb.position((int) (offset - range.getOffset()));
+                bb.position((int) (offset - range.getOffset() + bb.position()));
                 bb.limit((int) (bb.position() + stream.getLength()));
                 indexes[column] = OrcProto.RowIndex.parseFrom(
                     InStream.createCodedInputStream("index",
@@ -276,10 +285,22 @@ public class RecordReaderUtils {
               new BufferChunk(tailBuf, 0)), tailLength, codec, bufferSize));
     }
 
+    public DiskRangeList readDiskRangesNormalOrVectored(FSDataInputStream file, ZeroCopyReaderShim zcr,
+        DiskRangeList range, long baseOffset,
+        boolean doForceDirect, int maxDiskRangeChunkLimit) throws  IOException{
+      if(isVectoredRead) {
+        LOG.info("Reading in vectored mode.");
+        return RecordReaderUtils.readDiskRangesVectored(file, zcr, baseOffset,
+            range, doForceDirect, maxDiskRangeChunkLimit);
+      }
+      return RecordReaderUtils.readDiskRanges(file, zcr, baseOffset,
+          range, doForceDirect, maxDiskRangeChunkLimit);
+    }
+
     @Override
     public DiskRangeList readFileData(
         DiskRangeList range, long baseOffset, boolean doForceDirect) throws IOException {
-      return RecordReaderUtils.readDiskRanges(file, zcr, baseOffset, range, doForceDirect, maxDiskRangeChunkLimit);
+      return readDiskRangesNormalOrVectored(file, zcr, range, baseOffset, doForceDirect, maxDiskRangeChunkLimit);
     }
 
     @Override
@@ -526,6 +547,23 @@ public class RecordReaderUtils {
   }
 
   /**
+   * Convert from DiskRangeList to FileRange
+   * @param range
+   * @return list of fileRange
+   */
+  static List<FileRange> getFileRangeFrom(long base, DiskRangeList range) {
+    List<FileRange> fRange = new ArrayList<>();
+    while (range != null) {
+      long len = range.getEnd() - range.getOffset();
+      long off = range.getOffset();
+      FileRange currentRange = FileRange.createFileRange((base + off), (int) len);
+      fRange.add(currentRange);
+      range = range.next;
+    }
+    return fRange;
+  }
+
+  /**
    * Read the list of ranges from the file.
    * @param file the file to read
    * @param base the base of the stripe
@@ -534,11 +572,53 @@ public class RecordReaderUtils {
    *    ranges
    * @throws IOException
    */
-  static DiskRangeList readDiskRanges(FSDataInputStream file,
+  static DiskRangeList readDiskRangesVectored(FSDataInputStream fileInputStream,
                                       HadoopShims.ZeroCopyReaderShim zcr,
                                  long base,
                                  DiskRangeList range,
                                  boolean doForceDirect, int maxChunkLimit) throws IOException {
+    if (range == null)
+      return null;
+    DiskRangeList rootRange = range;
+    DiskRangeList prev = range.prev;
+    if (prev == null) {
+      prev = new DiskRangeList.MutateHelper(range);
+    }
+    //Convert DiskRange to FileRange here
+    List<FileRange> fRanges = getFileRangeFrom(base, range);
+
+    try {
+      IntFunction<ByteBuffer> allocate = doForceDirect ? ByteBuffer::allocateDirect : ByteBuffer::allocate;
+      fileInputStream.readVectored(fRanges, allocate);
+
+      int index = 0;
+      range = rootRange;
+      while (range != null) {
+        if (range.hasData()) {
+          range = range.next;
+          index++;
+          continue;
+        }
+        ByteBuffer data = fRanges.get(index).getData().get();
+        BufferChunk bc = new BufferChunk(data, range.getOffset());
+        //replace the range data with the buffer chunk returned after reading
+        range.replaceSelfWith(bc);
+        range = bc;
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IOException(e);
+    } catch (ExecutionException e) {
+      throw new IOException(e);
+    }
+    return prev.next;
+  }
+
+  static DiskRangeList readDiskRanges(FSDataInputStream file,
+      HadoopShims.ZeroCopyReaderShim zcr,
+      long base,
+      DiskRangeList range,
+      boolean doForceDirect, int maxChunkLimit) throws IOException {
     if (range == null)
       return null;
     DiskRangeList prev = range.prev;
@@ -596,7 +676,6 @@ public class RecordReaderUtils {
     }
     return prev.next;
   }
-
 
   static List<DiskRange> getStreamBuffers(DiskRangeList range, long offset, long length) {
     // This assumes sorted ranges (as do many other parts of ORC code.
@@ -729,3 +808,4 @@ public class RecordReaderUtils {
     }
   }
 }
+
