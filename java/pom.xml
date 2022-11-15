@@ -67,7 +67,7 @@
     <test.tmp.dir>${project.build.directory}/testing-tmp</test.tmp.dir>
     <example.dir>${project.basedir}/../../examples</example.dir>
 
-    <junit.version>4.13.1</junit.version>
+    <junit.version>4.13.2</junit.version>
     <min.hadoop.version>2.2.0</min.hadoop.version>
     <hadoop.version>3.1.1.7.1.8.3-SNAPSHOT</hadoop.version>
     <storage-api.version>3.1.3000.7.1.8.3-SNAPSHOT</storage-api.version>
