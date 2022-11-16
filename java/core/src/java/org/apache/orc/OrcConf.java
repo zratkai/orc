@@ -171,11 +171,7 @@ public enum OrcConf {
       "orc.proleptic.gregorian.default", false,
       "This value controls whether pre-ORC 27 files are using the hybrid or proleptic\n" +
       "calendar. Only Hive 3.1 and the C++ library wrote using the proleptic, so hybrid\n" +
-      "is the default."),
-  ORC_VECTORED_READ("orc.use.hadoop-vectored.api",
-      "hive.exec.orc.use.hadoop-vectored.api",
-      false,
-      "Use the Hadoop Vectorized API to read the data in a parallel and async manner.")
+      "is the default.")
   ;
 
   private final String attribute;

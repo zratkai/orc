@@ -33,7 +33,6 @@ public final class DataReaderProperties {
   private final int typeCount;
   private final int bufferSize;
   private final int maxDiskRangeChunkLimit;
-  private final boolean isVectoredRead;
 
   private DataReaderProperties(Builder builder) {
     this.fileSystemSupplier = builder.fileSystemSupplier;
@@ -43,7 +42,6 @@ public final class DataReaderProperties {
     this.typeCount = builder.typeCount;
     this.bufferSize = builder.bufferSize;
     this.maxDiskRangeChunkLimit = builder.maxDiskRangeChunkLimit;
-    this.isVectoredRead = builder.isVectoredRead;
   }
 
   public Supplier<FileSystem> getFileSystemSupplier() {
@@ -74,8 +72,6 @@ public final class DataReaderProperties {
     return maxDiskRangeChunkLimit;
   }
 
-  public boolean getIsVectoredRead() { return isVectoredRead; }
-
   public static Builder builder() {
     return new Builder();
   }
@@ -89,7 +85,6 @@ public final class DataReaderProperties {
     private int typeCount;
     private int bufferSize;
     private int maxDiskRangeChunkLimit = (int) OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getDefaultValue();
-    private boolean isVectoredRead;
 
     private Builder() {
 
@@ -132,11 +127,6 @@ public final class DataReaderProperties {
 
     public Builder withMaxDiskRangeChunkLimit(int value) {
       this.maxDiskRangeChunkLimit = value;
-      return this;
-    }
-
-    public Builder withVectoredRead(boolean isVectored){
-      this.isVectoredRead = isVectored;
       return this;
     }
 

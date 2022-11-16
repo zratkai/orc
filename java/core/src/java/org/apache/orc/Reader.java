@@ -168,7 +168,6 @@ public interface Reader extends Closeable {
     private boolean isSchemaEvolutionCaseAware =
         (boolean) OrcConf.IS_SCHEMA_EVOLUTION_CASE_SENSITIVE.getDefaultValue();
     private boolean includeAcidColumns = true;
-    private boolean isVectoredRead = false;
 
     public Options() {
       // PASS
@@ -181,7 +180,6 @@ public interface Reader extends Closeable {
       forcePositionalEvolution = OrcConf.FORCE_POSITIONAL_EVOLUTION.getBoolean(conf);
       isSchemaEvolutionCaseAware =
           OrcConf.IS_SCHEMA_EVOLUTION_CASE_SENSITIVE.getBoolean(conf);
-      isVectoredRead = OrcConf.ORC_VECTORED_READ.getBoolean(conf);
     }
 
     /**
@@ -383,8 +381,6 @@ public interface Reader extends Closeable {
     public boolean getIncludeAcidColumns() {
       return includeAcidColumns;
     }
-
-    public boolean getIsVectoredRead() { return isVectoredRead;}
 
     public Options clone() {
       try {

@@ -17,6 +17,7 @@
  */
 package org.apache.orc.impl;
 
+import org.apache.orc.CompressionKind;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -258,7 +259,6 @@ public class RecordReaderImpl implements RecordReader {
               .withTypeCount(types.size())
               .withZeroCopy(zeroCopy)
               .withMaxDiskRangeChunkLimit(maxDiskRangeChunkLimit)
-              .withVectoredRead(options.getIsVectoredRead())
               .build());
     }
     firstRow = skippedRows;
@@ -591,6 +591,7 @@ public class RecordReaderImpl implements RecordReader {
     Object minValue = getBaseObjectForComparison(predicate.getType(), min);
     Object maxValue = getBaseObjectForComparison(predicate.getType(), max);
     Object predObj = getBaseObjectForComparison(predicate.getType(), baseObj);
+
     result = evaluatePredicateMinMax(predicate, predObj, minValue, maxValue, hasNull);
     if (shouldEvaluateBloomFilter(predicate, result, bloomFilter)) {
       return evaluatePredicateBloomFilter(predicate, predObj, bloomFilter, hasNull, useUTCTimestamp);
@@ -620,6 +621,7 @@ public class RecordReaderImpl implements RecordReader {
       Object maxValue,
       boolean hasNull) {
     Location loc;
+
     switch (predicate.getOperator()) {
       case NULL_SAFE_EQUALS:
         loc = compareToRange((Comparable) predObj, minValue, maxValue);
