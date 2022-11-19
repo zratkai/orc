@@ -80,10 +80,5 @@ public class HadoopShimsPre2_3 implements HadoopShims {
     public Key decryptLocalKey(KeyMetadata key, byte[] encryptedKey) {
       return null;
     }
-
-    @Override
-    public KeyProviderKind getKind() {
-      return null;
-    }
   }
 }

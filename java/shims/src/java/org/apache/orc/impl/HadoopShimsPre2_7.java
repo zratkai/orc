@@ -106,13 +106,11 @@ public class HadoopShimsPre2_7 implements HadoopShims {
    *
    * So the flow looks like:
    * <pre>
-   *   encryptedKey = securely random 16 or 32 bytes
-   *   iv = first 16 byte of encryptedKey
+   *   encryptedKey = securely random 16 bytes
    *   --- on KMS ---
-   *   tmpKey0 = aes(masterKey, iv)
-   *   tmpKey1 = aes(masterKey, iv+1)
-   *   decryptedKey0 = xor(tmpKey0, encryptedKey0)
-   *   decryptedKey1 = xor(tmpKey1, encryptedKey1)
+   *   tmpKey0 = aes(masterKey, encryptedKey)
+   *   tmpKey1 = aes(masterKey, encryptedKey+1)
+   *   decryptedKey = xor(tmpKey0, 0) + xor(tmpKey1, 0)
    * </pre>
    *
    * In the long term, we should probably fix Hadoop's generateEncryptedKey
@@ -141,34 +139,21 @@ public class HadoopShimsPre2_7 implements HadoopShims {
           findAlgorithm(meta));
     }
 
-    /**
-     * The Ranger/Hadoop KMS mangles the IV by bit flipping it in a misguided
-     * attempt to improve security. By bit flipping it here, we undo the
-     * silliness so that we get
-     * @param input the input array to copy from
-     * @param output the output array to write to
-     */
-    private static void unmangleIv(byte[] input, byte[] output) {
-      for(int i=0; i < output.length && i < input.length; ++i) {
-        output[i] = (byte) (0xff ^ input[i]);
-      }
-    }
-
     @Override
     public LocalKey createLocalKey(KeyMetadata key) throws IOException {
       EncryptionAlgorithm algorithm = key.getAlgorithm();
-      byte[] encryptedKey = new byte[algorithm.keyLength()];
+      byte[] encryptedKey = new byte[algorithm.getIvLength()];
       random.nextBytes(encryptedKey);
-      byte[] iv = new byte[algorithm.getIvLength()];
-      unmangleIv(encryptedKey, iv);
       KeyProviderCryptoExtension.EncryptedKeyVersion param =
           KeyProviderCryptoExtension.EncryptedKeyVersion.createForDecryption(
-              key.getKeyName(), buildKeyVersionName(key), iv, encryptedKey);
+              key.getKeyName(), buildKeyVersionName(key), encryptedKey,
+              algorithm.getZeroKey());
       try {
         KeyProviderCryptoExtension.KeyVersion decryptedKey =
             ((KeyProviderCryptoExtension) provider)
                 .decryptEncryptedKey(param);
-        return new LocalKey(algorithm, decryptedKey.getMaterial(),
+        return new LocalKey(new SecretKeySpec(decryptedKey.getMaterial(),
+                                              algorithm.getAlgorithm()),
                             encryptedKey);
       } catch (GeneralSecurityException e) {
         throw new IOException("Can't create local encryption key for " + key, e);
@@ -179,11 +164,10 @@ public class HadoopShimsPre2_7 implements HadoopShims {
     public Key decryptLocalKey(KeyMetadata key,
                                byte[] encryptedKey) throws IOException {
       EncryptionAlgorithm algorithm = key.getAlgorithm();
-      byte[] iv = new byte[algorithm.getIvLength()];
-      unmangleIv(encryptedKey, iv);
       KeyProviderCryptoExtension.EncryptedKeyVersion param =
           KeyProviderCryptoExtension.EncryptedKeyVersion.createForDecryption(
-              key.getKeyName(), buildKeyVersionName(key), iv, encryptedKey);
+              key.getKeyName(), buildKeyVersionName(key), encryptedKey,
+              algorithm.getZeroKey());
       try {
         KeyProviderCryptoExtension.KeyVersion decrypted =
             ((KeyProviderCryptoExtension) provider)
@@ -193,11 +177,6 @@ public class HadoopShimsPre2_7 implements HadoopShims {
       } catch (GeneralSecurityException e) {
         return null;
       }
-    }
-
-    @Override
-    public HadoopShims.KeyProviderKind getKind() {
-      return HadoopShims.KeyProviderKind.HADOOP;
     }
   }
 
