@@ -255,10 +255,10 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       case SNAPPY:
         return new SnappyCodec();
       case LZO:
-        return new AircompressorCodec(kind, new LzoCompressor(),
+        return new AircompressorCodec(new LzoCompressor(),
             new LzoDecompressor());
       case LZ4:
-        return new AircompressorCodec(kind, new Lz4Compressor(),
+        return new AircompressorCodec(new Lz4Compressor(),
             new Lz4Decompressor());
       default:
         throw new IllegalArgumentException("Unknown compression codec: " +

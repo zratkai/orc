@@ -48,6 +48,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.io.DiskRange;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.hadoop.io.Text;
 import org.apache.orc.OrcProto;
@@ -278,6 +279,31 @@ public class ReaderImpl implements Reader {
   }
 
   /**
+   * Ensure this is an ORC file to prevent users from trying to read text
+   * files or RC files as ORC files.
+   * @param psLen the postscript length
+   * @param buffer the tail of the file
+   */
+  protected static void ensureOrcFooter(ByteBuffer buffer, int psLen) throws IOException {
+    int magicLength = OrcFile.MAGIC.length();
+    int fullLength = magicLength + 1;
+    if (psLen < fullLength || buffer.remaining() < fullLength) {
+      throw new FileFormatException("Malformed ORC file. Invalid postscript length " + psLen);
+    }
+
+    int offset = buffer.arrayOffset() + buffer.position() + buffer.limit() - fullLength;
+    byte[] array = buffer.array();
+    // now look for the magic string at the end of the postscript.
+    if (!Text.decode(array, offset, magicLength).equals(OrcFile.MAGIC)) {
+      // if it isn't there, this may be 0.11.0 version of the ORC file.
+      // Read the first 3 bytes from the buffer to check for the header
+      if (!Text.decode(buffer.array(), 0, magicLength).equals(OrcFile.MAGIC)) {
+        throw new FileFormatException("Malformed ORC file. Invalid postscript length " + psLen);
+      }
+    }
+  }
+
+  /**
    * Build a version string out of an array.
    * @param version the version number as a list
    * @return the human readable form of the version string
@@ -398,20 +424,26 @@ public class ReaderImpl implements Reader {
     return OrcFile.WriterVersion.FUTURE;
   }
 
+  static List<DiskRange> singleton(DiskRange item) {
+    List<DiskRange> result = new ArrayList<>();
+    result.add(item);
+    return result;
+  }
+
   private static OrcProto.Footer extractFooter(ByteBuffer bb, int footerAbsPos,
-      int footerSize, InStream.StreamOptions options) throws IOException {
+      int footerSize, CompressionCodec codec, int bufferSize) throws IOException {
     bb.position(footerAbsPos);
     bb.limit(footerAbsPos + footerSize);
-    return OrcProto.Footer.parseFrom(InStream.createCodedInputStream(
-        InStream.create("footer", new BufferChunk(bb, 0), footerSize, options)));
+    return OrcProto.Footer.parseFrom(InStream.createCodedInputStream("footer",
+        singleton(new BufferChunk(bb, 0)), footerSize, codec, bufferSize));
   }
 
   public static OrcProto.Metadata extractMetadata(ByteBuffer bb, int metadataAbsPos,
-      int metadataSize, InStream.StreamOptions options) throws IOException {
+      int metadataSize, CompressionCodec codec, int bufferSize) throws IOException {
     bb.position(metadataAbsPos);
     bb.limit(metadataAbsPos + metadataSize);
-    return OrcProto.Metadata.parseFrom(InStream.createCodedInputStream(
-        InStream.create("metadata", new BufferChunk(bb, 0), metadataSize, options)));
+    return OrcProto.Metadata.parseFrom(InStream.createCodedInputStream("metadata",
+        singleton(new BufferChunk(bb, 0)), metadataSize, codec, bufferSize));
   }
 
   private static OrcProto.PostScript extractPostScript(ByteBuffer bb, Path path,
@@ -435,6 +467,41 @@ public class ReaderImpl implements Reader {
         throw new IllegalArgumentException("Unknown compression");
     }
     return ps;
+  }
+
+  public static OrcTail extractFileTail(ByteBuffer buffer)
+      throws IOException {
+    return extractFileTail(buffer, -1, -1);
+  }
+
+  public static OrcTail extractFileTail(ByteBuffer buffer, long fileLength, long modificationTime)
+      throws IOException {
+    int readSize = buffer.limit();
+    int psLen = buffer.get(readSize - 1) & 0xff;
+    int psOffset = readSize - 1 - psLen;
+    ensureOrcFooter(buffer, psLen);
+    byte[] psBuffer = new byte[psLen];
+    System.arraycopy(buffer.array(), psOffset, psBuffer, 0, psLen);
+    OrcProto.PostScript ps = OrcProto.PostScript.parseFrom(psBuffer);
+    int footerSize = (int) ps.getFooterLength();
+    CompressionKind kind = CompressionKind.valueOf(ps.getCompression().name());
+    OrcProto.FileTail.Builder fileTailBuilder;
+    CompressionCodec codec = OrcCodecPool.getCodec(kind);
+    try {
+      OrcProto.Footer footer = extractFooter(buffer,
+        (int) (buffer.position() + ps.getMetadataLength()),
+        footerSize, codec, (int) ps.getCompressionBlockSize());
+      fileTailBuilder = OrcProto.FileTail.newBuilder()
+        .setPostscriptLength(psLen)
+        .setPostscript(ps)
+        .setFooter(footer)
+        .setFileLength(fileLength);
+    } finally {
+      OrcCodecPool.returnCodec(kind, codec);
+    }
+    // clear does not clear the contents but sets position to 0 and limit = capacity
+    buffer.clear();
+    return new OrcTail(fileTailBuilder.build(), buffer.slice(), modificationTime);
   }
 
   /**
@@ -551,8 +618,7 @@ public class ReaderImpl implements Reader {
       OrcProto.Footer footer;
       CompressionCodec codec = OrcCodecPool.getCodec(compressionKind);
       try {
-        footer = extractFooter(footerBuffer, 0, footerSize,
-            InStream.options().withCodec(codec).withBufferSize(bufferSize));
+        footer = extractFooter(footerBuffer, 0, footerSize, codec, bufferSize);
       } finally {
         OrcCodecPool.returnCodec(compressionKind, codec);
       }
@@ -749,8 +815,7 @@ public class ReaderImpl implements Reader {
     if (metadata == null) {
       CompressionCodec codec = OrcCodecPool.getCodec(compressionKind);
       try {
-        metadata = extractMetadata(tail.getSerializedTail(), 0, metadataSize,
-            InStream.options().withCodec(codec).withBufferSize(bufferSize));
+        metadata = extractMetadata(tail.getSerializedTail(), 0, metadataSize, codec, bufferSize);
       } finally {
         OrcCodecPool.returnCodec(compressionKind, codec);
       }
@@ -764,6 +829,10 @@ public class ReaderImpl implements Reader {
           options.getConvertToProlepticGregorian()));
     }
     return result;
+  }
+
+  public List<OrcProto.UserMetadataItem> getOrcProtoUserMetadata() {
+    return userMetadata;
   }
 
   @Override

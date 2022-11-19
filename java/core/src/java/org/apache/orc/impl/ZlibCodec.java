@@ -25,7 +25,6 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 import org.apache.orc.CompressionCodec;
-import org.apache.orc.CompressionKind;
 
 public class ZlibCodec implements CompressionCodec, DirectDecompressionCodec {
   private static final HadoopShims SHIMS = HadoopShimsFactory.get();
@@ -187,10 +186,5 @@ public class ZlibCodec implements CompressionCodec, DirectDecompressionCodec {
     if (decompressShim != null) {
       decompressShim.end();
     }
-  }
-
-  @Override
-  public CompressionKind getKind() {
-    return CompressionKind.ZLIB;
   }
 }

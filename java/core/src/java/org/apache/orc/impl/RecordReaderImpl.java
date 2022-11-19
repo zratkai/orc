@@ -1282,8 +1282,6 @@ public class RecordReaderImpl implements RecordReader {
       int bufferSize,
       Map<StreamName, InStream> streams) throws IOException {
     long streamOffset = 0;
-    InStream.StreamOptions options = InStream.options().withCodec(codec)
-        .withBufferSize(bufferSize);
     for (OrcProto.Stream streamDesc : streamDescriptions) {
       int column = streamDesc.getColumn();
       if ((includeColumn != null &&
@@ -1293,11 +1291,11 @@ public class RecordReaderImpl implements RecordReader {
         streamOffset += streamDesc.getLength();
         continue;
       }
-      DiskRangeList buffers = RecordReaderUtils.getStreamBuffers(
+      List<DiskRange> buffers = RecordReaderUtils.getStreamBuffers(
           ranges, streamOffset, streamDesc.getLength());
       StreamName name = new StreamName(column, streamDesc.getKind());
       streams.put(name, InStream.create(name.toString(), buffers,
-          streamDesc.getLength(), options));
+          streamDesc.getLength(), codec, bufferSize));
       streamOffset += streamDesc.getLength();
     }
   }
