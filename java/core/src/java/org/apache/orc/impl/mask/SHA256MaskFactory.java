@@ -62,9 +62,9 @@ import java.util.Arrays;
  */
 public class SHA256MaskFactory extends MaskFactory {
 
-  private final MessageDigest md;
+  final MessageDigest md;
 
-  SHA256MaskFactory() {
+  public SHA256MaskFactory(final String... params) {
     super();
     try {
       md = MessageDigest.getInstance("SHA-256");
@@ -138,9 +138,9 @@ public class SHA256MaskFactory extends MaskFactory {
   /**
    * Helper function to mask binary data with it's SHA-256 hash.
    *
-   * @param source the source data
-   * @param row the row that we are translating
-   * @param target the output data
+   * @param source
+   * @param row
+   * @param target
    */
   void maskBinary(final BytesColumnVector source, final int row,
       final BytesColumnVector target) {
@@ -207,7 +207,7 @@ public class SHA256MaskFactory extends MaskFactory {
     final TypeDescription schema;
 
     /* create an instance */
-    StringMask(TypeDescription schema) {
+    public StringMask(TypeDescription schema) {
       super();
       this.schema = schema;
     }
@@ -254,7 +254,7 @@ public class SHA256MaskFactory extends MaskFactory {
   class BinaryMask implements DataMask {
 
     /* create an instance */
-    BinaryMask() {
+    public BinaryMask() {
       super();
     }
 
