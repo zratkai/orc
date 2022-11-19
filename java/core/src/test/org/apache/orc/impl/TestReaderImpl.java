@@ -192,28 +192,6 @@ public class TestReaderImpl {
           stats.get(0).getColumn(5).getTimestampStatistics();
       assertEquals(-28800000, tsStats.getMinimumUtc());
       assertEquals(-28550000, tsStats.getMaximumUtc());
-
-      // Test Tail and Stats extraction from ByteBuffer
-      ByteBuffer tailBuffer = tail.getSerializedTail();
-      OrcTail extractedTail = ReaderImpl.extractFileTail(tailBuffer);
-
-      assertEquals(tail.getTailBuffer(), extractedTail.getTailBuffer());
-      assertEquals(tail.getTailBuffer().getData(), extractedTail.getTailBuffer().getData());
-      assertEquals(tail.getTailBuffer().getOffset(), extractedTail.getTailBuffer().getOffset());
-      assertEquals(tail.getTailBuffer().getEnd(), extractedTail.getTailBuffer().getEnd());
-
-      assertEquals(tail.getMetadataOffset(), extractedTail.getMetadataOffset());
-      assertEquals(tail.getMetadataSize(), extractedTail.getMetadataSize());
-
-      Reader dummyReader = new ReaderImpl(null,
-          OrcFile.readerOptions(OrcFile.readerOptions(conf).getConfiguration())
-          .orcTail(extractedTail));
-      List<StripeStatistics> tailBufferStats = dummyReader.getVariantStripeStatistics(null);
-
-      assertEquals(stats.size(), tailBufferStats.size());
-      OrcProto.TimestampStatistics bufferTsStats = tailBufferStats.get(0).getColumn(5).getTimestampStatistics();
-      assertEquals(tsStats.getMinimumUtc(), bufferTsStats.getMinimumUtc());
-      assertEquals(tsStats.getMaximumUtc(), bufferTsStats.getMaximumUtc());
     }
   }
 

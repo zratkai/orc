@@ -21,11 +21,16 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.orc.*;
+import org.apache.orc.CompressionKind;
+import org.apache.orc.OrcFile;
+import org.apache.orc.OrcProto;
+import org.apache.orc.OrcUtils;
+import org.apache.orc.Reader;
+import org.apache.orc.StripeInformation;
+import org.apache.orc.StripeStatistics;
+import org.apache.orc.TypeDescription;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static org.apache.orc.impl.ReaderImpl.extractMetadata;
 
 // TODO: Make OrcTail implement FileMetadata or Reader interface
 public final class OrcTail {
@@ -223,9 +228,5 @@ public final class OrcTail {
       }
     }
     return result;
-  }
-
-  public List<OrcProto.StripeStatistics> getStripeStatisticsProto() throws IOException {
-    return reader.getOrcProtoStripeStatistics();
   }
 }
