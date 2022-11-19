@@ -38,7 +38,6 @@ import org.apache.orc.impl.reader.StripePlanner;
 import org.apache.orc.util.BloomFilter;
 import org.apache.orc.util.BloomFilterIO;
 import org.apache.orc.BooleanColumnStatistics;
-import org.apache.orc.CollectionColumnStatistics;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.CompressionCodec;
 import org.apache.orc.CompressionKind;
@@ -413,8 +412,6 @@ public class RecordReaderImpl implements RecordReader {
   static Object getMin(ColumnStatistics index, boolean useUTCTimestamp) {
     if (index instanceof IntegerColumnStatistics) {
       return ((IntegerColumnStatistics) index).getMinimum();
-    } else if (index instanceof CollectionColumnStatistics) {
-      return ((CollectionColumnStatistics) index).getMinimumChildren();
     } else if (index instanceof DoubleColumnStatistics) {
       return ((DoubleColumnStatistics) index).getMinimum();
     } else if (index instanceof StringColumnStatistics) {
