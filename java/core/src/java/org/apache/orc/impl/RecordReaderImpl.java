@@ -456,20 +456,19 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription type) {
     return evaluatePredicateProto(statsProto, predicate, kind, encoding, bloomFilter,
-        writerVersion, type, false, true, true);
+        writerVersion, type, false, false, false);
   }
 
   /**
    * Evaluate a predicate with respect to the statistics from the column
    * that is referenced in the predicate.
    * Includes option to specify if timestamp column stats values
-   * should be in UTC and if the file writer used proleptic Gregorian calendar.
+   * should be in UTC.
    * @param statsProto the statistics for the column mentioned in the predicate
    * @param predicate the leaf predicate we need to evaluation
    * @param bloomFilter the bloom filter
    * @param writerVersion the version of software that wrote the file
    * @param type what is the kind of this column
-   * @param writerUsedProlepticGregorian file written using the proleptic Gregorian calendar
    * @param useUTCTimestamp
    * @return the set of truth values that may be returned for the given
    *   predicate.
