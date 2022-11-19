@@ -32,7 +32,7 @@ public class TestBitFieldReader {
     final int COUNT = 16384;
     StreamOptions options = new StreamOptions(500);
     if (codec != null) {
-      options.withCodec(codec, codec.getDefaultOptions());
+      options.withCodec(codec, codec.createOptions());
     }
     BitFieldWriter out = new BitFieldWriter(
         new OutStream("test", options, collect), 1);

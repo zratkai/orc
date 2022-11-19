@@ -21,6 +21,7 @@ package org.apache.orc.impl;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
@@ -82,7 +83,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   private final Path path;
   private final long stripeSize;
   private final int rowIndexStride;
-  private final StreamOptions compress;
+  private final CompressionKind compress;
+  private int bufferSize;
   private final TypeDescription schema;
   private final PhysicalWriter physicalWriter;
   private final OrcFile.WriterVersion writerVersion;
@@ -152,24 +154,17 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     this.version = opts.getVersion();
     this.encodingStrategy = opts.getEncodingStrategy();
     this.compressionStrategy = opts.getCompressionStrategy();
+    this.compress = opts.getCompress();
     this.rowIndexStride = opts.getRowIndexStride();
     this.memoryManager = opts.getMemoryManager();
     buildIndex = rowIndexStride > 0;
     int numColumns = schema.getMaximumId() + 1;
     if (opts.isEnforceBufferSize()) {
       OutStream.assertBufferSizeValid(opts.getBufferSize());
-      compress = new StreamOptions(opts.getBufferSize());
+      this.bufferSize = opts.getBufferSize();
     } else {
-      compress = new StreamOptions(getEstimatedBufferSize(stripeSize,
-          numColumns, opts.getBufferSize()));
-    }
-    this.physicalWriter = opts.getPhysicalWriter() == null
-                              ? new PhysicalFsWriter(fs, path, opts)
-                              : opts.getPhysicalWriter();
-    physicalWriter.writeHeader();
-    CompressionCodec codec = physicalWriter.getCompressionCodec();
-    if (codec != null) {
-      compress.withCodec(codec, codec.getDefaultOptions());
+      this.bufferSize = getEstimatedBufferSize(stripeSize,
+          numColumns, opts.getBufferSize());
     }
     if (version == OrcFile.Version.FUTURE) {
       throw new IllegalArgumentException("Can not write in a unknown version.");
@@ -190,6 +185,9 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
           OrcUtils.includeColumns(opts.getBloomFilterColumns(), schema);
     }
     this.bloomFilterFpp = opts.getBloomFilterFpp();
+    this.physicalWriter = opts.getPhysicalWriter() == null ?
+        new PhysicalFsWriter(fs, path, opts) : opts.getPhysicalWriter();
+    physicalWriter.writeHeader();
     treeWriter = TreeWriter.Factory.create(schema, new StreamFactory(), false);
     if (buildIndex && rowIndexStride < MIN_ROW_INDEX_STRIDE) {
       throw new IllegalArgumentException("Row stride must be at least " +
@@ -201,8 +199,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     memoryLimit = stripeSize;
     memoryManager.addWriter(path, stripeSize, this);
     LOG.info("ORC writer created for path: {} with stripeSize: {} blockSize: {}" +
-        " compression: {}", path, stripeSize, opts.getBlockSize(),
-        compress);
+        " compression: {} bufferSize: {}", path, stripeSize, opts.getBlockSize(),
+        compress, bufferSize);
   }
 
   //@VisibleForTesting
@@ -219,8 +217,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
 
   @Override
   public void increaseCompressionSize(int newSize) {
-    if (newSize > compress.getBufferSize()) {
-      compress.bufferSize(newSize);
+    if (newSize > bufferSize) {
+      bufferSize = newSize;
     }
   }
 
@@ -291,6 +289,40 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     return false;
   }
 
+
+  public static
+  CompressionCodec.Options getCustomizedCodec(CompressionCodec codec,
+                                              OrcFile.CompressionStrategy strategy,
+                                              OrcProto.Stream.Kind kind) {
+    CompressionCodec.Options result = codec.createOptions();
+    switch (kind) {
+      case BLOOM_FILTER:
+      case DATA:
+      case DICTIONARY_DATA:
+      case BLOOM_FILTER_UTF8:
+        result.setData(CompressionCodec.DataKind.TEXT);
+        if (strategy == OrcFile.CompressionStrategy.SPEED) {
+          result.setSpeed(CompressionCodec.SpeedModifier.FAST);
+        } else {
+          result.setSpeed(CompressionCodec.SpeedModifier.DEFAULT);
+        }
+        break;
+      case LENGTH:
+      case DICTIONARY_COUNT:
+      case PRESENT:
+      case ROW_INDEX:
+      case SECONDARY:
+        // easily compressed using the fastest modes
+        result.setSpeed(CompressionCodec.SpeedModifier.FASTEST)
+            .setData(CompressionCodec.DataKind.BINARY);
+        break;
+      default:
+        LOG.info("Missing ORC compression modifiers for " + kind);
+        break;
+    }
+    return result;
+  }
+
   /**
    * Interface from the Writer to the TreeWriters. This limits the visibility
    * that the TreeWriters have into the Writer.
@@ -306,9 +338,14 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
                                   OrcProto.Stream.Kind kind
                                   ) throws IOException {
       final StreamName name = new StreamName(column, kind);
+      CompressionCodec codec = physicalWriter.getCompressionCodec();
+      StreamOptions options = new StreamOptions(bufferSize);
+      if (codec != null) {
+        options.withCodec(codec, getCustomizedCodec(codec, compressionStrategy,
+            kind));
+      }
       return new OutStream(physicalWriter.toString(),
-          SerializationUtils.getCustomizedCodec(compress, compressionStrategy, kind),
-          physicalWriter.createDataStream(name));
+          options, physicalWriter.createDataStream(name));
     }
 
     /**
@@ -487,18 +524,15 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   }
 
   private long writePostScript() throws IOException {
-    CompressionCodec codec = compress.getCodec();
     OrcProto.PostScript.Builder builder =
         OrcProto.PostScript.newBuilder()
-            .setCompression(writeCompressionKind(codec == null
-                                                     ? CompressionKind.NONE
-                                                     : codec.getKind()))
+            .setCompression(writeCompressionKind(compress))
             .setMagic(OrcFile.MAGIC)
             .addVersion(version.getMajor())
             .addVersion(version.getMinor())
             .setWriterVersion(writerVersion.getId());
-    if (compress.getCodec() != null) {
-      builder.setCompressionBlockSize(compress.getBufferSize());
+    if (compress != CompressionKind.NONE) {
+      builder.setCompressionBlockSize(bufferSize);
     }
     return physicalWriter.writePostScript(builder);
   }

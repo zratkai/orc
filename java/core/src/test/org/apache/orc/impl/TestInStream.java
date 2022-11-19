@@ -133,10 +133,10 @@ public class TestInStream {
       rawKey[i] = (byte) i;
     }
     Key decryptKey = new SecretKeySpec(rawKey, algorithm.getAlgorithm());
+    StreamName name = new StreamName(0, OrcProto.Stream.Kind.DATA);
+    byte[] iv = CryptoUtils.createIvForStream(algorithm, name, 0);
     StreamOptions writerOptions = new StreamOptions(100)
-        .withEncryption(algorithm, decryptKey);
-    writerOptions.modifyIv(CryptoUtils.modifyIvForStream(0,
-        OrcProto.Stream.Kind.DATA, 1));
+        .withEncryption(algorithm, decryptKey, iv);
     OutStream out = new OutStream("test", writerOptions, collect);
     PositionCollector[] positions = new PositionCollector[ROW_COUNT];
     DataOutputStream outStream = new DataOutputStream(out);
@@ -162,8 +162,7 @@ public class TestInStream {
     }
 
     InStream in = InStream.create("test", list.get(), collect.buffer.size(),
-        InStream.options().withEncryption(algorithm, decryptKey,
-            writerOptions.getIv()));
+        InStream.options().withEncryption(algorithm, decryptKey, iv));
     assertEquals("encrypted uncompressed stream test position: 0 length: 8192" +
             " range: 0 offset: 0 limit: 1965",
         in.toString());
@@ -188,12 +187,12 @@ public class TestInStream {
       rawKey[i] = (byte) i;
     }
     Key decryptKey = new SecretKeySpec(rawKey, algorithm.getAlgorithm());
+    StreamName name = new StreamName(0, OrcProto.Stream.Kind.DATA);
+    byte[] iv = CryptoUtils.createIvForStream(algorithm, name, 0);
     CompressionCodec codec = new ZlibCodec();
     StreamOptions writerOptions = new StreamOptions(500)
-        .withCodec(codec, codec.getDefaultOptions())
-        .withEncryption(algorithm, decryptKey);
-    writerOptions.modifyIv(CryptoUtils.modifyIvForStream(0,
-        OrcProto.Stream.Kind.DATA, 1));
+        .withCodec(codec, codec.createOptions())
+        .withEncryption(algorithm, decryptKey, iv);
     OutStream out = new OutStream("test", writerOptions, collect);
     PositionCollector[] positions = new PositionCollector[ROW_COUNT];
     DataOutputStream outStream = new DataOutputStream(out);
@@ -222,7 +221,7 @@ public class TestInStream {
     InStream in = InStream.create("test", list.get(), collect.buffer.size(),
         InStream.options()
             .withCodec(new ZlibCodec()).withBufferSize(500)
-            .withEncryption(algorithm, decryptKey, writerOptions.getIv()));
+            .withEncryption(algorithm, decryptKey, iv));
     assertEquals("encrypted compressed stream test position: 0 length: " +
             compressedSize + " range: 0 offset: 0 limit: 1998 range 0 = 0 to" +
             " 1998;  range 1 = 1998 to " + (compressedSize - 15) +
@@ -244,7 +243,7 @@ public class TestInStream {
     OutputCollector collect = new OutputCollector();
     CompressionCodec codec = new ZlibCodec();
     StreamOptions options = new StreamOptions(300)
-        .withCodec(codec, codec.getDefaultOptions());
+        .withCodec(codec, codec.createOptions());
     OutStream out = new OutStream("test", options, collect);
     PositionCollector[] positions = new PositionCollector[1024];
     for(int i=0; i < 1024; ++i) {
@@ -280,7 +279,7 @@ public class TestInStream {
     OutputCollector collect = new OutputCollector();
     CompressionCodec codec = new ZlibCodec();
     StreamOptions options = new StreamOptions(500)
-                                .withCodec(codec, codec.getDefaultOptions());
+                                .withCodec(codec, codec.createOptions());
     OutStream out = new OutStream("test", options, collect);
     PositionCollector[] positions = new PositionCollector[1024];
     for(int i=0; i < 1024; ++i) {
@@ -326,7 +325,7 @@ public class TestInStream {
     OutputCollector collect = new OutputCollector();
     CompressionCodec codec = new ZlibCodec();
     StreamOptions options = new StreamOptions(400)
-                                .withCodec(codec, codec.getDefaultOptions());
+                                .withCodec(codec, codec.createOptions());
     OutStream out = new OutStream("test", options, collect);
     PositionCollector[] positions = new PositionCollector[1024];
     DataOutput stream = new DataOutputStream(out);
@@ -336,6 +335,7 @@ public class TestInStream {
       stream.writeInt(i);
     }
     out.flush();
+    assertEquals("test", out.toString());
     assertEquals(1674, collect.buffer.size());
     ByteBuffer[] inBuf = new ByteBuffer[3];
     inBuf[0] = ByteBuffer.allocate(500);
@@ -408,6 +408,7 @@ public class TestInStream {
       stream.writeInt(i);
     }
     out.flush();
+    assertEquals("test", out.toString());
     assertEquals(4096, collect.buffer.size());
     ByteBuffer[] inBuf = new ByteBuffer[3];
     inBuf[0] = ByteBuffer.allocate(1100);
