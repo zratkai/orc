@@ -18,6 +18,7 @@
 package org.apache.orc.impl.mask;
 
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
@@ -26,6 +27,7 @@ import org.apache.hadoop.hive.ql.exec.vector.MapColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.StructColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.UnionColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.orc.DataMask;
 import org.apache.orc.TypeDescription;
@@ -41,8 +43,7 @@ public class TestDataMask {
   public void testNullFactory() throws Exception {
     TypeDescription schema = TypeDescription.fromString("struct<x:int>");
     // take the first column's type
-    DataMask mask = DataMask.Factory.build(DataMask.Standard.NULLIFY.getDescription(),
-        schema.findSubtype(1), (type) -> null);;
+    DataMask mask = DataMask.Standard.NULLIFY.build(schema.findSubtype(1));
     assertEquals(NullifyMask.class.toString(), mask.getClass().toString());
     LongColumnVector cv = (LongColumnVector) schema.createRowBatch().cols[0];
     LongColumnVector masked = (LongColumnVector) schema.createRowBatch().cols[0];
@@ -58,8 +59,7 @@ public class TestDataMask {
   public void testRedactFactory() throws Exception {
     TypeDescription schema =
         TypeDescription.fromString("struct<s:struct<x:int,y:string>>");
-    DataMask mask = DataMask.Factory.build(DataMask.Standard.REDACT.getDescription(),
-        schema.findSubtype(1), (type) -> null);
+    DataMask mask = DataMask.Standard.REDACT.build(schema.findSubtype(1));
     assertEquals(StructIdentity.class.toString(), mask.getClass().toString());
     StructColumnVector cv = (StructColumnVector)schema.createRowBatch().cols[0];
     StructColumnVector masked = (StructColumnVector)schema.createRowBatch().cols[0];
@@ -83,14 +83,10 @@ public class TestDataMask {
     TypeDescription schema =
         TypeDescription.fromString("struct<s:struct<a:decimal(18,6),b:double," +
             "c:array<int>,d:map<timestamp,date>,e:uniontype<int,binary>,f:string>>");
-    DataMask nullify =
-        DataMask.Factory.build(DataMask.Standard.NULLIFY.getDescription(),
-            schema.findSubtype(1), (type) -> null);
+    DataMask nullify = DataMask.Standard.NULLIFY.build(schema.findSubtype(1));
     // create a redact mask that passes everything though
-    DataMask identity =
-        DataMask.Factory.build(DataMask.Standard.REDACT
-                                   .getDescription("__________", "_ _ _ _ _ _"),
-            schema.findSubtype(1), (type) -> null);
+    DataMask identity = DataMask.Standard.REDACT.build(schema.findSubtype(1),
+        "__________", "_ _ _ _ _ _");
 
     // allow easier access to fields
     StructColumnVector cv = (StructColumnVector)schema.createRowBatch().cols[0];
