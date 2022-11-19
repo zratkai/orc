@@ -45,6 +45,7 @@ import org.apache.orc.impl.writer.StreamOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 public class PhysicalFsWriter implements PhysicalWriter {
   private static final Logger LOG = LoggerFactory.getLogger(PhysicalFsWriter.class);
 
@@ -341,7 +342,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
     for(int col = tracker.rootColumn;
         col < tracker.rootColumn + tracker.stripeStats.length; ++col) {
       options.modifyIv(CryptoUtils.modifyIvForStream(col,
-          OrcProto.Stream.Kind.STRIPE_STATISTICS, stripeNumber + 1));
+          OrcProto.Stream.Kind.STRIPE_STATISTICS, stripeNumber));
       OutStream stream = new OutStream("stripe stats for " + col,
           options, output);
       OrcProto.ColumnarStripeStatistics stats =
@@ -402,7 +403,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
       }
       StreamOptions options = new StreamOptions(variant.options);
       options.modifyIv(CryptoUtils.modifyIvForStream(variant.rootColumn,
-          OrcProto.Stream.Kind.FILE_STATISTICS, stripeNumber + 1));
+          OrcProto.Stream.Kind.FILE_STATISTICS, stripeNumber));
       BufferedStream buffer = new BufferedStream();
       OutStream stream = new OutStream("stats for " + variant, options, buffer);
       file.build().writeTo(stream);
@@ -417,8 +418,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
     for(VariantTracker variant: variants.values()) {
       writeEncryptedStripeStatistics(rawStream, stripeNumber, variant);
     }
-    setUnencryptedStripeStatistics(builder, stripeNumber,
-        unencrypted.stripeStats);
+    setUnencryptedStripeStatistics(builder, stripeNumber, unencrypted.stripeStats);
     long metadataStart = rawWriter.getPos();
     builder.build().writeTo(codedCompressStream);
     codedCompressStream.flush();
@@ -439,6 +439,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
     if (variants.size() > 0) {
       OrcProto.Encryption.Builder encryption = builder.getEncryptionBuilder();
       setEncryptionStatistics(encryption, stripeNumber, variants.values());
+      builder.setStripeStatisticsLength(stripeStatisticsLength);
     }
     addUnencryptedStatistics(builder, unencrypted.fileStats);
     long bodyLength = rawWriter.getPos() - metadataLength - stripeStatisticsLength;
@@ -456,9 +457,6 @@ public class PhysicalFsWriter implements PhysicalWriter {
   public long writePostScript(OrcProto.PostScript.Builder builder) throws IOException {
     builder.setFooterLength(footerLength);
     builder.setMetadataLength(metadataLength);
-    if (variants.size() > 0) {
-      builder.setStripeStatisticsLength(stripeStatisticsLength);
-    }
     OrcProto.PostScript ps = builder.build();
     // need to write this uncompressed
     long startPosn = rawWriter.getPos();
@@ -515,7 +513,6 @@ public class PhysicalFsWriter implements PhysicalWriter {
     rawWriter.write(buffer.array(), buffer.arrayOffset() + buffer.position(),
         length);
     dirEntry.setOffset(start);
-    stripeNumber += 1;
   }
 
 
@@ -725,7 +722,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
       if (options == tracker.options) {
         options = new StreamOptions(options);
       }
-      options.modifyIv(CryptoUtils.modifyIvForStream(name, stripeNumber + 1));
+      options.modifyIv(CryptoUtils.modifyIvForStream(name, stripeNumber));
     }
     return new OutStream(name.toString(), options, buffer);
   }

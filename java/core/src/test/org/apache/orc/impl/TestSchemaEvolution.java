@@ -1690,7 +1690,8 @@ public class TestSchemaEvolution {
         .addStream(2, OrcProto.Stream.Kind.LENGTH, createBuffer(7, 0, 1))
         .addStripeFooter(100, null);
     StripePlanner planner = new StripePlanner(fileType, new ReaderEncryption(),
-        dataReader, OrcFile.WriterVersion.ORC_14, true, Integer.MAX_VALUE);
+        InStream.options(), dataReader,
+        OrcFile.WriterVersion.ORC_14, true, Integer.MAX_VALUE);
     boolean[] columns = new boolean[]{true, true, true};
     planner.parseStripe(dataReader.getStripe(0), columns)
         .readData(null, null, false);

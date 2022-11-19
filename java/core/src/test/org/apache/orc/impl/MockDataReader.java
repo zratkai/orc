@@ -38,17 +38,10 @@ public class MockDataReader implements DataReader {
   private MockStripe next;
   private Set<ByteBuffer> outBuffers =
       Collections.newSetFromMap(new IdentityHashMap<>());
-  private final InStream.StreamOptions options;
 
   public MockDataReader(TypeDescription schema) {
-    this(schema, new InStream.StreamOptions());
-  }
-
-  public MockDataReader(TypeDescription schema,
-                        InStream.StreamOptions options) {
     numColumns = schema.getMaximumId() + 1;
     next = new MockStripe(numColumns, stripes.size(), offset);
-    this.options = options;
   }
 
   public MockDataReader addStream(int column, OrcProto.Stream.Kind kind,
@@ -113,8 +106,8 @@ public class MockDataReader implements DataReader {
   public void close() { }
 
   @Override
-  public InStream.StreamOptions getCompressionOptions() {
-    return options;
+  public CompressionCodec getCompressionCodec() {
+    return null;
   }
 
   public MockStripe getStripe(int id) {

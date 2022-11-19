@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,29 +22,20 @@ import org.apache.orc.impl.ColumnStatisticsImpl;
 
 import java.util.List;
 
-/**
- * The statistics for a stripe.
- */
 public class StripeStatistics {
+  private final List<OrcProto.ColumnStatistics> cs;
   private final boolean writerUsedProlepticGregorian;
   private final boolean convertToProlepticGregorian;
-  protected final List<OrcProto.ColumnStatistics> cs;
-  protected final TypeDescription schema;
 
   public StripeStatistics(List<OrcProto.ColumnStatistics> list) {
-    this(null, list, false, false);
+    this(list, false, false);
   }
 
-  public StripeStatistics(TypeDescription schema, List<OrcProto.ColumnStatistics> list,
+  public StripeStatistics(List<OrcProto.ColumnStatistics> list,
       boolean writerUsedProlepticGregorian, boolean convertToProlepticGregorian) {
     this.cs = list;
-    this.schema = schema;
     this.writerUsedProlepticGregorian = writerUsedProlepticGregorian;
     this.convertToProlepticGregorian = convertToProlepticGregorian;
-  }
-
-  private int getBase() {
-    return schema == null ? 0 : schema.getId();
   }
 
   /**
@@ -54,15 +45,10 @@ public class StripeStatistics {
    */
   public ColumnStatistics[] getColumnStatistics() {
     ColumnStatistics[] result = new ColumnStatistics[cs.size()];
-    int base = getBase();
-    for (int c = 0; c < result.length; ++c) {
-      TypeDescription column = schema == null ? null : schema.findSubtype(base + c);
-      result[c] = ColumnStatisticsImpl.deserialize(column, cs.get(c), writerUsedProlepticGregorian, convertToProlepticGregorian);
+    for (int i = 0; i < result.length; ++i) {
+      result[i] = ColumnStatisticsImpl.deserialize(
+          null, cs.get(i), writerUsedProlepticGregorian, convertToProlepticGregorian);
     }
     return result;
-  }
-
-  public OrcProto.ColumnStatistics getColumn(int column) {
-    return cs.get(column);
   }
 }

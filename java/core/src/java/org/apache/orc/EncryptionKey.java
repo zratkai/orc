@@ -46,10 +46,4 @@ public interface EncryptionKey extends Comparable<EncryptionKey> {
    * @return the list of columns
    */
   EncryptionVariant[] getEncryptionRoots();
-
-  /**
-   * Is the key available to this user?
-   * @return true if the key is available
-   */
-  boolean isAvailable();
 }
