@@ -18,14 +18,9 @@ package org.apache.orc.impl;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.File;
@@ -38,6 +33,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.io.DiskRangeList;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.CompressionKind;
@@ -47,6 +43,7 @@ import org.apache.orc.Reader;
 import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -58,6 +55,7 @@ import org.mockito.runners.MockitoJUnitRunner;
 @RunWith(MockitoJUnitRunner.class)
 public class TestOrcLargeStripe {
 
+  private static final long MB = 1024 * 1024;
   private Path workDir = new Path(System.getProperty("test.tmp.dir", "target" + File.separator + "test"
     + File.separator + "tmp"));
 
@@ -79,62 +77,38 @@ public class TestOrcLargeStripe {
   @Mock
   private FSDataInputStream mockDataInput;
 
-  static class RangeBuilder {
-    BufferChunkList result = new BufferChunkList();
-
-    RangeBuilder range(long offset, int length) {
-      result.add(new BufferChunk(offset, length));
-      return this;
+  private DiskRangeList createRangeList(long... stripeSizes) {
+    DiskRangeList.CreateHelper list = new DiskRangeList.CreateHelper();
+    long prev = 0;
+    for (long stripe : stripeSizes) {
+      list.addOrMerge(prev, stripe, true, true);
+      prev = stripe;
     }
-
-    BufferChunkList build() {
-      return result;
-    }
+    return list.extract();
   }
 
-  @Test
-  public void testZeroCopy() throws Exception {
-    BufferChunkList ranges = new RangeBuilder().range(1000, 3000).build();
+  private void verifyDiskRanges(long stripeLength, int expectedChunks) throws Exception {
+
+    DiskRangeList rangeList = createRangeList(stripeLength);
+
+    DiskRangeList newList = RecordReaderUtils.readDiskRanges(mockDataInput, null, 0, rangeList, false, (int) (2 * MB));
+    assertEquals(expectedChunks, newList.listSize());
+
+    newList = RecordReaderUtils.readDiskRanges(mockDataInput, null, 0, rangeList, true, (int) (2 * MB));
+    assertEquals(expectedChunks, newList.listSize());
+
     HadoopShims.ZeroCopyReaderShim mockZcr = mock(HadoopShims.ZeroCopyReaderShim.class);
-    when(mockZcr.readBuffer(anyInt(), anyBoolean()))
-        .thenAnswer(invocation -> ByteBuffer.allocate(1000));
-    RecordReaderUtils.readDiskRanges(mockDataInput, mockZcr, ranges, true);
-    verify(mockDataInput).seek(1000);
-    verify(mockZcr).readBuffer(3000, false);
-    verify(mockZcr).readBuffer(2000, false);
-    verify(mockZcr).readBuffer(1000, false);
+    when(mockZcr.readBuffer(anyInt(), anyBoolean())).thenReturn(ByteBuffer.allocate((int) (2 * MB)));
+    newList = RecordReaderUtils.readDiskRanges(mockDataInput, mockZcr, 0, rangeList, true, (int) (2 * MB));
+    assertEquals(expectedChunks, newList.listSize());
   }
 
   @Test
-  public void testRangeMerge() throws Exception {
-    BufferChunkList rangeList = new RangeBuilder()
-                                    .range(100, 1000)
-                                    .range(1000, 10000)
-                                    .range(3000, 30000).build();
-    RecordReaderUtils.readDiskRanges(mockDataInput, null, rangeList, false);
-    verify(mockDataInput).readFully(eq(100L), any(), eq(0), eq(32900));
+  public void testStripeSizesBelowAndGreaterThanLimit() throws Exception {
+    verifyDiskRanges(MB, 1);
+    verifyDiskRanges(5 * MB, 3);
   }
 
-  @Test
-  public void testRangeSkip() throws Exception {
-    BufferChunkList rangeList = new RangeBuilder()
-                                    .range(1000, 1000)
-                                    .range(2000, 1000)
-                                    .range(4000, 1000)
-                                    .range(4100, 100)
-                                    .range(8000, 1000).build();
-    RecordReaderUtils.readDiskRanges(mockDataInput, null, rangeList, false);
-    verify(mockDataInput).readFully(eq(1000L), any(), eq(0), eq(2000));
-    verify(mockDataInput).readFully(eq(4000L), any(), eq(0), eq(1000));
-    verify(mockDataInput).readFully(eq(8000L), any(), eq(0), eq(1000));
-  }
-
-  @Test
-  public void testEmpty() throws Exception {
-    BufferChunkList rangeList = new RangeBuilder().build();
-    RecordReaderUtils.readDiskRanges(mockDataInput, null, rangeList, false);
-    verify(mockDataInput, never()).readFully(anyLong(), any(), anyInt(), anyInt());
-  }
 
   @Test
   public void testConfigMaxChunkLimit() throws IOException {
@@ -143,25 +117,28 @@ public class TestOrcLargeStripe {
     TypeDescription schema = TypeDescription.createTimestamp();
     testFilePath = new Path(workDir, "TestOrcLargeStripe." +
       testCaseName.getMethodName() + ".orc");
-    fs.delete(testFilePath, false);
     Writer writer = OrcFile.createWriter(testFilePath,
       OrcFile.writerOptions(conf).setSchema(schema).stripeSize(100000).bufferSize(10000)
         .version(OrcFile.Version.V_0_11).fileSystem(fs));
     writer.close();
 
-    OrcFile.ReaderOptions opts = OrcFile.readerOptions(conf);
-    Reader reader = OrcFile.createReader(testFilePath, opts);
-    RecordReader recordReader = reader.rows(new Reader.Options().range(0L, Long.MAX_VALUE));
-    assertTrue(recordReader instanceof RecordReaderImpl);
-    assertEquals(Integer.MAX_VALUE - 1024, ((RecordReaderImpl) recordReader).getMaxDiskRangeChunkLimit());
+    try {
+      OrcFile.ReaderOptions opts = OrcFile.readerOptions(conf);
+      Reader reader = OrcFile.createReader(testFilePath, opts);
+      RecordReader recordReader = reader.rows(new Reader.Options().range(0L, Long.MAX_VALUE));
+      assertTrue(recordReader instanceof RecordReaderImpl);
+      assertEquals(Integer.MAX_VALUE - 1024, ((RecordReaderImpl) recordReader).getMaxDiskRangeChunkLimit());
 
-    conf = new Configuration();
-    conf.setInt(OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getHiveConfName(), 1000);
-    opts = OrcFile.readerOptions(conf);
-    reader = OrcFile.createReader(testFilePath, opts);
-    recordReader = reader.rows(new Reader.Options().range(0L, Long.MAX_VALUE));
-    assertTrue(recordReader instanceof RecordReaderImpl);
-    assertEquals(1000, ((RecordReaderImpl) recordReader).getMaxDiskRangeChunkLimit());
+      conf = new Configuration();
+      conf.setInt(OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getHiveConfName(), 1000);
+      opts = OrcFile.readerOptions(conf);
+      reader = OrcFile.createReader(testFilePath, opts);
+      recordReader = reader.rows(new Reader.Options().range(0L, Long.MAX_VALUE));
+      assertTrue(recordReader instanceof RecordReaderImpl);
+      assertEquals(1000, ((RecordReaderImpl) recordReader).getMaxDiskRangeChunkLimit());
+    } finally {
+      fs.delete(testFilePath, false);
+    }
   }
 
   @Test

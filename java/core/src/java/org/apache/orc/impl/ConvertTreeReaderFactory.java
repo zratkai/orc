@@ -48,11 +48,9 @@ import org.apache.hadoop.hive.ql.io.filter.FilterContext;
 import org.apache.hadoop.hive.ql.util.TimestampUtils;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.orc.OrcProto;
-import org.apache.orc.StripeInformation;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.TypeDescription.Category;
 import org.threeten.extra.chrono.HybridChronology;
-import org.apache.orc.impl.reader.StripePlanner;
 
 /**
  * Convert ORC tree readers.
@@ -250,9 +248,11 @@ public class ConvertTreeReaderFactory extends TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
+    void startStripe(Map<StreamName, InStream> streams,
+                     OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
       // Pass-thru.
-      convertTreeReader.startStripe(planner);
+      convertTreeReader.startStripe(streams, stripeFooter);
     }
 
     @Override
