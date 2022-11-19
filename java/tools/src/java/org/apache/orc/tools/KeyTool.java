@@ -26,9 +26,8 @@ import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.orc.EncryptionAlgorithm;
-import org.apache.orc.impl.CryptoUtils;
 import org.apache.orc.impl.HadoopShims;
-import org.apache.orc.impl.KeyProvider;
+import org.apache.orc.impl.HadoopShimsFactory;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONWriter;
 
@@ -43,7 +42,7 @@ import java.security.SecureRandom;
 public class KeyTool {
 
   static void printKey(JSONWriter writer,
-                       KeyProvider provider,
+                       HadoopShims.KeyProvider provider,
                        String keyName) throws JSONException, IOException {
     HadoopShims.KeyMetadata meta = provider.getCurrentKeyVersion(keyName);
     writer.object();
@@ -80,8 +79,8 @@ public class KeyTool {
   }
 
   void run() throws IOException, JSONException {
-    KeyProvider provider =
-        CryptoUtils.getKeyProvider(conf, new SecureRandom());
+    HadoopShims.KeyProvider provider =
+        HadoopShimsFactory.get().getKeyProvider(conf, new SecureRandom());
     if (provider == null) {
       System.err.println("No key provider available.");
       System.exit(1);

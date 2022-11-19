@@ -55,7 +55,7 @@ public class HadoopShimsPre2_3 implements HadoopShims {
   }
 
   @Override
-  public KeyProvider getHadoopKeyProvider(Configuration conf, Random random) {
+  public KeyProvider getKeyProvider(Configuration conf, Random random) {
     return new NullKeyProvider();
   }
 
