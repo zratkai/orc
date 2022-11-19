@@ -43,7 +43,6 @@ import org.apache.orc.PhysicalWriter;
 import org.apache.orc.StripeInformation;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
-import org.apache.orc.impl.writer.StreamOptions;
 import org.apache.orc.impl.writer.TreeWriter;
 import org.apache.orc.impl.writer.WriterContext;
 import org.slf4j.Logger;
@@ -290,35 +289,37 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   }
 
 
-  public static
-  CompressionCodec.Options getCustomizedCodec(CompressionCodec codec,
-                                              OrcFile.CompressionStrategy strategy,
-                                              OrcProto.Stream.Kind kind) {
-    CompressionCodec.Options result = codec.createOptions();
-    switch (kind) {
-      case BLOOM_FILTER:
-      case DATA:
-      case DICTIONARY_DATA:
-      case BLOOM_FILTER_UTF8:
-        result.setData(CompressionCodec.DataKind.TEXT);
-        if (strategy == OrcFile.CompressionStrategy.SPEED) {
-          result.setSpeed(CompressionCodec.SpeedModifier.FAST);
-        } else {
-          result.setSpeed(CompressionCodec.SpeedModifier.DEFAULT);
-        }
-        break;
-      case LENGTH:
-      case DICTIONARY_COUNT:
-      case PRESENT:
-      case ROW_INDEX:
-      case SECONDARY:
-        // easily compressed using the fastest modes
-        result.setSpeed(CompressionCodec.SpeedModifier.FASTEST)
-            .setData(CompressionCodec.DataKind.BINARY);
-        break;
-      default:
-        LOG.info("Missing ORC compression modifiers for " + kind);
-        break;
+  CompressionCodec getCustomizedCodec(OrcProto.Stream.Kind kind) {
+    // TODO: modify may create a new codec here. We want to end() it when the stream is closed,
+    //       but at this point there's no close() for the stream.
+    CompressionCodec result = physicalWriter.getCompressionCodec();
+    if (result != null) {
+      switch (kind) {
+        case BLOOM_FILTER:
+        case DATA:
+        case DICTIONARY_DATA:
+        case BLOOM_FILTER_UTF8:
+          if (compressionStrategy == OrcFile.CompressionStrategy.SPEED) {
+            result = result.modify(EnumSet.of(CompressionCodec.Modifier.FAST,
+                CompressionCodec.Modifier.TEXT));
+          } else {
+            result = result.modify(EnumSet.of(CompressionCodec.Modifier.DEFAULT,
+                CompressionCodec.Modifier.TEXT));
+          }
+          break;
+        case LENGTH:
+        case DICTIONARY_COUNT:
+        case PRESENT:
+        case ROW_INDEX:
+        case SECONDARY:
+          // easily compressed using the fastest modes
+          result = result.modify(EnumSet.of(CompressionCodec.Modifier.FASTEST,
+              CompressionCodec.Modifier.BINARY));
+          break;
+        default:
+          LOG.info("Missing ORC compression modifiers for " + kind);
+          break;
+      }
     }
     return result;
   }
@@ -338,14 +339,10 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
                                   OrcProto.Stream.Kind kind
                                   ) throws IOException {
       final StreamName name = new StreamName(column, kind);
-      CompressionCodec codec = physicalWriter.getCompressionCodec();
-      StreamOptions options = new StreamOptions(bufferSize);
-      if (codec != null) {
-        options.withCodec(codec, getCustomizedCodec(codec, compressionStrategy,
-            kind));
-      }
-      return new OutStream(physicalWriter.toString(),
-          options, physicalWriter.createDataStream(name));
+      CompressionCodec codec = getCustomizedCodec(kind);
+
+      return new OutStream(physicalWriter.toString(), bufferSize, codec,
+          physicalWriter.createDataStream(name));
     }
 
     /**
@@ -426,13 +423,14 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
 
     public void writeIndex(StreamName name,
                            OrcProto.RowIndex.Builder index) throws IOException {
-      physicalWriter.writeIndex(name, index);
+      physicalWriter.writeIndex(name, index, getCustomizedCodec(name.getKind()));
     }
 
     public void writeBloomFilter(StreamName name,
                                  OrcProto.BloomFilterIndex.Builder bloom
                                  ) throws IOException {
-      physicalWriter.writeBloomFilter(name, bloom);
+      physicalWriter.writeBloomFilter(name, bloom,
+          getCustomizedCodec(name.getKind()));
     }
 
     public boolean getUseUTCTimestamp() {
