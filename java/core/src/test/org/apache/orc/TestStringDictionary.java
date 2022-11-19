@@ -242,11 +242,6 @@ public class TestStringDictionary {
     }
 
     @Override
-    public void writeStatistics(StreamName name, OrcProto.ColumnStatistics.Builder stats) throws IOException {
-
-    }
-
-    @Override
     public boolean getUseUTCTimestamp() {
       return true;
     }
