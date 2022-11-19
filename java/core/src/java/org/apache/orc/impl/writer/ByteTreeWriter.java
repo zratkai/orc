@@ -23,22 +23,21 @@ import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.orc.OrcProto;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.impl.CryptoUtils;
 import org.apache.orc.impl.PositionRecorder;
 import org.apache.orc.impl.RunLengthByteWriter;
-import org.apache.orc.impl.StreamName;
 
 import java.io.IOException;
 
 public class ByteTreeWriter extends TreeWriterBase {
   private final RunLengthByteWriter writer;
 
-  public ByteTreeWriter(TypeDescription schema,
-                        WriterEncryptionVariant encryption,
-                        WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
-    this.writer = new RunLengthByteWriter(writer.createStream(
-        new StreamName(id, OrcProto.Stream.Kind.DATA, encryption)));
+  public ByteTreeWriter(int columnId,
+                        TypeDescription schema,
+                        WriterContext writer,
+                        boolean nullable) throws IOException {
+    super(columnId, schema, writer, nullable);
+    this.writer = new RunLengthByteWriter(writer.createStream(id,
+        OrcProto.Stream.Kind.DATA));
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -81,8 +80,10 @@ public class ByteTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeStripe(int requiredIndexEntries) throws IOException {
-    super.writeStripe(requiredIndexEntries);
+  public void writeStripe(OrcProto.StripeFooter.Builder builder,
+                          OrcProto.StripeStatistics.Builder stats,
+                          int requiredIndexEntries) throws IOException {
+    super.writeStripe(builder, stats, requiredIndexEntries);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -109,11 +110,5 @@ public class ByteTreeWriter extends TreeWriterBase {
   public void flushStreams() throws IOException {
     super.flushStreams();
     writer.flush();
-  }
-
-  @Override
-  public void prepareStripe(int stripeId) {
-    super.prepareStripe(stripeId);
-    writer.changeIv(CryptoUtils.modifyIvForStripe(stripeId));
   }
 }

@@ -32,10 +32,11 @@ import java.nio.charset.StandardCharsets;
 public class VarcharTreeWriter extends StringBaseTreeWriter {
   private final int maxLength;
 
-  VarcharTreeWriter(TypeDescription schema,
-                    WriterEncryptionVariant encryption,
-                    WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
+  VarcharTreeWriter(int columnId,
+                    TypeDescription schema,
+                    WriterContext writer,
+                    boolean nullable) throws IOException {
+    super(columnId, schema, writer, nullable);
     maxLength = schema.getMaxLength();
   }
 

@@ -42,7 +42,6 @@ import org.apache.orc.impl.writer.StreamOptions;
 import org.apache.orc.impl.writer.StringTreeWriter;
 import org.apache.orc.impl.writer.TreeWriter;
 import org.apache.orc.impl.writer.WriterContext;
-import org.apache.orc.impl.writer.WriterEncryptionVariant;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -175,9 +174,9 @@ public class TestStringDictionary {
     }
 
     @Override
-    public OutStream createStream(StreamName name) throws IOException {
+    public OutStream createStream(int column, OrcProto.Stream.Kind kind) throws IOException {
       TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
-      streams.put(name, collect);
+      streams.put(new StreamName(column, kind), collect);
       return new OutStream("test", new StreamOptions(1000), collect);
     }
 
@@ -227,16 +226,6 @@ public class TestStringDictionary {
     }
 
     @Override
-    public void setEncoding(int column, WriterEncryptionVariant variant, OrcProto.ColumnEncoding encoding) {
-
-    }
-
-    @Override
-    public void writeStatistics(StreamName name, OrcProto.ColumnStatistics.Builder stats) throws IOException {
-
-    }
-
-    @Override
     public OrcFile.BloomFilterVersion getBloomFilterVersion() {
       return OrcFile.BloomFilterVersion.UTF8;
     }
@@ -253,13 +242,8 @@ public class TestStringDictionary {
     }
 
     @Override
-    public DataMask getUnencryptedMask(int columnId) {
-      return null;
-    }
+    public void writeStatistics(StreamName name, OrcProto.ColumnStatistics.Builder stats) throws IOException {
 
-    @Override
-    public WriterEncryptionVariant getEncryption(int columnId) {
-      return null;
     }
 
     @Override
@@ -285,7 +269,7 @@ public class TestStringDictionary {
     conf.set(OrcConf.DICTIONARY_KEY_SIZE_THRESHOLD.getAttribute(), "0.0");
     WriterContextImpl writerContext = new WriterContextImpl(schema, conf);
     StringTreeWriter writer = (StringTreeWriter)
-        TreeWriter.Factory.create(schema, null, writerContext);
+        TreeWriter.Factory.create(schema, writerContext, true);
 
     VectorizedRowBatch batch = schema.createRowBatch();
     BytesColumnVector col = (BytesColumnVector) batch.cols[0];
