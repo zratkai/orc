@@ -18,7 +18,17 @@
 
 package org.apache.orc.impl;
 
-import org.apache.hadoop.hive.ql.exec.vector.*;
+import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.Decimal64ColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.MapColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.StructColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.UnionColumnVector;
 import org.apache.orc.TypeDescription;
 
 import java.util.List;
@@ -35,9 +45,8 @@ public class TypeUtils {
     case SHORT:
     case INT:
     case LONG:
-      return new LongColumnVector(maxSize);
     case DATE:
-      return new DateColumnVector(maxSize);
+      return new LongColumnVector(maxSize);
     case TIMESTAMP:
     case TIMESTAMP_INSTANT:
       return new TimestampColumnVector(maxSize);

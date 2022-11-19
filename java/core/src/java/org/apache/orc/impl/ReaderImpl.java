@@ -301,7 +301,7 @@ public class ReaderImpl implements Reader {
         if (codec != null) {
           compression.withCodec(codec).withBufferSize(bufferSize);
         }
-        return ((ReaderEncryptionVariant) variant).getStripeStatistics(null, compression, this);
+        return ((ReaderEncryptionVariant) variant).getStripeStatistics(null, compression, null);
       }
     }
   }
@@ -369,7 +369,7 @@ public class ReaderImpl implements Reader {
       InStream.StreamOptions options = new InStream.StreamOptions(compression)
                                            .withEncryption(algorithm, key, iv);
       InStream in = InStream.create("encrypted file stats", buffer,
-          0, bytes.length, options);
+          bytes.length, 0, options);
       OrcProto.FileStatistics decrypted = OrcProto.FileStatistics.parseFrom(in);
       ColumnStatistics[] result = new ColumnStatistics[decrypted.getColumnCount()];
       TypeDescription root = encryption.getRoot();
