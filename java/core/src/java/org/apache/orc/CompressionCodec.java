@@ -17,32 +17,67 @@
  */
 package org.apache.orc;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.EnumSet;
 
-public interface CompressionCodec {
+/**
+ * The API for compression codecs for ORC.
+ * Closeable.close() returns this codec to the OrcCodecPool.
+ */
+public interface CompressionCodec extends Closeable {
 
-  enum Modifier {
+  enum SpeedModifier {
     /* speed/compression tradeoffs */
     FASTEST,
     FAST,
-    DEFAULT,
-    /* data sensitivity modifiers */
+    DEFAULT
+  }
+
+  enum DataKind {
     TEXT,
     BINARY
-  };
+  }
+
+  interface Options {
+    /**
+     * Make a copy before making changes.
+     * @return a new copy
+     */
+    Options copy();
+
+    /**
+     * Set the speed for the compression.
+     * @param newValue how aggressively to compress
+     * @return this
+     */
+    Options setSpeed(SpeedModifier newValue);
+
+    /**
+     * Set the kind of data for the compression.
+     * @param newValue what kind of data this is
+     * @return this
+     */
+    Options setData(DataKind newValue);
+  }
+
+  /**
+   * Get the default options for this codec.
+   * @return the default options object
+   */
+  Options getDefaultOptions();
 
   /**
    * Compress the in buffer to the out buffer.
    * @param in the bytes to compress
    * @param out the uncompressed bytes
    * @param overflow put any additional bytes here
+   * @param options the options to control compression
    * @return true if the output is smaller than input
    * @throws IOException
    */
-  boolean compress(ByteBuffer in, ByteBuffer out, ByteBuffer overflow
-                  ) throws IOException;
+  boolean compress(ByteBuffer in, ByteBuffer out, ByteBuffer overflow,
+                   Options options) throws IOException;
 
   /**
    * Decompress the in buffer to the out buffer.
@@ -52,21 +87,20 @@ public interface CompressionCodec {
    */
   void decompress(ByteBuffer in, ByteBuffer out) throws IOException;
 
-  /**
-   * Produce a modified compression codec if the underlying algorithm allows
-   * modification.
-   *
-   * This does not modify the current object, but returns a new object if
-   * modifications are possible. Returns the same object if no modifications
-   * are possible.
-   * @param modifiers compression modifiers (nullable)
-   * @return codec for use after optional modification
-   */
-  CompressionCodec modify(EnumSet<Modifier> modifiers);
-
   /** Resets the codec, preparing it for reuse. */
   void reset();
 
   /** Closes the codec, releasing the resources. */
+  void destroy();
+
+  /**
+   * Get the compression kind.
+   */
+  CompressionKind getKind();
+
+  /**
+   * Return the codec to the pool.
+   */
+  @Override
   void close();
 }

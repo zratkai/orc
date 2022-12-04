@@ -20,10 +20,14 @@ package org.apache.orc.impl.writer;
 
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
+import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcProto;
+import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
+import org.apache.orc.impl.CryptoUtils;
 import org.apache.orc.impl.IntegerWriter;
 import org.apache.orc.impl.PositionRecorder;
+import org.apache.orc.impl.StreamName;
 
 import java.io.IOException;
 
@@ -32,15 +36,15 @@ public class ListTreeWriter extends TreeWriterBase {
   private final boolean isDirectV2;
   private final TreeWriter childWriter;
 
-  ListTreeWriter(int columnId,
-                 TypeDescription schema,
-                 WriterContext writer,
-                 boolean nullable) throws IOException {
-    super(columnId, schema, writer, nullable);
+  ListTreeWriter(TypeDescription schema,
+                 WriterEncryptionVariant encryption,
+                 WriterContext writer) throws IOException {
+    super(schema, encryption, writer);
     this.isDirectV2 = isNewWriteFormat(writer);
-    childWriter = Factory.create(schema.getChildren().get(0), writer, true);
-    lengths = createIntegerWriter(writer.createStream(columnId,
-        OrcProto.Stream.Kind.LENGTH), false, isDirectV2, writer);
+    childWriter = Factory.create(schema.getChildren().get(0), encryption, writer);
+    lengths = createIntegerWriter(writer.createStream(
+        new StreamName(id, OrcProto.Stream.Kind.LENGTH, encryption)),
+        false, isDirectV2, writer);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -68,6 +72,9 @@ public class ListTreeWriter extends TreeWriterBase {
                          int length) throws IOException {
     super.writeBatch(vector, offset, length);
     ListColumnVector vec = (ListColumnVector) vector;
+    /* update aggregate statistics */
+    indexStatistics.updateCollectionLength(vec.lengths.length);
+
     if (vector.isRepeating) {
       if (vector.noNulls || !vector.isNull[0]) {
         int childOffset = (int) vec.offsets[0];
@@ -119,11 +126,9 @@ public class ListTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeStripe(OrcProto.StripeFooter.Builder builder,
-                          OrcProto.StripeStatistics.Builder stats,
-                          int requiredIndexEntries) throws IOException {
-    super.writeStripe(builder, stats, requiredIndexEntries);
-    childWriter.writeStripe(builder, stats, requiredIndexEntries);
+  public void writeStripe(int requiredIndexEntries) throws IOException {
+    super.writeStripe(requiredIndexEntries);
+    childWriter.writeStripe(requiredIndexEntries);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -136,9 +141,10 @@ public class ListTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void updateFileStatistics(OrcProto.StripeStatistics stats) {
-    super.updateFileStatistics(stats);
-    childWriter.updateFileStatistics(stats);
+  public void addStripeStatistics(StripeStatistics[] stats
+                                  ) throws IOException {
+    super.addStripeStatistics(stats);
+    childWriter.addStripeStatistics(stats);
   }
 
   @Override
@@ -153,9 +159,9 @@ public class ListTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeFileStatistics(OrcProto.Footer.Builder footer) {
-    super.writeFileStatistics(footer);
-    childWriter.writeFileStatistics(footer);
+  public void writeFileStatistics() throws IOException {
+    super.writeFileStatistics();
+    childWriter.writeFileStatistics();
   }
 
   @Override
@@ -163,5 +169,18 @@ public class ListTreeWriter extends TreeWriterBase {
     super.flushStreams();
     lengths.flush();
     childWriter.flushStreams();
+  }
+
+  @Override
+  public void getCurrentStatistics(ColumnStatistics[] output) {
+    super.getCurrentStatistics(output);
+    childWriter.getCurrentStatistics(output);
+  }
+
+  @Override
+  public void prepareStripe(int stripeId) {
+    super.prepareStripe(stripeId);
+    lengths.changeIv(CryptoUtils.modifyIvForStripe(stripeId));
+    childWriter.prepareStripe(stripeId);
   }
 }

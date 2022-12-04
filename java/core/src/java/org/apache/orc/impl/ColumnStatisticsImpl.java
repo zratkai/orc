@@ -17,14 +17,22 @@
  */
 package org.apache.orc.impl;
 
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.time.chrono.ChronoLocalDate;
+import java.time.chrono.Chronology;
+import java.time.chrono.IsoChronology;
+import java.util.TimeZone;
+
+import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
-import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableComparator;
 import org.apache.orc.BinaryColumnStatistics;
 import org.apache.orc.BooleanColumnStatistics;
+import org.apache.orc.CollectionColumnStatistics;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.DateColumnStatistics;
 import org.apache.orc.DecimalColumnStatistics;
@@ -35,14 +43,9 @@ import org.apache.orc.StringColumnStatistics;
 import org.apache.orc.TimestampColumnStatistics;
 import org.apache.orc.TypeDescription;
 
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.sql.Date;
-import java.sql.Timestamp;
-import java.util.Arrays;
-import java.util.TimeZone;
+import org.threeten.extra.chrono.HybridChronology;
+
 
 public class ColumnStatisticsImpl implements ColumnStatistics {
 
@@ -66,7 +69,6 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     if (bytesOnDisk != that.bytesOnDisk) {
       return false;
     }
-
     return true;
   }
 
@@ -170,6 +172,166 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     }
   }
 
+  /**
+   * Column statistics for List and Map types.
+   */
+  private static final class CollectionColumnStatisticsImpl extends ColumnStatisticsImpl
+      implements CollectionColumnStatistics {
+
+    protected long minimum = Long.MAX_VALUE;
+    protected long maximum = 0;
+    protected long sum = 0;
+
+    CollectionColumnStatisticsImpl() {
+      super();
+    }
+
+    CollectionColumnStatisticsImpl(OrcProto.ColumnStatistics stats) {
+      super(stats);
+      OrcProto.CollectionStatistics collStat = stats.getCollectionStatistics();
+
+      minimum = collStat.hasMinChildren() ? collStat.getMinChildren() : Long.MAX_VALUE;
+      maximum = collStat.hasMaxChildren() ? collStat.getMaxChildren() : 0;
+      sum = collStat.hasTotalChildren() ? collStat.getTotalChildren() : 0;
+    }
+
+    @Override
+    public void updateCollectionLength(final long length) {
+      /*
+       * Here, minimum = minCollectionLength
+       * maximum = maxCollectionLength
+       * sum = childCount
+       */
+      if (length < minimum) {
+        minimum = length;
+      }
+      if (length > maximum) {
+        maximum = length;
+      }
+
+      this.sum += length;
+    }
+
+    @Override
+    public void reset() {
+      super.reset();
+      minimum = Long.MAX_VALUE;
+      maximum = 0;
+      sum = 0;
+    }
+
+    @Override
+    public void merge(ColumnStatisticsImpl other) {
+      if (other instanceof CollectionColumnStatisticsImpl) {
+        CollectionColumnStatisticsImpl otherColl = (CollectionColumnStatisticsImpl) other;
+
+        if(count == 0) {
+          minimum = otherColl.minimum;
+          maximum = otherColl.maximum;
+        } else {
+          if (otherColl.minimum < minimum) {
+            minimum = otherColl.minimum;
+          }
+          if (otherColl.maximum > maximum) {
+            maximum = otherColl.maximum;
+          }
+        }
+        sum += otherColl.sum;
+      } else {
+        if (isStatsExists()) {
+          throw new IllegalArgumentException("Incompatible merging of collection column statistics");
+        }
+      }
+      super.merge(other);
+    }
+
+    @Override
+    public long getMinimumChildren() {
+      return minimum;
+    }
+
+    @Override
+    public long getMaximumChildren() {
+      return maximum;
+    }
+
+    @Override
+    public long getTotalChildren() {
+      return sum;
+    }
+
+    @Override
+    public String toString() {
+      StringBuilder buf = new StringBuilder(super.toString());
+      if (count != 0) {
+        buf.append(" minChildren: ");
+        buf.append(minimum);
+        buf.append(" maxChildren: ");
+        buf.append(maximum);
+        if (sum != 0) {
+          buf.append(" totalChildren: ");
+          buf.append(sum);
+        }
+      }
+      return buf.toString();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (!(o instanceof CollectionColumnStatisticsImpl)) {
+        return false;
+      }
+      if (!super.equals(o)) {
+        return false;
+      }
+
+      CollectionColumnStatisticsImpl that = (CollectionColumnStatisticsImpl) o;
+
+      if (minimum != that.minimum) {
+        return false;
+      }
+      if (maximum != that.maximum) {
+        return false;
+      }
+      if (sum != that.sum) {
+        return false;
+      }
+
+      return true;
+    }
+
+    @Override
+    public int hashCode() {
+      int result = super.hashCode();
+      result = 31 * result + (count != 0 ? (int) (minimum ^ (minimum >>> 32)): 0) ;
+      result = 31 * result + (count != 0 ? (int) (maximum ^ (maximum >>> 32)): 0);
+      result = 31 * result + (sum != 0 ? (int) (sum ^ (sum >>> 32)): 0);
+      return result;
+    }
+
+    @Override
+    public OrcProto.ColumnStatistics.Builder serialize() {
+      OrcProto.ColumnStatistics.Builder builder = super.serialize();
+      OrcProto.CollectionStatistics.Builder collectionStats =
+          OrcProto.CollectionStatistics.newBuilder();
+      if (count != 0) {
+        collectionStats.setMinChildren(minimum);
+        collectionStats.setMaxChildren(maximum);
+      }
+      if (sum != 0) {
+        collectionStats.setTotalChildren(sum);
+      }
+      builder.setCollectionStatistics(collectionStats);
+      return builder;
+    }
+  }
+
+  /**
+   * Implementation of IntegerColumnStatistics
+   */
   private static final class IntegerStatisticsImpl extends ColumnStatisticsImpl
       implements IntegerColumnStatistics {
 
@@ -266,7 +428,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     public OrcProto.ColumnStatistics.Builder serialize() {
       OrcProto.ColumnStatistics.Builder builder = super.serialize();
       OrcProto.IntegerStatistics.Builder intb =
-        OrcProto.IntegerStatistics.newBuilder();
+          OrcProto.IntegerStatistics.newBuilder();
       if (hasMinimum) {
         intb.setMinimum(minimum);
         intb.setMaximum(maximum);
@@ -1356,16 +1518,23 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
   private static final class DateStatisticsImpl extends ColumnStatisticsImpl
       implements DateColumnStatistics {
-    private Integer minimum = null;
-    private Integer maximum = null;
+    private int minimum = Integer.MAX_VALUE;
+    private int maximum = Integer.MIN_VALUE;
+    private final Chronology chronology;
 
-    DateStatisticsImpl() {
+    static Chronology getInstance(boolean proleptic) {
+      return proleptic ? IsoChronology.INSTANCE : HybridChronology.INSTANCE;
+    }
+
+    DateStatisticsImpl(boolean convertToProleptic) {
+      this.chronology = getInstance(convertToProleptic);
     }
 
     DateStatisticsImpl(OrcProto.ColumnStatistics stats,
                        boolean writerUsedProlepticGregorian,
                        boolean convertToProlepticGregorian) {
       super(stats);
+      this.chronology = getInstance(convertToProlepticGregorian);
       OrcProto.DateStatistics dateStats = stats.getDateStatistics();
       // min,max values serialized/deserialized as int (days since epoch)
       if (dateStats.hasMaximum()) {
@@ -1381,30 +1550,26 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     @Override
     public void reset() {
       super.reset();
-      minimum = null;
-      maximum = null;
+      minimum = Integer.MAX_VALUE;
+      maximum = Integer.MIN_VALUE;
     }
 
     @Override
     public void updateDate(DateWritable value) {
-      if (minimum == null) {
+      if (minimum > value.getDays()) {
         minimum = value.getDays();
-        maximum = value.getDays();
-      } else if (minimum > value.getDays()) {
-        minimum = value.getDays();
-      } else if (maximum < value.getDays()) {
+      }
+      if (maximum < value.getDays()) {
         maximum = value.getDays();
       }
     }
 
     @Override
     public void updateDate(int value) {
-      if (minimum == null) {
+      if (minimum > value) {
         minimum = value;
-        maximum = value;
-      } else if (minimum > value) {
-        minimum = value;
-      } else if (maximum < value) {
+      }
+      if (maximum < value) {
         maximum = value;
       }
     }
@@ -1413,19 +1578,10 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     public void merge(ColumnStatisticsImpl other) {
       if (other instanceof DateStatisticsImpl) {
         DateStatisticsImpl dateStats = (DateStatisticsImpl) other;
-        if (minimum == null) {
-          minimum = dateStats.minimum;
-          maximum = dateStats.maximum;
-        } else if (dateStats.minimum != null) {
-          if (minimum > dateStats.minimum) {
-            minimum = dateStats.minimum;
-          }
-          if (maximum < dateStats.maximum) {
-            maximum = dateStats.maximum;
-          }
-        }
+        minimum = Math.min(minimum, dateStats.minimum);
+        maximum = Math.max(maximum, dateStats.maximum);
       } else {
-        if (isStatsExists() && minimum != null) {
+        if (isStatsExists() && count != 0) {
           throw new IllegalArgumentException("Incompatible merging of date column statistics");
         }
       }
@@ -1437,7 +1593,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       OrcProto.ColumnStatistics.Builder result = super.serialize();
       OrcProto.DateStatistics.Builder dateStats =
           OrcProto.DateStatistics.newBuilder();
-      if (getNumberOfValues() != 0 && minimum != null) {
+      if (count != 0) {
         dateStats.setMinimum(minimum);
         dateStats.setMaximum(maximum);
       }
@@ -1445,24 +1601,41 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       return result;
     }
 
-    private transient final DateWritable minDate = new DateWritable();
-    private transient final DateWritable maxDate = new DateWritable();
+    @Override
+    public ChronoLocalDate getMinimumLocalDate() {
+      return count == 0 ? null : chronology.dateEpochDay(minimum);
+    }
+
+    @Override
+    public long getMinimumDayOfEpoch() {
+      return minimum;
+    }
+
+    @Override
+    public ChronoLocalDate getMaximumLocalDate() {
+      return count == 0 ? null : chronology.dateEpochDay(maximum);
+    }
+
+    @Override
+    public long getMaximumDayOfEpoch() {
+      return maximum;
+    }
 
     @Override
     public Date getMinimum() {
-      if (minimum == null) {
+      if (count == 0) {
         return null;
       }
-      minDate.set(minimum);
+      DateWritable minDate = new DateWritable(minimum);
       return minDate.get();
     }
 
     @Override
     public Date getMaximum() {
-      if (maximum == null) {
+      if (count == 0) {
         return null;
       }
-      maxDate.set(maximum);
+      DateWritable maxDate = new DateWritable(maximum);
       return maxDate.get();
     }
 
@@ -1471,9 +1644,9 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       StringBuilder buf = new StringBuilder(super.toString());
       if (getNumberOfValues() != 0) {
         buf.append(" min: ");
-        buf.append(getMinimum());
+        buf.append(getMinimumLocalDate());
         buf.append(" max: ");
-        buf.append(getMaximum());
+        buf.append(getMaximumLocalDate());
       }
       return buf.toString();
     }
@@ -1492,16 +1665,10 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
       DateStatisticsImpl that = (DateStatisticsImpl) o;
 
-      if (minimum != null ? !minimum.equals(that.minimum) : that.minimum != null) {
+      if (minimum != that.minimum) {
         return false;
       }
-      if (maximum != null ? !maximum.equals(that.maximum) : that.maximum != null) {
-        return false;
-      }
-      if (minDate != null ? !minDate.equals(that.minDate) : that.minDate != null) {
-        return false;
-      }
-      if (maxDate != null ? !maxDate.equals(that.maxDate) : that.maxDate != null) {
+      if (maximum != that.maximum) {
         return false;
       }
 
@@ -1511,10 +1678,8 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     @Override
     public int hashCode() {
       int result = super.hashCode();
-      result = 31 * result + (minimum != null ? minimum.hashCode() : 0);
-      result = 31 * result + (maximum != null ? maximum.hashCode() : 0);
-      result = 31 * result + (minDate != null ? minDate.hashCode() : 0);
-      result = 31 * result + (maxDate != null ? maxDate.hashCode() : 0);
+      result = 31 * result + minimum;
+      result = 31 * result + maximum;
       return result;
     }
   }
@@ -1749,6 +1914,15 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     hasNull = true;
   }
 
+  /**
+   * Update the collection length for Map and List type.
+   * @param value length of collection
+   */
+  public void updateCollectionLength(final long value) {
+    throw new UnsupportedOperationException(
+        "Can't update collection count");
+  }
+
   public void updateBoolean(boolean value, int repetitions) {
     throw new UnsupportedOperationException("Can't update boolean");
   }
@@ -1857,6 +2031,11 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
   }
 
   public static ColumnStatisticsImpl create(TypeDescription schema) {
+    return create(schema, false);
+  }
+
+  public static ColumnStatisticsImpl create(TypeDescription schema,
+                                            boolean convertToProleptic) {
     switch (schema.getCategory()) {
       case BOOLEAN:
         return new BooleanStatisticsImpl();
@@ -1865,6 +2044,9 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       case INT:
       case LONG:
         return new IntegerStatisticsImpl();
+      case LIST:
+      case MAP:
+        return new CollectionColumnStatisticsImpl();
       case FLOAT:
       case DOUBLE:
         return new DoubleStatisticsImpl();
@@ -1879,7 +2061,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
           return new DecimalStatisticsImpl();
         }
       case DATE:
-        return new DateStatisticsImpl();
+        return new DateStatisticsImpl(convertToProleptic);
       case TIMESTAMP:
         return new TimestampStatisticsImpl();
       case TIMESTAMP_INSTANT:
@@ -1893,7 +2075,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
   public static ColumnStatisticsImpl deserialize(TypeDescription schema,
                                                  OrcProto.ColumnStatistics stats) {
-    return deserialize(schema, stats, false, false);
+    return deserialize(schema, stats, true, true);
   }
 
   public static ColumnStatisticsImpl deserialize(TypeDescription schema,
@@ -1911,6 +2093,8 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       return new BooleanStatisticsImpl(stats);
     } else if (stats.hasIntStatistics()) {
       return new IntegerStatisticsImpl(stats);
+    } else if (stats.hasCollectionStatistics()) {
+      return new CollectionColumnStatisticsImpl(stats);
     } else if (stats.hasDoubleStatistics()) {
       return new DoubleStatisticsImpl(stats);
     } else if (stats.hasStringStatistics()) {

@@ -36,7 +36,6 @@ import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -50,7 +49,6 @@ import java.util.TimeZone;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.common.io.DiskRange;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.Decimal64ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
@@ -65,8 +63,9 @@ import org.apache.orc.Reader;
 import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
+import org.apache.orc.impl.reader.ReaderEncryption;
+import org.apache.orc.impl.reader.StripePlanner;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestName;
@@ -1638,13 +1637,13 @@ public class TestSchemaEvolution {
                            OrcProto.Stream.Kind kind,
                            int... values) throws IOException {
     StreamName name = new StreamName(id, kind);
-    List<DiskRange> ranges = new ArrayList<>();
+    BufferChunkList ranges = new BufferChunkList();
     byte[] buffer = new byte[values.length];
     for(int i=0; i < values.length; ++i) {
       buffer[i] = (byte) values[i];
     }
     ranges.add(new BufferChunk(ByteBuffer.wrap(buffer), 0));
-    streams.put(name, InStream.create(name.toString(), ranges, values.length, null,
+    streams.put(name, InStream.create(name.toString(), ranges.get(), 0,
         values.length));
   }
 
@@ -1684,19 +1683,18 @@ public class TestSchemaEvolution {
         children[2].getClass());
 
     // check to make sure the data is read correctly
-    OrcProto.StripeFooter.Builder footer = OrcProto.StripeFooter.newBuilder();
-    OrcProto.ColumnEncoding DIRECT =
-        OrcProto.ColumnEncoding.newBuilder()
-            .setKind(OrcProto.ColumnEncoding.Kind.DIRECT).build();
-    footer.addColumns(DIRECT);
-    footer.addColumns(DIRECT);
-    footer.addColumns(DIRECT);
-    Map<StreamName, InStream> streams = new HashMap<>();
-    createStream(streams, 1, OrcProto.Stream.Kind.DATA, 7, 1, 0);
-    createStream(streams, 2, OrcProto.Stream.Kind.DATA,
-        65, 66, 67, 68, 69, 70, 71, 72, 73, 74);
-    createStream(streams, 2, OrcProto.Stream.Kind.LENGTH, 7, 0, 1);
-    reader.startStripe(streams, footer.build());
+    MockDataReader dataReader = new MockDataReader(fileType)
+        .addStream(1, OrcProto.Stream.Kind.DATA, createBuffer(7, 1, 0))
+        .addStream(2, OrcProto.Stream.Kind.DATA, createBuffer(65, 66, 67, 68,
+            69, 70, 71, 72, 73, 74))
+        .addStream(2, OrcProto.Stream.Kind.LENGTH, createBuffer(7, 0, 1))
+        .addStripeFooter(100, null);
+    StripePlanner planner = new StripePlanner(fileType, new ReaderEncryption(),
+        dataReader, OrcFile.WriterVersion.ORC_14, true, Integer.MAX_VALUE);
+    boolean[] columns = new boolean[]{true, true, true};
+    planner.parseStripe(dataReader.getStripe(0), columns)
+        .readData(null, null, false);
+    reader.startStripe(planner);
     VectorizedRowBatch batch = readType.createRowBatch();
     reader.nextBatch(batch, 10);
     final String EXPECTED = "ABCDEFGHIJ";

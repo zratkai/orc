@@ -20,8 +20,10 @@ package org.apache.orc.impl.writer;
 
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
+import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
 
 import java.io.IOException;
@@ -44,6 +46,12 @@ public interface TreeWriter {
    * @return the number of bytes
    */
   long getRawDataSize();
+
+  /**
+   * Set up for the next stripe.
+   * @param stripeId the next stripe id
+   */
+  void prepareStripe(int stripeId);
 
   /**
    * Write a VectorizedRowBath to the file. This is called by the WriterImplV2
@@ -78,99 +86,112 @@ public interface TreeWriter {
 
   /**
    * Write the stripe out to the file.
-   * @param stripeFooter the stripe footer that contains the information about the
-   *                layout of the stripe. The TreeWriterBase is required to update
-   *                the footer with its information.
-   * @param stats the stripe statistics information
    * @param requiredIndexEntries the number of index entries that are
    *                             required. this is to check to make sure the
    *                             row index is well formed.
    */
-  void writeStripe(OrcProto.StripeFooter.Builder stripeFooter,
-                   OrcProto.StripeStatistics.Builder stats,
-                   int requiredIndexEntries) throws IOException;
+  void writeStripe(int requiredIndexEntries) throws IOException;
 
   /**
-   * During a stripe append, we need to update the file statistics.
-   * @param stripeStatistics the statistics for the new stripe
+   * During a stripe append, we need to handle the stripe statistics.
+   * @param stripeStatistics the statistics for the new stripe across the
+   *                         encryption variants
    */
-  void updateFileStatistics(OrcProto.StripeStatistics stripeStatistics);
+  void addStripeStatistics(StripeStatistics[] stripeStatistics
+                           ) throws IOException;
 
   /**
-   * Add the file statistics to the file footer.
-   * @param footer the file footer builder
+   * Write the FileStatistics for each column in each encryption variant.
    */
-  void writeFileStatistics(OrcProto.Footer.Builder footer);
+  void writeFileStatistics() throws IOException;
+
+  /**
+   * Get the current file statistics for each column. If a column is encrypted,
+   * the encrypted variant statistics are used.
+   * @param output an array that is filled in with the results
+   */
+  void getCurrentStatistics(ColumnStatistics[] output);
 
   class Factory {
+    /**
+     * Create a new tree writer for the given types and insert encryption if
+     * required.
+     * @param schema the type to build a writer for
+     * @param encryption the encryption status
+     * @param streamFactory the writer context
+     * @return a new tree writer
+     */
     public static TreeWriter create(TypeDescription schema,
-                                    WriterContext streamFactory,
-                                    boolean nullable) throws IOException {
-      OrcFile.Version version = streamFactory.getVersion();
-      switch (schema.getCategory()) {
-        case BOOLEAN:
-          return new BooleanTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case BYTE:
-          return new ByteTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case SHORT:
-        case INT:
-        case LONG:
-          return new IntegerTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case FLOAT:
-          return new FloatTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case DOUBLE:
-          return new DoubleTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case STRING:
-          return new StringTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case CHAR:
-          return new CharTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case VARCHAR:
-          return new VarcharTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case BINARY:
-          return new BinaryTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case TIMESTAMP:
-          return new TimestampTreeWriter(schema.getId(), schema,
-                                         streamFactory, nullable, false);
-        case TIMESTAMP_INSTANT:
-            return new TimestampTreeWriter(schema.getId(), schema,
-                                           streamFactory, nullable, true);
-        case DATE:
-          return new DateTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case DECIMAL:
-          if (version == OrcFile.Version.UNSTABLE_PRE_2_0 &&
-              schema.getPrecision() <= TypeDescription.MAX_DECIMAL64_PRECISION) {
-            return new Decimal64TreeWriter(schema.getId(),
-                schema, streamFactory, nullable);
-          }
-          return new DecimalTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case STRUCT:
-          return new StructTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case MAP:
-          return new MapTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case LIST:
-          return new ListTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        case UNION:
-          return new UnionTreeWriter(schema.getId(),
-              schema, streamFactory, nullable);
-        default:
-          throw new IllegalArgumentException("Bad category: " +
-              schema.getCategory());
+                                    WriterEncryptionVariant encryption,
+                                    WriterContext streamFactory) throws IOException {
+      if (encryption == null) {
+        // If we are the root of an encryption variant, create a special writer.
+        encryption = streamFactory.getEncryption(schema.getId());
+        if (encryption != null) {
+          return new EncryptionTreeWriter(schema, encryption, streamFactory);
+        }
       }
+      return createSubtree(schema, encryption, streamFactory);
     }
 
+    /**
+     * Create a subtree without inserting encryption nodes
+     * @param schema the schema to create
+     * @param encryption the encryption variant
+     * @param streamFactory the writer context
+     * @return a new tree writer
+     */
+    static TreeWriter createSubtree(TypeDescription schema,
+                                    WriterEncryptionVariant encryption,
+                                    WriterContext streamFactory) throws IOException {
+      OrcFile.Version version = streamFactory.getVersion();
+      switch (schema.getCategory()) {
+      case BOOLEAN:
+        return new BooleanTreeWriter(schema, encryption, streamFactory);
+      case BYTE:
+        return new ByteTreeWriter(schema, encryption, streamFactory);
+      case SHORT:
+      case INT:
+      case LONG:
+        return new IntegerTreeWriter(schema, encryption, streamFactory);
+      case FLOAT:
+        return new FloatTreeWriter(schema, encryption, streamFactory);
+      case DOUBLE:
+        return new DoubleTreeWriter(schema, encryption, streamFactory);
+      case STRING:
+        return new StringTreeWriter(schema, encryption, streamFactory);
+      case CHAR:
+        return new CharTreeWriter(schema, encryption, streamFactory);
+      case VARCHAR:
+        return new VarcharTreeWriter(schema, encryption, streamFactory);
+      case BINARY:
+        return new BinaryTreeWriter(schema, encryption, streamFactory);
+      case TIMESTAMP:
+        return new TimestampTreeWriter(
+                schema, encryption, streamFactory, false);
+      case TIMESTAMP_INSTANT:
+        return new TimestampTreeWriter(
+                schema, encryption, streamFactory, true);
+      case DATE:
+        return new DateTreeWriter(schema, encryption, streamFactory);
+      case DECIMAL:
+        if (version == OrcFile.Version.UNSTABLE_PRE_2_0 &&
+                schema.getPrecision() <= TypeDescription.MAX_DECIMAL64_PRECISION) {
+          return new Decimal64TreeWriter(schema, encryption, streamFactory);
+        }
+        return new DecimalTreeWriter(schema, encryption, streamFactory);
+      case STRUCT:
+        return new StructTreeWriter(schema, encryption, streamFactory);
+      case MAP:
+        return new MapTreeWriter(schema, encryption, streamFactory);
+      case LIST:
+        return new ListTreeWriter(schema, encryption, streamFactory);
+      case UNION:
+        return new UnionTreeWriter(schema, encryption, streamFactory);
+      default:
+        throw new IllegalArgumentException("Bad category: " +
+                                               schema.getCategory());
+      }
+    }
   }
 }

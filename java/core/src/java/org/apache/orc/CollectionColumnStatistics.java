@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,29 +15,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.orc.impl;
-
-import java.util.List;
-
-import org.apache.hadoop.hive.common.DiskRangeInfo;
-import org.apache.hadoop.hive.common.io.DiskRange;
+package org.apache.orc;
 
 /**
- * An uncompressed stream whose underlying byte buffer can be set.
+ * Statistics for all of collections such as Map and List.
  */
-public class SettableUncompressedStream extends InStream.UncompressedStream {
+public interface CollectionColumnStatistics extends ColumnStatistics {
+  /**
+   * Get minimum number of children in the collection.
+   * @return the minimum children count
+   */
+  long getMinimumChildren();
 
-  public SettableUncompressedStream(String name, List<DiskRange> input, long length) {
-    super(name, input, length);
-    setOffset(input);
-  }
+  /**
+   * Get maximum number of children in the collection.
+   * @return the maximum children count
+   */
+  long getMaximumChildren();
 
-  public void setBuffers(DiskRangeInfo diskRangeInfo) {
-    reset(diskRangeInfo.getDiskRanges(), diskRangeInfo.getTotalLength());
-    setOffset(diskRangeInfo.getDiskRanges());
-  }
-
-  private void setOffset(List<DiskRange> list) {
-    currentOffset = list.isEmpty() ? 0 : list.get(0).getOffset();
-  }
+  /**
+   * Get the total number of children in the collection.
+   * @return the total number of children
+   */
+  long getTotalChildren();
 }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,12 +19,12 @@ package org.apache.orc.impl;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.EnumSet;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 import org.apache.orc.CompressionCodec;
+import org.apache.orc.CompressionKind;
 
 public class ZlibCodec implements CompressionCodec, DirectDecompressionCodec {
   private static final HadoopShims SHIMS = HadoopShimsFactory.get();
@@ -32,27 +32,101 @@ public class ZlibCodec implements CompressionCodec, DirectDecompressionCodec {
   private HadoopShims.DirectDecompressor decompressShim = null;
   private Boolean direct = null;
 
-  private int level;
-  private int strategy;
+  static class ZlibOptions implements Options {
+    private int level;
+    private int strategy;
+    private final boolean FIXED;
 
-  public ZlibCodec() {
-    level = Deflater.DEFAULT_COMPRESSION;
-    strategy = Deflater.DEFAULT_STRATEGY;
+    ZlibOptions(int level, int strategy, boolean fixed) {
+      this.level = level;
+      this.strategy = strategy;
+      FIXED = fixed;
+    }
+
+    @Override
+    public ZlibOptions copy() {
+      return new ZlibOptions(level, strategy, false);
+    }
+
+    @Override
+    public ZlibOptions setSpeed(SpeedModifier newValue) {
+      if (FIXED) {
+        throw new IllegalStateException("Attempt to modify the default options");
+      }
+      switch (newValue) {
+        case FAST:
+          // deflate_fast looking for 16 byte patterns
+          level = Deflater.BEST_SPEED + 1;
+          break;
+        case DEFAULT:
+          // deflate_slow looking for 128 byte patterns
+          level = Deflater.DEFAULT_COMPRESSION;
+          break;
+        case FASTEST:
+          // deflate_fast looking for 8 byte patterns
+          level = Deflater.BEST_SPEED;
+          break;
+        default:
+          break;
+      }
+      return this;
+    }
+
+    @Override
+    public ZlibOptions setData(DataKind newValue) {
+      if (FIXED) {
+        throw new IllegalStateException("Attempt to modify the default options");
+      }
+      switch (newValue) {
+        case BINARY:
+          /* filtered == less LZ77, more huffman */
+          strategy = Deflater.FILTERED;
+          break;
+        case TEXT:
+          strategy = Deflater.DEFAULT_STRATEGY;
+          break;
+        default:
+          break;
+      }
+      return this;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (other == null || getClass() != other.getClass()) {
+        return false;
+      } else if (this == other) {
+        return true;
+      } else {
+        ZlibOptions otherOpts = (ZlibOptions) other;
+        return level == otherOpts.level && strategy == otherOpts.strategy;
+      }
+    }
+
+    @Override
+    public int hashCode() {
+      return level + strategy * 101;
+    }
   }
 
-  private ZlibCodec(int level, int strategy) {
-    this.level = level;
-    this.strategy = strategy;
+  private static final ZlibOptions DEFAULT_OPTIONS =
+      new ZlibOptions(Deflater.DEFAULT_COMPRESSION, Deflater.DEFAULT_STRATEGY, true);
+
+  @Override
+  public Options getDefaultOptions() {
+    return DEFAULT_OPTIONS;
   }
 
   @Override
   public boolean compress(ByteBuffer in, ByteBuffer out,
-                          ByteBuffer overflow) throws IOException {
+                          ByteBuffer overflow,
+                          Options options) {
+    ZlibOptions zlo = (ZlibOptions) options;
     int length = in.remaining();
     int outSize = 0;
-    Deflater deflater = new Deflater(level, true);
+    Deflater deflater = new Deflater(zlo.level, true);
     try {
-      deflater.setStrategy(strategy);
+      deflater.setStrategy(zlo.strategy);
       deflater.setInput(in.array(), in.arrayOffset() + in.position(), length);
       deflater.finish();
       int offset = out.arrayOffset() + out.position();
@@ -114,10 +188,10 @@ public class ZlibCodec implements CompressionCodec, DirectDecompressionCodec {
         ensureShim();
         direct = (decompressShim != null);
       } catch (UnsatisfiedLinkError ule) {
-        direct = Boolean.valueOf(false);
+        direct = false;
       }
     }
-    return direct.booleanValue();
+    return direct;
   }
 
   private void ensureShim() {
@@ -135,56 +209,26 @@ public class ZlibCodec implements CompressionCodec, DirectDecompressionCodec {
   }
 
   @Override
-  public CompressionCodec modify(/* @Nullable */ EnumSet<Modifier> modifiers) {
-
-    if (modifiers == null) {
-      return this;
-    }
-
-    int l = this.level;
-    int s = this.strategy;
-
-    for (Modifier m : modifiers) {
-      switch (m) {
-      case BINARY:
-        /* filtered == less LZ77, more huffman */
-        s = Deflater.FILTERED;
-        break;
-      case TEXT:
-        s = Deflater.DEFAULT_STRATEGY;
-        break;
-      case FASTEST:
-        // deflate_fast looking for 8 byte patterns
-        l = Deflater.BEST_SPEED;
-        break;
-      case FAST:
-        // deflate_fast looking for 16 byte patterns
-        l = Deflater.BEST_SPEED + 1;
-        break;
-      case DEFAULT:
-        // deflate_slow looking for 128 byte patterns
-        l = Deflater.DEFAULT_COMPRESSION;
-        break;
-      default:
-        break;
-      }
-    }
-    return new ZlibCodec(l, s);
-  }
-
-  @Override
   public void reset() {
-    level = Deflater.DEFAULT_COMPRESSION;
-    strategy = Deflater.DEFAULT_STRATEGY;
     if (decompressShim != null) {
       decompressShim.reset();
     }
   }
 
   @Override
-  public void close() {
+  public void destroy() {
     if (decompressShim != null) {
       decompressShim.end();
     }
+  }
+
+  @Override
+  public CompressionKind getKind() {
+    return CompressionKind.ZLIB;
+  }
+
+  @Override
+  public void close() {
+    OrcCodecPool.returnCodec(CompressionKind.ZLIB, this);
   }
 }

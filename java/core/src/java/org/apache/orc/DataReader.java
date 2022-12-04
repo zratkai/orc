@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 
 import org.apache.hadoop.hive.common.io.DiskRangeList;
+import org.apache.orc.impl.BufferChunkList;
+import org.apache.orc.impl.InStream;
 import org.apache.orc.impl.OrcIndex;
 
 /** An abstract data reader that IO formats can use to read bytes from underlying storage. */
@@ -30,32 +32,21 @@ public interface DataReader extends AutoCloseable, Cloneable {
   /** Opens the DataReader, making it ready to use. */
   void open() throws IOException;
 
-  OrcIndex readRowIndex(StripeInformation stripe,
-                        TypeDescription fileSchema,
-                        OrcProto.StripeFooter footer,
-                        boolean ignoreNonUtf8BloomFilter,
-                        boolean[] included,
-                        OrcProto.RowIndex[] indexes,
-                        boolean[] sargColumns,
-                        OrcFile.WriterVersion version,
-                        OrcProto.Stream.Kind[] bloomFilterKinds,
-                        OrcProto.BloomFilterIndex[] bloomFilterIndices
-                        ) throws IOException;
-
   OrcProto.StripeFooter readStripeFooter(StripeInformation stripe) throws IOException;
 
-  /** Reads the data.
+  /**
+   * Reads the data from the file.
    *
-   * Note that for the cases such as zero-copy read, caller must release the disk ranges
-   * produced after being done with them. Call isTrackingDiskRanges to find out if this is needed.
-   * @param range List if disk ranges to read. Ranges with data will be ignored.
-   * @param baseOffset Base offset from the start of the file of the ranges in disk range list.
+   * Note that for the cases such as zero-copy read, caller must release the disk
+   * ranges produced after being done with them. Call isTrackingDiskRanges to
+   * find out if this is needed.
+   *
+   * @param range List of disk ranges to read. Ranges with data will be ignored.
    * @param doForceDirect Whether the data should be read into direct buffers.
-   * @return New or modified list of DiskRange-s, where all the ranges are filled with data.
+   * @return The list range with buffers filled in
    */
-  DiskRangeList readFileData(
-      DiskRangeList range, long baseOffset, boolean doForceDirect) throws IOException;
-
+  BufferChunkList readFileData(BufferChunkList range,
+                               boolean doForceDirect) throws IOException;
 
   /**
    * Whether the user should release buffers created by readFileData. See readFileData javadoc.
@@ -77,12 +68,13 @@ public interface DataReader extends AutoCloseable, Cloneable {
   DataReader clone();
 
   @Override
-  public void close() throws IOException;
+  void close() throws IOException;
 
   /**
-   * Returns the compression codec used by this datareader.
-   * We should consider removing this from the interface.
-   * @return the compression codec
+   * Returns the compression options used by this DataReader.
+   * The codec if present is owned by the DataReader and should not be returned
+   * to the OrcCodecPool.
+   * @return the compression options
    */
-  CompressionCodec getCompressionCodec();
+  InStream.StreamOptions getCompressionOptions();
 }

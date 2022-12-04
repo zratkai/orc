@@ -17,20 +17,25 @@
  */
 package org.apache.orc.impl;
 
-import static junit.framework.Assert.assertEquals;
-
 import java.nio.ByteBuffer;
 import java.util.Random;
 
 import org.apache.orc.CompressionCodec;
+import org.apache.orc.impl.writer.StreamOptions;
 import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
 
 public class TestRunLengthIntegerReader {
 
   public void runSeekTest(CompressionCodec codec) throws Exception {
     TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
+    StreamOptions options = new StreamOptions(1000);
+    if (codec != null) {
+      options.withCodec(codec, codec.getDefaultOptions());
+    }
     RunLengthIntegerWriter out = new RunLengthIntegerWriter(
-        new OutStream("test", 1000, codec, collect), true);
+        new OutStream("test", options, collect), true);
     TestInStream.PositionCollector[] positions =
         new TestInStream.PositionCollector[4096];
     Random random = new Random(99);
@@ -55,8 +60,8 @@ public class TestRunLengthIntegerReader {
     collect.buffer.setByteBuffer(inBuf, 0, collect.buffer.size());
     inBuf.flip();
     RunLengthIntegerReader in = new RunLengthIntegerReader(InStream.create
-        ("test", new ByteBuffer[]{inBuf}, new long[]{0}, inBuf.remaining(),
-            codec, 1000), true);
+        ("test", new BufferChunk(inBuf, 0), 0, inBuf.remaining(),
+            InStream.options().withCodec(codec).withBufferSize(1000)), true);
     for(int i=0; i < 2048; ++i) {
       int x = (int) in.next();
       if (i < 1024) {
@@ -94,7 +99,7 @@ public class TestRunLengthIntegerReader {
   public void testSkips() throws Exception {
     TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
     RunLengthIntegerWriter out = new RunLengthIntegerWriter(
-        new OutStream("test", 100, null, collect), true);
+        new OutStream("test", new StreamOptions(100), collect), true);
     for(int i=0; i < 2048; ++i) {
       if (i < 1024) {
         out.write(i);
@@ -107,8 +112,7 @@ public class TestRunLengthIntegerReader {
     collect.buffer.setByteBuffer(inBuf, 0, collect.buffer.size());
     inBuf.flip();
     RunLengthIntegerReader in = new RunLengthIntegerReader(InStream.create
-        ("test", new ByteBuffer[]{inBuf}, new long[]{0}, inBuf.remaining(),
-            null, 100), true);
+        ("test", new BufferChunk(inBuf, 0), 0, inBuf.remaining()), true);
     for(int i=0; i < 2048; i += 10) {
       int x = (int) in.next();
       if (i < 1024) {

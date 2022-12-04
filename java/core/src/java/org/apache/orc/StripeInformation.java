@@ -56,4 +56,31 @@ public interface StripeInformation {
    * @return a count of the number of rows
    */
   long getNumberOfRows();
+
+  /**
+   * Get the index of this stripe in the current file.
+   * @return 0 to number_of_stripes - 1
+   */
+  long getStripeId();
+
+  /**
+   * Does this stripe have an explicit encryption stripe id set?
+   * @return true if this stripe was the first stripe of a merge
+   */
+  boolean hasEncryptionStripeId();
+
+  /**
+   * Get the original stripe id that was used when the stripe was originally
+   * written. This is only different that getStripeId in merged files.
+   * @return the original stripe id + 1
+   */
+  long getEncryptionStripeId();
+
+  /**
+   * Get the encrypted keys starting from this stripe until overridden by
+   * a new set in a following stripe. The top level array is one for each
+   * encryption variant. Each element is an encrypted key.
+   * @return the array of encrypted keys
+   */
+  byte[][] getEncryptedLocalKeys();
 }

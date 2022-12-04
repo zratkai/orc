@@ -215,6 +215,7 @@
               <exclude>**/*.schema</exclude>
               <exclude>**/target/**</exclude>
               <exclude>.idea/**</exclude>
+              <exclude>**/*.iml</exclude>
             </excludes>
           </configuration>
         </plugin>
@@ -628,6 +629,11 @@
             <artifactId>stax-api</artifactId>
           </exclusion>
         </exclusions>
+      </dependency>
+      <dependency>
+        <groupId>org.jetbrains</groupId>
+        <artifactId>annotations</artifactId>
+        <version>17.0.0</version>
       </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>

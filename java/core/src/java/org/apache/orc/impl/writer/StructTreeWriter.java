@@ -21,7 +21,9 @@ package org.apache.orc.impl.writer;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.StructColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcProto;
+import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
 
 import java.io.IOException;
@@ -30,15 +32,14 @@ import java.util.List;
 public class StructTreeWriter extends TreeWriterBase {
   final TreeWriter[] childrenWriters;
 
-  public StructTreeWriter(int columnId,
-                          TypeDescription schema,
-                          WriterContext writer,
-                          boolean nullable) throws IOException {
-    super(columnId, schema, writer, nullable);
+  public StructTreeWriter(TypeDescription schema,
+                          WriterEncryptionVariant encryption,
+                          WriterContext writer) throws IOException {
+    super(schema, encryption, writer);
     List<TypeDescription> children = schema.getChildren();
-    childrenWriters = new TreeWriterBase[children.size()];
+    childrenWriters = new TreeWriter[children.size()];
     for (int i = 0; i < childrenWriters.length; ++i) {
-      childrenWriters[i] = Factory.create(children.get(i), writer, true);
+      childrenWriters[i] = Factory.create(children.get(i), encryption, writer);
     }
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
@@ -108,12 +109,10 @@ public class StructTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeStripe(OrcProto.StripeFooter.Builder builder,
-                          OrcProto.StripeStatistics.Builder stats,
-                          int requiredIndexEntries) throws IOException {
-    super.writeStripe(builder, stats, requiredIndexEntries);
+  public void writeStripe(int requiredIndexEntries) throws IOException {
+    super.writeStripe(requiredIndexEntries);
     for (TreeWriter child : childrenWriters) {
-      child.writeStripe(builder, stats, requiredIndexEntries);
+      child.writeStripe(requiredIndexEntries);
     }
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
@@ -121,10 +120,11 @@ public class StructTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void updateFileStatistics(OrcProto.StripeStatistics stats) {
-    super.updateFileStatistics(stats);
+  public void addStripeStatistics(StripeStatistics[] stats
+                                  ) throws IOException {
+    super.addStripeStatistics(stats);
     for (TreeWriter child : childrenWriters) {
-      child.updateFileStatistics(stats);
+      child.addStripeStatistics(stats);
     }
   }
 
@@ -147,10 +147,10 @@ public class StructTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeFileStatistics(OrcProto.Footer.Builder footer) {
-    super.writeFileStatistics(footer);
+  public void writeFileStatistics() throws IOException {
+    super.writeFileStatistics();
     for (TreeWriter child : childrenWriters) {
-      child.writeFileStatistics(footer);
+      child.writeFileStatistics();
     }
   }
 
@@ -160,6 +160,21 @@ public class StructTreeWriter extends TreeWriterBase {
     for (TreeWriter child : childrenWriters) {
       child.flushStreams();
     }
+  }
 
+  @Override
+  public void getCurrentStatistics(ColumnStatistics[] output) {
+    super.getCurrentStatistics(output);
+    for (TreeWriter child: childrenWriters) {
+      child.getCurrentStatistics(output);
+    }
+  }
+
+  @Override
+  public void prepareStripe(int stripeId) {
+    super.prepareStripe(stripeId);
+    for (TreeWriter child: childrenWriters) {
+      child.prepareStripe(stripeId);
+    }
   }
 }

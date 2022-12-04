@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -32,6 +32,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.orc.impl.HadoopShims;
 import org.apache.orc.impl.HadoopShimsFactory;
+import org.apache.orc.impl.KeyProvider;
 import org.apache.orc.impl.MemoryManagerImpl;
 import org.apache.orc.impl.OrcTail;
 import org.apache.orc.impl.ReaderImpl;
@@ -173,6 +174,7 @@ public class OrcFile {
     ORC_135(WriterImplementation.ORC_JAVA, 6),   // timestamp stats use utc
     ORC_517(WriterImplementation.ORC_JAVA, 7),   // decimal64 min/max are fixed
     ORC_203(WriterImplementation.ORC_JAVA, 8),   // trim long strings & record they were trimmed
+    ORC_14(WriterImplementation.ORC_JAVA, 9),    // column encryption added
 
     // C++ ORC Writer
     ORC_CPP_ORIGINAL(WriterImplementation.ORC_CPP, 6),
@@ -256,7 +258,7 @@ public class OrcFile {
   /**
    * The WriterVersion for this version of the software.
    */
-  public static final WriterVersion CURRENT_WRITER = WriterVersion.ORC_203;
+  public static final WriterVersion CURRENT_WRITER = WriterVersion.ORC_14;
 
   public enum EncodingStrategy {
     SPEED, COMPRESSION
@@ -274,6 +276,7 @@ public class OrcFile {
     private FileSystem filesystem;
     private long maxLength = Long.MAX_VALUE;
     private OrcTail orcTail;
+    private KeyProvider keyProvider;
     // TODO: We can generalize FileMetada interface. Make OrcTail implement FileMetadata interface
     // and remove this class altogether. Both footer caching and llap caching just needs OrcTail.
     // For now keeping this around to avoid complex surgery
@@ -312,6 +315,16 @@ public class OrcFile {
       return this;
     }
 
+    /**
+     * Set the KeyProvider to override the default for getting keys.
+     * @param provider
+     * @return
+     */
+    public ReaderOptions setKeyProvider(KeyProvider provider) {
+      this.keyProvider = provider;
+      return this;
+    }
+
     public Configuration getConfiguration() {
       return conf;
     }
@@ -328,6 +341,13 @@ public class OrcFile {
       return orcTail;
     }
 
+    public KeyProvider getKeyProvider() {
+      return keyProvider;
+    }
+
+    /**
+     * @deprecated Use {@link #orcTail(OrcTail)} instead.
+     */
     public ReaderOptions fileMetadata(final FileMetadata metadata) {
       fileMetadata = metadata;
       return this;
@@ -427,6 +447,10 @@ public class OrcFile {
     private HadoopShims shims;
     private String directEncodingColumns;
     private boolean useProlepticGregorian;
+    private String encryption;
+    private String masks;
+    private KeyProvider provider;
+    private Map<String, HadoopShims.KeyMetadata> keyOverrides = new HashMap<>();
 
     protected WriterOptions(Properties tableProperties, Configuration conf) {
       configuration = conf;
@@ -480,8 +504,7 @@ public class OrcFile {
     public WriterOptions clone() {
       try {
         return (WriterOptions) super.clone();
-      }
-      catch(CloneNotSupportedException ex) {
+      } catch (CloneNotSupportedException ex) {
         throw new AssertionError("Expected super.clone() to work");
       }
     }
@@ -592,6 +615,7 @@ public class OrcFile {
 
     /**
      * Specify the false positive probability for bloom filter.
+     *
      * @param fpp - false positive probability
      * @return this
      */
@@ -610,6 +634,7 @@ public class OrcFile {
 
     /**
      * Set the schema for the file. This is a required parameter.
+     *
      * @param schema the schema for the file.
      * @return this
      */
@@ -628,6 +653,7 @@ public class OrcFile {
 
     /**
      * Add a listener for when the stripe and file are about to be closed.
+     *
      * @param callback the object to be called when the stripe is closed
      * @return this
      */
@@ -646,7 +672,7 @@ public class OrcFile {
 
     /**
      * Change the physical writer of the ORC file.
-     *
+     * <p>
      * SHOULD ONLY BE USED BY LLAP.
      *
      * @param writer the writer to control the layout and persistence
@@ -690,6 +716,7 @@ public class OrcFile {
     /**
      * Manually set the writer version.
      * This is an internal API.
+     *
      * @param version the version to write
      * @return this
      */
@@ -729,6 +756,81 @@ public class OrcFile {
     public WriterOptions setProlepticGregorian(boolean newValue) {
       this.useProlepticGregorian = newValue;
       return this;
+    }
+
+    /*
+    /**
+     * Encrypt a set of columns with a key.
+     *
+     * Format of the string is a key-list.
+     * <ul>
+     *   <li>key-list = key (';' key-list)?</li>
+     *   <li>key = key-name ':' field-list</li>
+     *   <li>field-list = field-name ( ',' field-list )?</li>
+     *   <li>field-name = number | field-part ('.' field-name)?</li>
+     *   <li>field-part = quoted string | simple name</li>
+     * </ul>
+     *
+     * @param value a key-list of which columns to encrypt
+     * @return this
+     */
+    public WriterOptions encrypt(String value) {
+      encryption = value;
+      return this;
+    }
+
+    /**
+     * Set the masks for the unencrypted data.
+     *
+     * Format of the string is a mask-list.
+     * <ul>
+     *   <li>mask-list = mask (';' mask-list)?</li>
+     *   <li>mask = mask-name (',' parameter)* ':' field-list</li>
+     *   <li>field-list = field-name ( ',' field-list )?</li>
+     *   <li>field-name = number | field-part ('.' field-name)?</li>
+     *   <li>field-part = quoted string | simple name</li>
+     * </ul>
+     *
+     * @param value a list of the masks and column names
+     * @return this
+     */
+    public WriterOptions masks(String value) {
+      masks = value;
+      return this;
+    }
+
+    /**
+     * For users that need to override the current version of a key, this
+     * method allows them to define the version & algorithm for a given key.
+     *
+     * This will mostly be used for ORC file merging where the writer has to
+     * use the same version of the key that the original files used.
+     *
+     * @param keyName the key name
+     * @param version the version of the key to use
+     * @param algorithm the algorithm for the given key version
+     * @return this
+     */
+    public WriterOptions setKeyVersion(String keyName, int version,
+                                       EncryptionAlgorithm algorithm) {
+      HadoopShims.KeyMetadata meta = new HadoopShims.KeyMetadata(keyName,
+          version, algorithm);
+      keyOverrides.put(keyName, meta);
+      return this;
+    }
+
+    /**
+     * Set the key provider for column encryption.
+     * @param provider the object that holds the master secrets
+     * @return this
+     */
+    public WriterOptions setKeyProvider(KeyProvider provider) {
+      this.provider = provider;
+      return this;
+    }
+
+    public KeyProvider getKeyProvider() {
+      return provider;
     }
 
     public boolean getBlockPadding() {
@@ -838,6 +940,18 @@ public class OrcFile {
     public boolean getProlepticGregorian() {
       return useProlepticGregorian;
     }
+
+    public String getEncryption() {
+      return encryption;
+    }
+
+    public String getMasks() {
+      return masks;
+    }
+
+    public Map<String, HadoopShims.KeyMetadata> getKeyOverrides() {
+      return keyOverrides;
+    }
   }
 
   /**
@@ -914,48 +1028,111 @@ public class OrcFile {
     return true;
   }
 
+  private static boolean sameKeys(EncryptionKey[] first,
+                                  EncryptionKey[] next) {
+    if (first.length != next.length) {
+      return false;
+    }
+    for(int k = 0; k < first.length && k < next.length; ++k) {
+      if (!first[k].getKeyName().equals(next[k].getKeyName()) ||
+          first[k].getKeyVersion() != next[k].getKeyVersion() ||
+          first[k].getAlgorithm() != next[k].getAlgorithm()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean sameMasks(DataMaskDescription[] first,
+                                   DataMaskDescription[] next) {
+    if (first.length != next.length) {
+      return false;
+    }
+    for(int k = 0; k < first.length && k < next.length; ++k) {
+      if (!first[k].getName().equals(next[k].getName())) {
+        return false;
+      }
+      String[] firstParam = first[k].getParameters();
+      String[] nextParam = next[k].getParameters();
+      if (firstParam.length != nextParam.length) {
+        return false;
+      }
+      for(int p=0; p < firstParam.length && p < nextParam.length; ++p) {
+        if (!firstParam[p].equals(nextParam[p])) {
+          return false;
+        }
+      }
+      TypeDescription[] firstRoots = first[k].getColumns();
+      TypeDescription[] nextRoots = next[k].getColumns();
+      if (firstRoots.length != nextRoots.length) {
+        return false;
+      }
+      for(int r=0; r < firstRoots.length && r < nextRoots.length; ++r) {
+        if (firstRoots[r].getId() != nextRoots[r].getId()) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  private static boolean sameVariants(EncryptionVariant[] first,
+                                      EncryptionVariant[] next) {
+    if (first.length != next.length) {
+      return false;
+    }
+    for(int k = 0; k < first.length && k < next.length; ++k) {
+      if ((first[k].getKeyDescription() == null) !=
+              (next[k].getKeyDescription() == null) ||
+          !first[k].getKeyDescription().getKeyName().equals(
+             next[k].getKeyDescription().getKeyName()) ||
+          first[k].getRoot().getId() !=
+             next[k].getRoot().getId()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /**
    * Is the new reader compatible with the file that is being written?
-   * @param schema the writer schema
-   * @param fileVersion the writer fileVersion
-   * @param writerVersion the writer writerVersion
-   * @param rowIndexStride the row index stride
-   * @param compression the compression that was used
+   * @param firstReader the first reader that others must match
    * @param userMetadata the user metadata
    * @param path the new path name for warning messages
    * @param reader the new reader
    * @return is the reader compatible with the previous ones?
    */
-  static boolean readerIsCompatible(TypeDescription schema,
-                                    Version fileVersion,
-                                    WriterVersion writerVersion,
-                                    int rowIndexStride,
-                                    CompressionKind compression,
+  static boolean readerIsCompatible(Reader firstReader,
                                     Map<String, ByteBuffer> userMetadata,
                                     boolean writerUsedProlepticGregorian,
                                     Path path,
                                     Reader reader) {
     // now we have to check compatibility
+    TypeDescription schema = firstReader.getSchema();
     if (!reader.getSchema().equals(schema)) {
       LOG.info("Can't merge {} because of different schemas {} vs {}",
           path, reader.getSchema(), schema);
       return false;
     }
+    CompressionKind compression = firstReader.getCompressionKind();
     if (reader.getCompressionKind() != compression) {
       LOG.info("Can't merge {} because of different compression {} vs {}",
           path, reader.getCompressionKind(), compression);
       return false;
     }
+    OrcFile.Version fileVersion = firstReader.getFileVersion();
     if (reader.getFileVersion() != fileVersion) {
       LOG.info("Can't merge {} because of different file versions {} vs {}",
           path, reader.getFileVersion(), fileVersion);
       return false;
     }
+    OrcFile.WriterVersion writerVersion = firstReader.getWriterVersion();
     if (reader.getWriterVersion() != writerVersion) {
       LOG.info("Can't merge {} because of different writer versions {} vs {}",
           path, reader.getFileVersion(), fileVersion);
       return false;
     }
+    int rowIndexStride = firstReader.getRowIndexStride();
     if (reader.getRowIndexStride() != rowIndexStride) {
       LOG.info("Can't merge {} because of different row index strides {} vs {}",
           path, reader.getRowIndexStride(), rowIndexStride);
@@ -974,6 +1151,20 @@ public class OrcFile {
     }
     if (writerUsedProlepticGregorian != reader.writerUsedProlepticGregorian()) {
       LOG.info("Can't merge {} because it uses a different calendar", path);
+      return false;
+    }
+    if (!sameKeys(firstReader.getColumnEncryptionKeys(),
+                  reader.getColumnEncryptionKeys())) {
+      LOG.info("Can't merge {} because it has different encryption keys", path);
+      return false;
+    }
+    if (!sameMasks(firstReader.getDataMasks(), reader.getDataMasks())) {
+      LOG.info("Can't merge {} because it has different encryption masks", path);
+      return false;
+    }
+    if (!sameVariants(firstReader.getEncryptionVariants(),
+                      reader.getEncryptionVariants())) {
+      LOG.info("Can't merge {} because it has different encryption variants", path);
       return false;
     }
     return true;
@@ -1007,48 +1198,47 @@ public class OrcFile {
                                       List<Path> inputFiles) throws IOException {
     Writer output = null;
     final Configuration conf = options.getConfiguration();
+    KeyProvider keyProvider = options.getKeyProvider();
     try {
       byte[] buffer = new byte[0];
-      TypeDescription schema = null;
-      CompressionKind compression = null;
-      int bufferSize = 0;
-      Version fileVersion = null;
-      WriterVersion writerVersion = null;
-      int rowIndexStride = 0;
+      Reader firstFile = null;
       List<Path> result = new ArrayList<>(inputFiles.size());
       Map<String, ByteBuffer> userMetadata = new HashMap<>();
+      int bufferSize = 0;
       boolean writerUsedProlepticGregorian = false;
 
       for (Path input : inputFiles) {
         FileSystem fs = input.getFileSystem(conf);
         Reader reader = createReader(input,
-            readerOptions(options.getConfiguration()).filesystem(fs));
+            readerOptions(options.getConfiguration())
+                .filesystem(fs)
+                .setKeyProvider(keyProvider));
 
         if (!understandFormat(input, reader)) {
           continue;
-        } else if (schema == null) {
+        } else if (firstFile == null) {
           // if this is the first file that we are including, grab the values
-          schema = reader.getSchema();
-          compression = reader.getCompressionKind();
+          firstFile = reader;
           bufferSize = reader.getCompressionSize();
-          rowIndexStride = reader.getRowIndexStride();
-          fileVersion = reader.getFileVersion();
-          writerVersion = reader.getWriterVersion();
+          CompressionKind compression = reader.getCompressionKind();
           writerUsedProlepticGregorian = reader.writerUsedProlepticGregorian();
           options.bufferSize(bufferSize)
-              .version(fileVersion)
-              .writerVersion(writerVersion)
+              .version(reader.getFileVersion())
+              .writerVersion(reader.getWriterVersion())
               .compress(compression)
-              .rowIndexStride(rowIndexStride)
-              .setSchema(schema);
+              .rowIndexStride(reader.getRowIndexStride())
+              .setSchema(reader.getSchema());
           if (compression != CompressionKind.NONE) {
             options.enforceBufferSize().bufferSize(bufferSize);
           }
           mergeMetadata(userMetadata, reader);
+          // ensure that the merged file uses the same key versions
+          for(EncryptionKey key: reader.getColumnEncryptionKeys()) {
+            options.setKeyVersion(key.getKeyName(), key.getKeyVersion(),
+                key.getAlgorithm());
+          }
           output = createWriter(outputPath, options);
-        } else if (!readerIsCompatible(schema, fileVersion, writerVersion,
-            rowIndexStride, compression, userMetadata,
-            writerUsedProlepticGregorian, input, reader)) {
+        } else if (!readerIsCompatible(firstFile, userMetadata, writerUsedProlepticGregorian, input, reader)) {
           continue;
         } else {
           mergeMetadata(userMetadata, reader);
@@ -1057,10 +1247,14 @@ public class OrcFile {
             ((WriterInternal) output).increaseCompressionSize(bufferSize);
           }
         }
-        List<OrcProto.StripeStatistics> statList =
-            reader.getOrcProtoStripeStatistics();
-        try (FSDataInputStream inputStream = fs.open(input)) {
-          int stripeNum = 0;
+        EncryptionVariant[] variants = reader.getEncryptionVariants();
+        List<StripeStatistics>[] completeList = new List[variants.length + 1];
+        for(int v=0; v < variants.length; ++v) {
+          completeList[v] = reader.getVariantStripeStatistics(variants[v]);
+        }
+        completeList[completeList.length - 1] = reader.getVariantStripeStatistics(null);
+        StripeStatistics[] stripeStats = new StripeStatistics[completeList.length];
+        try (FSDataInputStream inputStream = ((ReaderImpl) reader).takeFile()) {
           result.add(input);
 
           for (StripeInformation stripe : reader.getStripes()) {
@@ -1070,7 +1264,11 @@ public class OrcFile {
             }
             long offset = stripe.getOffset();
             inputStream.readFully(offset, buffer, 0, length);
-            output.appendStripe(buffer, 0, length, stripe, statList.get(stripeNum++));
+            int stripeId = (int) stripe.getStripeId();
+            for(int v=0; v < completeList.length; ++v) {
+              stripeStats[v] = completeList[v].get(stripeId);
+            }
+            output.appendStripe(buffer, 0, length, stripe, stripeStats);
           }
         }
       }
@@ -1081,22 +1279,22 @@ public class OrcFile {
         output.close();
       }
       return result;
-    } catch (IOException ioe) {
+    } catch (Throwable t) {
       if (output != null) {
         try {
           output.close();
-        } catch (Throwable t) {
+        } catch (Throwable ignore) {
           // PASS
         }
         try {
           FileSystem fs = options.getFileSystem() == null ?
               outputPath.getFileSystem(conf) : options.getFileSystem();
           fs.delete(outputPath, false);
-        } catch (Throwable t) {
+        } catch (Throwable ignore) {
           // PASS
         }
       }
-      throw ioe;
+      throw new IOException("Problem merging files into " + outputPath, t);
     }
   }
 }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,22 +17,40 @@
  */
 package org.apache.orc.impl;
 
-import java.util.SortedSet;
-import java.util.TreeSet;
-
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.common.io.DiskRangeList;
-import org.apache.hadoop.hive.common.io.DiskRangeList.CreateHelper;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument.TruthValue;
 import org.apache.hadoop.hive.ql.util.TimestampUtils;
-import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.Text;
+
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
+import java.time.chrono.ChronoLocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.SortedSet;
+import java.util.TimeZone;
+import java.util.TreeSet;
+
+import org.apache.orc.OrcFile;
+import org.apache.orc.impl.reader.ReaderEncryption;
+import org.apache.orc.impl.reader.StripePlanner;
+import org.apache.orc.util.BloomFilter;
+import org.apache.orc.util.BloomFilterIO;
 import org.apache.orc.BooleanColumnStatistics;
+import org.apache.orc.CollectionColumnStatistics;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.CompressionCodec;
 import org.apache.orc.DataReader;
@@ -41,7 +59,6 @@ import org.apache.orc.DecimalColumnStatistics;
 import org.apache.orc.DoubleColumnStatistics;
 import org.apache.orc.IntegerColumnStatistics;
 import org.apache.orc.OrcConf;
-import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.Reader;
 import org.apache.orc.RecordReader;
@@ -49,22 +66,8 @@ import org.apache.orc.StringColumnStatistics;
 import org.apache.orc.StripeInformation;
 import org.apache.orc.TimestampColumnStatistics;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.util.BloomFilter;
-import org.apache.orc.util.BloomFilterIO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hadoop.hive.common.io.DiskRange;
-
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.sql.Date;
-import java.sql.Timestamp;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TimeZone;
 
 public class RecordReaderImpl implements RecordReader {
   static final Logger LOG = LoggerFactory.getLogger(RecordReaderImpl.class);
@@ -72,14 +75,10 @@ public class RecordReaderImpl implements RecordReader {
   private static final Object UNKNOWN_VALUE = new Object();
   protected final Path path;
   private final long firstRow;
-  private final List<StripeInformation> stripes =
-      new ArrayList<StripeInformation>();
+  private final List<StripeInformation> stripes = new ArrayList<>();
   private OrcProto.StripeFooter stripeFooter;
   private final long totalRowCount;
   protected final TypeDescription schema;
-  private final List<OrcProto.Type> types;
-  private final int bufferSize;
-  private final SchemaEvolution evolution;
   // the file included columns indexed by the file's column ids.
   private final boolean[] fileIncluded;
   private final long rowIndexStride;
@@ -87,20 +86,14 @@ public class RecordReaderImpl implements RecordReader {
   private int currentStripe = -1;
   private long rowBaseInStripe = 0;
   private long rowCountInStripe = 0;
-  private final Map<StreamName, InStream> streams =
-      new HashMap<StreamName, InStream>();
-  DiskRangeList bufferChunks = null;
   private final TreeReaderFactory.TreeReader reader;
-  private final OrcProto.RowIndex[] indexes;
-  private final OrcProto.BloomFilterIndex[] bloomFilterIndices;
-  private final OrcProto.Stream.Kind[] bloomFilterKind;
+  private final OrcIndex indexes;
   private final SargApplier sargApp;
   // an array about which row groups aren't skipped
   private boolean[] includedRowGroups = null;
   private final DataReader dataReader;
-  private final boolean ignoreNonUtf8BloomFilter;
-  private final OrcFile.WriterVersion writerVersion;
   private final int maxDiskRangeChunkLimit;
+  private final StripePlanner planner;
 
   /**
    * Given a list of column names, find the given column and return the index.
@@ -143,50 +136,10 @@ public class RecordReaderImpl implements RecordReader {
     return result;
   }
 
-  /**
-   * Given a list of column names, find the given column and return the index.
-   *
-   * @param columnNames the list of potential column names
-   * @param columnName  the column name to look for
-   * @param rootColumn  offset the result with the rootColumn
-   * @return the column number or -1 if the column wasn't found
-   */
-  private static int findColumns(String[] columnNames,
-                         String columnName,
-                         int rootColumn) {
-    for(int i=0; i < columnNames.length; ++i) {
-      if (columnName.equals(columnNames[i])) {
-        return i + rootColumn;
-      }
-    }
-    return -1;
-  }
-
-  /**
-   * Find the mapping from predicate leaves to columns.
-   * @param sargLeaves the search argument that we need to map
-   * @param columnNames the names of the columns
-   * @param rootColumn the offset of the top level row, which offsets the
-   *                   result
-   * @return an array mapping the sarg leaves to concrete column numbers
-   * @deprecated Use #mapSargColumnsToOrcInternalColIdx(List, SchemaEvolution)
-   */
-  @Deprecated
-  public static int[] mapSargColumnsToOrcInternalColIdx(List<PredicateLeaf> sargLeaves,
-                                                        String[] columnNames,
-                                                        int rootColumn) {
-    int[] result = new int[sargLeaves.size()];
-    Arrays.fill(result, -1);
-    for(int i=0; i < result.length; ++i) {
-      String colName = sargLeaves.get(i).getColumnName();
-      result[i] = findColumns(columnNames, colName, rootColumn);
-    }
-    return result;
-  }
-
   protected RecordReaderImpl(ReaderImpl fileReader,
                              Reader.Options options) throws IOException {
-    this.writerVersion = fileReader.getWriterVersion();
+    OrcFile.WriterVersion writerVersion = fileReader.getWriterVersion();
+    SchemaEvolution evolution;
     if (options.getSchema() == null) {
       if (LOG.isInfoEnabled()) {
         LOG.info("Reader schema not provided -- using file schema " +
@@ -210,11 +163,10 @@ public class RecordReaderImpl implements RecordReader {
     }
     this.schema = evolution.getReaderSchema();
     this.path = fileReader.path;
-    this.types = fileReader.types;
-    this.bufferSize = fileReader.bufferSize;
     this.rowIndexStride = fileReader.rowIndexStride;
-    this.ignoreNonUtf8BloomFilter =
-        OrcConf.IGNORE_NON_UTF8_BLOOM_FILTERS.getBoolean(fileReader.conf);
+    boolean ignoreNonUtf8BloomFilter = OrcConf.IGNORE_NON_UTF8_BLOOM_FILTERS.getBoolean(fileReader.conf);
+    ReaderEncryption encryption = fileReader.getEncryption();
+    this.fileIncluded = evolution.getFileIncluded();
     SearchArgument sarg = options.getSearchArgument();
     if (sarg != null && rowIndexStride != 0) {
       sargApp = new SargApplier(sarg,
@@ -249,13 +201,15 @@ public class RecordReaderImpl implements RecordReader {
     if (options.getDataReader() != null) {
       this.dataReader = options.getDataReader().clone();
     } else {
+      InStream.StreamOptions unencryptedOptions =
+          InStream.options()
+              .withCodec(OrcCodecPool.getCodec(fileReader.getCompressionKind()))
+              .withBufferSize(fileReader.getCompressionSize());
       this.dataReader = RecordReaderUtils.createDefaultDataReader(
           DataReaderProperties.builder()
-              .withBufferSize(bufferSize)
-              .withCompression(fileReader.compressionKind)
+              .withCompression(unencryptedOptions)
               .withFileSystemSupplier(fileReader.getFileSystemSupplier())
               .withPath(fileReader.path)
-              .withTypeCount(types.size())
               .withZeroCopy(zeroCopy)
               .withMaxDiskRangeChunkLimit(maxDiskRangeChunkLimit)
               .build());
@@ -289,16 +243,28 @@ public class RecordReaderImpl implements RecordReader {
           .skipCorrupt(skipCorrupt)
           .fileFormat(fileReader.getFileVersion())
           .useUTCTimestamp(fileReader.useUTCTimestamp)
+          .setEncryption(encryption)
           .setProlepticGregorian(fileReader.writerUsedProlepticGregorian(),
-                                 fileReader.options.getConvertToProlepticGregorian());
+                  fileReader.options.getConvertToProlepticGregorian());
     reader = TreeReaderFactory.createTreeReader(evolution.getReaderSchema(),
         readerContext);
 
-    this.fileIncluded = evolution.getFileIncluded();
-    indexes = new OrcProto.RowIndex[types.size()];
-    bloomFilterIndices = new OrcProto.BloomFilterIndex[types.size()];
-    bloomFilterKind = new OrcProto.Stream.Kind[types.size()];
-    advanceToNextRow(reader, 0L, true);
+    int columns = evolution.getFileSchema().getMaximumId() + 1;
+    indexes = new OrcIndex(new OrcProto.RowIndex[columns],
+        new OrcProto.Stream.Kind[columns],
+        new OrcProto.BloomFilterIndex[columns]);
+
+    planner = new StripePlanner(evolution.getFileSchema(), encryption,
+        dataReader, writerVersion, ignoreNonUtf8BloomFilter,
+        maxDiskRangeChunkLimit);
+
+    try {
+      advanceToNextRow(reader, 0L, true);
+    } catch (IOException e) {
+      // Try to close since this happens in constructor.
+      close();
+      throw e;
+    }
   }
 
   public static final class PositionProviderImpl implements PositionProvider {
@@ -317,6 +283,13 @@ public class RecordReaderImpl implements RecordReader {
     @Override
     public long getNext() {
       return entry.getPositions(index++);
+    }
+  }
+
+  public static final class ZeroPositionProvider implements PositionProvider {
+    @Override
+    public long getNext() {
+      return 0;
     }
   }
 
@@ -437,12 +410,14 @@ public class RecordReaderImpl implements RecordReader {
   static Object getMin(ColumnStatistics index, boolean useUTCTimestamp) {
     if (index instanceof IntegerColumnStatistics) {
       return ((IntegerColumnStatistics) index).getMinimum();
+    } else if (index instanceof CollectionColumnStatistics) {
+      return ((CollectionColumnStatistics) index).getMinimumChildren();
     } else if (index instanceof DoubleColumnStatistics) {
       return ((DoubleColumnStatistics) index).getMinimum();
     } else if (index instanceof StringColumnStatistics) {
       return ((StringColumnStatistics) index).getLowerBound();
     } else if (index instanceof DateColumnStatistics) {
-      return ((DateColumnStatistics) index).getMinimum();
+      return ((DateColumnStatistics) index).getMinimumLocalDate();
     } else if (index instanceof DecimalColumnStatistics) {
       return ((DecimalColumnStatistics) index).getMinimum();
     } else if (index instanceof TimestampColumnStatistics) {
@@ -481,19 +456,20 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription type) {
     return evaluatePredicateProto(statsProto, predicate, kind, encoding, bloomFilter,
-        writerVersion, type, false, false, false);
+        writerVersion, type, false, true, true);
   }
 
   /**
    * Evaluate a predicate with respect to the statistics from the column
    * that is referenced in the predicate.
    * Includes option to specify if timestamp column stats values
-   * should be in UTC.
+   * should be in UTC and if the file writer used proleptic Gregorian calendar.
    * @param statsProto the statistics for the column mentioned in the predicate
    * @param predicate the leaf predicate we need to evaluation
    * @param bloomFilter the bloom filter
    * @param writerVersion the version of software that wrote the file
    * @param type what is the kind of this column
+   * @param writerUsedProlepticGregorian file written using the proleptic Gregorian calendar
    * @param useUTCTimestamp
    * @return the set of truth values that may be returned for the given
    *   predicate.
@@ -813,8 +789,8 @@ public class RecordReaderImpl implements RecordReader {
           result = TruthValue.YES_NO_NULL;
         }
       }
-    } else if (predObj instanceof Date) {
-      if (bf.testLong(DateWritable.dateToDays((Date) predObj))) {
+    } else if (predObj instanceof ChronoLocalDate) {
+      if (bf.testLong(((ChronoLocalDate) predObj).toEpochDay())) {
         result = TruthValue.YES_NO_NULL;
       }
     } else {
@@ -861,12 +837,17 @@ public class RecordReaderImpl implements RecordReader {
           return Boolean.valueOf(obj.toString());
         }
       case DATE:
-        if (obj instanceof Date) {
+        if (obj instanceof ChronoLocalDate) {
           return obj;
+        } else if (obj instanceof java.sql.Date) {
+          return ((java.sql.Date) obj).toLocalDate();
+        } else if (obj instanceof Date) {
+          return LocalDateTime.ofInstant(((Date) obj).toInstant(),
+              ZoneOffset.UTC).toLocalDate();
         } else if (obj instanceof String) {
-          return Date.valueOf((String) obj);
+          return LocalDate.parse((String) obj);
         } else if (obj instanceof Timestamp) {
-          return DateWritable.timeToDate(((Timestamp) obj).getTime() / 1000L);
+          return ((Timestamp) obj).toLocalDateTime().toLocalDate();
         }
         // always string, but prevent the comparison to numbers (are they days/seconds/milliseconds?)
         break;
@@ -919,6 +900,11 @@ public class RecordReaderImpl implements RecordReader {
         }
         break;
       case STRING:
+        if (obj instanceof ChronoLocalDate) {
+          ChronoLocalDate date = (ChronoLocalDate) obj;
+          return date.format(DateTimeFormatter.ISO_LOCAL_DATE
+              .withChronology(date.getChronology()));
+        }
         return (obj.toString());
       case TIMESTAMP:
         if (obj instanceof Timestamp) {
@@ -935,6 +921,9 @@ public class RecordReaderImpl implements RecordReader {
           return TimestampUtils.decimalToTimestamp(((HiveDecimalWritable) obj).getHiveDecimal());
         } else if (obj instanceof Date) {
           return new Timestamp(((Date) obj).getTime());
+        } else if (obj instanceof ChronoLocalDate) {
+          return new Timestamp(((ChronoLocalDate) obj).atTime(LocalTime.MIDNIGHT)
+              .toInstant(ZoneOffset.UTC).getEpochSecond() * 1000L);
         }
         // float/double conversion to timestamp is interpreted as seconds whereas integer conversion
         // to timestamp is interpreted as milliseconds by default. The integer to timestamp casting
@@ -1130,27 +1119,14 @@ public class RecordReaderImpl implements RecordReader {
       return null;
     }
     readRowIndex(currentStripe, fileIncluded, sargApp.sargColumns);
-    return sargApp.pickRowGroups(stripes.get(currentStripe), indexes,
-        bloomFilterKind, stripeFooter.getColumnsList(), bloomFilterIndices, false);
+    return sargApp.pickRowGroups(stripes.get(currentStripe),
+        indexes.getRowGroupIndex(),
+        indexes.getBloomFilterKinds(), stripeFooter.getColumnsList(),
+        indexes.getBloomFilterIndex(), false);
   }
 
   private void clearStreams() {
-    // explicit close of all streams to de-ref ByteBuffers
-    for (InStream is : streams.values()) {
-      is.close();
-    }
-    if (bufferChunks != null) {
-      if (dataReader.isTrackingDiskRanges()) {
-        for (DiskRangeList range = bufferChunks; range != null; range = range.next) {
-          if (!(range instanceof BufferChunk)) {
-            continue;
-          }
-          dataReader.releaseBuffer(((BufferChunk) range).getChunk());
-        }
-      }
-    }
-    bufferChunks = null;
-    streams.clear();
+    planner.clearStreams();
   }
 
   /**
@@ -1160,6 +1136,7 @@ public class RecordReaderImpl implements RecordReader {
    */
   private void readStripe() throws IOException {
     StripeInformation stripe = beginReadStripe();
+    planner.parseStripe(stripe, fileIncluded);
     includedRowGroups = pickRowGroups();
 
     // move forward to the first unskipped row
@@ -1172,27 +1149,13 @@ public class RecordReaderImpl implements RecordReader {
 
     // if we haven't skipped the whole stripe, read the data
     if (rowInStripe < rowCountInStripe) {
-      // if we aren't projecting columns or filtering rows, just read it all
-      if (isFullRead() && includedRowGroups == null) {
-        readAllDataStreams(stripe);
-      } else {
-        readPartialDataStreams(stripe);
-      }
-      reader.startStripe(streams, stripeFooter);
+      planner.readData(indexes, includedRowGroups, false);
+      reader.startStripe(planner);
       // if we skipped the first row group, move the pointers forward
       if (rowInStripe != 0) {
         seekToRowEntry(reader, (int) (rowInStripe / rowIndexStride));
       }
     }
-  }
-
-  private boolean isFullRead() {
-    for (boolean isColumnPresent : fileIncluded){
-      if (!isColumnPresent){
-        return false;
-      }
-    }
-    return true;
   }
 
   private StripeInformation beginReadStripe() throws IOException {
@@ -1207,114 +1170,11 @@ public class RecordReaderImpl implements RecordReader {
       rowBaseInStripe += stripes.get(i).getNumberOfRows();
     }
     // reset all of the indexes
-    for (int i = 0; i < indexes.length; ++i) {
-      indexes[i] = null;
+    OrcProto.RowIndex[] rowIndex = indexes.getRowGroupIndex();
+    for (int i = 0; i < rowIndex.length; ++i) {
+      rowIndex[i] = null;
     }
     return stripe;
-  }
-
-  private void readAllDataStreams(StripeInformation stripe) throws IOException {
-    long start = stripe.getIndexLength();
-    long end = start + stripe.getDataLength();
-    // explicitly trigger 1 big read
-    DiskRangeList toRead = new DiskRangeList(start, end);
-    bufferChunks = dataReader.readFileData(toRead, stripe.getOffset(), false);
-    List<OrcProto.Stream> streamDescriptions = stripeFooter.getStreamsList();
-    createStreams(streamDescriptions, bufferChunks, null,
-        dataReader.getCompressionCodec(), bufferSize, streams);
-  }
-
-  /**
-   * Plan the ranges of the file that we need to read given the list of
-   * columns and row groups.
-   *
-   * @param streamList        the list of streams available
-   * @param indexes           the indexes that have been loaded
-   * @param includedColumns   which columns are needed
-   * @param includedRowGroups which row groups are needed
-   * @param isCompressed      does the file have generic compression
-   * @param encodings         the encodings for each column
-   * @param types             the types of the columns
-   * @param compressionSize   the compression block size
-   * @return the list of disk ranges that will be loaded
-   */
-  static DiskRangeList planReadPartialDataStreams
-  (List<OrcProto.Stream> streamList,
-      OrcProto.RowIndex[] indexes,
-      boolean[] includedColumns,
-      boolean[] includedRowGroups,
-      boolean isCompressed,
-      List<OrcProto.ColumnEncoding> encodings,
-      List<OrcProto.Type> types,
-      int compressionSize,
-      boolean doMergeBuffers) {
-    long offset = 0;
-    // figure out which columns have a present stream
-    boolean[] hasNull = RecordReaderUtils.findPresentStreamsByColumn(streamList, types);
-    CreateHelper list = new CreateHelper();
-    for (OrcProto.Stream stream : streamList) {
-      long length = stream.getLength();
-      int column = stream.getColumn();
-      OrcProto.Stream.Kind streamKind = stream.getKind();
-      // since stream kind is optional, first check if it exists
-      if (stream.hasKind() &&
-          (StreamName.getArea(streamKind) == StreamName.Area.DATA) &&
-          (column < includedColumns.length && includedColumns[column])) {
-        // if we aren't filtering or it is a dictionary, load it.
-        if (includedRowGroups == null
-            || RecordReaderUtils.isDictionary(streamKind, encodings.get(column))) {
-          RecordReaderUtils.addEntireStreamToRanges(offset, length, list, doMergeBuffers);
-        } else {
-          RecordReaderUtils.addRgFilteredStreamToRanges(stream, includedRowGroups,
-              isCompressed, indexes[column], encodings.get(column), types.get(column),
-              compressionSize, hasNull[column], offset, length, list, doMergeBuffers);
-        }
-      }
-      offset += length;
-    }
-    return list.extract();
-  }
-
-  void createStreams(List<OrcProto.Stream> streamDescriptions,
-      DiskRangeList ranges,
-      boolean[] includeColumn,
-      CompressionCodec codec,
-      int bufferSize,
-      Map<StreamName, InStream> streams) throws IOException {
-    long streamOffset = 0;
-    for (OrcProto.Stream streamDesc : streamDescriptions) {
-      int column = streamDesc.getColumn();
-      if ((includeColumn != null &&
-          (column < includeColumn.length && !includeColumn[column])) ||
-          streamDesc.hasKind() &&
-              (StreamName.getArea(streamDesc.getKind()) != StreamName.Area.DATA)) {
-        streamOffset += streamDesc.getLength();
-        continue;
-      }
-      List<DiskRange> buffers = RecordReaderUtils.getStreamBuffers(
-          ranges, streamOffset, streamDesc.getLength());
-      StreamName name = new StreamName(column, streamDesc.getKind());
-      streams.put(name, InStream.create(name.toString(), buffers,
-          streamDesc.getLength(), codec, bufferSize));
-      streamOffset += streamDesc.getLength();
-    }
-  }
-
-  private void readPartialDataStreams(StripeInformation stripe) throws IOException {
-    List<OrcProto.Stream> streamList = stripeFooter.getStreamsList();
-    DiskRangeList toRead = planReadPartialDataStreams(streamList,
-        indexes, fileIncluded, includedRowGroups, dataReader.getCompressionCodec() != null,
-        stripeFooter.getColumnsList(), types, bufferSize, true);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("chunks = " + RecordReaderUtils.stringifyDiskRanges(toRead));
-    }
-    bufferChunks = dataReader.readFileData(toRead, stripe.getOffset(), false);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("merge = " + RecordReaderUtils.stringifyDiskRanges(bufferChunks));
-    }
-
-    createStreams(streamList, bufferChunks, fileIncluded,
-        dataReader.getCompressionCodec(), bufferSize, streams);
   }
 
   /**
@@ -1476,34 +1336,35 @@ public class RecordReaderImpl implements RecordReader {
 
   public OrcIndex readRowIndex(int stripeIndex, boolean[] included,
                                boolean[] sargColumns) throws IOException {
-    return readRowIndex(stripeIndex, included, null, null, sargColumns);
-  }
-
-  public OrcIndex readRowIndex(int stripeIndex, boolean[] included,
-                               OrcProto.RowIndex[] indexes,
-                               OrcProto.BloomFilterIndex[] bloomFilterIndex,
-                               boolean[] sargColumns) throws IOException {
-    StripeInformation stripe = stripes.get(stripeIndex);
-    OrcProto.StripeFooter stripeFooter = null;
     // if this is the current stripe, use the cached objects.
     if (stripeIndex == currentStripe) {
-      stripeFooter = this.stripeFooter;
-      indexes = indexes == null ? this.indexes : indexes;
-      bloomFilterIndex = bloomFilterIndex == null ? this.bloomFilterIndices : bloomFilterIndex;
-      sargColumns = sargColumns == null ?
-          (sargApp == null ? null : sargApp.sargColumns) : sargColumns;
+      return planner.readRowIndex(
+          sargColumns != null || sargApp == null
+              ? sargColumns : sargApp.sargColumns, indexes);
+    } else {
+      StripePlanner copy = new StripePlanner(planner);
+      if (included == null) {
+        included = new boolean[schema.getMaximumId() + 1];
+        Arrays.fill(included, true);
+      }
+      copy.parseStripe(stripes.get(stripeIndex), included);
+      return copy.readRowIndex(sargColumns, null);
     }
-    return dataReader.readRowIndex(stripe, evolution.getFileType(0), stripeFooter,
-        ignoreNonUtf8BloomFilter, included, indexes, sargColumns, writerVersion,
-        bloomFilterKind, bloomFilterIndex);
   }
 
   private void seekToRowEntry(TreeReaderFactory.TreeReader reader, int rowEntry)
       throws IOException {
-    PositionProvider[] index = new PositionProvider[indexes.length];
-    for (int i = 0; i < indexes.length; ++i) {
-      if (indexes[i] != null) {
-        index[i] = new PositionProviderImpl(indexes[i].getEntry(rowEntry));
+    OrcProto.RowIndex[] rowIndices = indexes.getRowGroupIndex();
+    PositionProvider[] index = new PositionProvider[rowIndices.length];
+    for (int i = 0; i < index.length; ++i) {
+      if (rowIndices[i] != null) {
+        OrcProto.RowIndexEntry entry = rowIndices[i].getEntry(rowEntry);
+        // This is effectively a test for pre-ORC-569 files.
+        if (rowEntry == 0 && entry.getPositionsCount() == 0) {
+          index[i] = new ZeroPositionProvider();
+        } else {
+          index[i] = new PositionProviderImpl(entry);
+        }
       }
     }
     reader.seek(index);
@@ -1569,7 +1430,7 @@ public class RecordReaderImpl implements RecordReader {
   }
 
   public CompressionCodec getCompressionCodec() {
-    return dataReader.getCompressionCodec();
+    return dataReader.getCompressionOptions().getCodec();
   }
 
   public int getMaxDiskRangeChunkLimit() {

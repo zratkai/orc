@@ -33,14 +33,19 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 
+import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory;
 import org.apache.orc.impl.OrcIndex;
 import org.apache.orc.impl.OutStream;
 import org.apache.orc.impl.RecordReaderImpl;
 import org.apache.orc.impl.StreamName;
 import org.apache.orc.impl.TestInStream;
+import org.apache.orc.impl.writer.StreamOptions;
 import org.apache.orc.impl.writer.StringTreeWriter;
 import org.apache.orc.impl.writer.TreeWriter;
 import org.apache.orc.impl.writer.WriterContext;
+import org.apache.orc.impl.writer.WriterEncryptionVariant;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -173,10 +178,10 @@ public class TestStringDictionary {
     }
 
     @Override
-    public OutStream createStream(int column, OrcProto.Stream.Kind kind) throws IOException {
+    public OutStream createStream(StreamName name) throws IOException {
       TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
-      streams.put(new StreamName(column, kind), collect);
-      return new OutStream("test", 1000, null, collect);
+      streams.put(name, collect);
+      return new OutStream("test", new StreamOptions(1000), collect);
     }
 
     @Override
@@ -225,6 +230,16 @@ public class TestStringDictionary {
     }
 
     @Override
+    public void setEncoding(int column, WriterEncryptionVariant variant, OrcProto.ColumnEncoding encoding) {
+
+    }
+
+    @Override
+    public void writeStatistics(StreamName name, OrcProto.ColumnStatistics.Builder stats) throws IOException {
+
+    }
+
+    @Override
     public OrcFile.BloomFilterVersion getBloomFilterVersion() {
       return OrcFile.BloomFilterVersion.UTF8;
     }
@@ -238,6 +253,16 @@ public class TestStringDictionary {
     public void writeBloomFilter(StreamName name,
                                  OrcProto.BloomFilterIndex.Builder bloom) {
 
+    }
+
+    @Override
+    public DataMask getUnencryptedMask(int columnId) {
+      return null;
+    }
+
+    @Override
+    public WriterEncryptionVariant getEncryption(int columnId) {
+      return null;
     }
 
     @Override
@@ -263,7 +288,7 @@ public class TestStringDictionary {
     conf.set(OrcConf.DICTIONARY_KEY_SIZE_THRESHOLD.getAttribute(), "0.0");
     WriterContextImpl writerContext = new WriterContextImpl(schema, conf);
     StringTreeWriter writer = (StringTreeWriter)
-        TreeWriter.Factory.create(schema, writerContext, true);
+        TreeWriter.Factory.create(schema, null, writerContext);
 
     VectorizedRowBatch batch = schema.createRowBatch();
     BytesColumnVector col = (BytesColumnVector) batch.cols[0];
@@ -539,6 +564,88 @@ public class TestStringDictionary {
         assertEquals("entry " + e, 1024, batch.size);
         assertEquals("entry " + e, true, col.noNulls);
         assertEquals("entry " + e, "Value for " + (row / 1024), col.toString(0));
+      }
+    }
+  }
+
+  /**
+   * That when we disable dictionaries, we don't get broken row indexes.
+   */
+  @Test
+  public void testRowIndex() throws Exception {
+    TypeDescription schema =
+        TypeDescription.fromString("struct<str:string>");
+    // turn off the dictionaries
+    OrcConf.DICTIONARY_KEY_SIZE_THRESHOLD.setDouble(conf, 0);
+    Writer writer = OrcFile.createWriter(
+        testFilePath,
+        OrcFile.writerOptions(conf).setSchema(schema).rowIndexStride(4 * 1024));
+
+    VectorizedRowBatch batch = schema.createRowBatch();
+    BytesColumnVector strVector = (BytesColumnVector) batch.cols[0];
+
+    for (int i = 0; i < 32 * 1024; i++) {
+      if (batch.size == batch.getMaxSize()) {
+        writer.addRowBatch(batch);
+        batch.reset();
+      }
+      byte[] value = String.format("row %06d", i).getBytes(StandardCharsets.UTF_8);
+      strVector.setRef(batch.size, value, 0, value.length);
+      ++batch.size;
+    }
+    writer.addRowBatch(batch);
+    writer.close();
+
+    Reader reader = OrcFile.createReader(testFilePath, OrcFile.readerOptions(conf).filesystem(fs));
+    SearchArgument sarg = SearchArgumentFactory.newBuilder(conf)
+        .lessThan("str", PredicateLeaf.Type.STRING, "row 001000")
+        .build();
+    RecordReader recordReader = reader.rows(reader.options().searchArgument(sarg, null));
+    batch = reader.getSchema().createRowBatch();
+    strVector = (BytesColumnVector) batch.cols[0];
+    long base = 0;
+    while (recordReader.nextBatch(batch)) {
+      for(int r=0; r < batch.size; ++r) {
+        String value = String.format("row %06d", r + base);
+        assertEquals("row " + (r + base), value, strVector.toString(r));
+      }
+      base += batch.size;
+    }
+    // We should only read the first row group.
+    assertEquals(4 * 1024, base);
+  }
+
+  /**
+   * Test that files written before ORC-569 are read correctly.
+   */
+  @Test
+  public void testRowIndexPreORC569() throws Exception {
+    testFilePath = new Path(System.getProperty("example.dir"), "TestStringDictionary.testRowIndex.orc");
+    SearchArgument sarg = SearchArgumentFactory.newBuilder(conf)
+        .lessThan("str", PredicateLeaf.Type.STRING, "row 001000")
+        .build();
+    try (Reader reader = OrcFile.createReader(testFilePath, OrcFile.readerOptions(conf).filesystem(fs))) {
+      try (RecordReader recordReader = reader.rows(reader.options().searchArgument(sarg, null))) {
+        VectorizedRowBatch batch = reader.getSchema().createRowBatch();
+        BytesColumnVector strVector = (BytesColumnVector) batch.cols[0];
+        long base = 0;
+        while (recordReader.nextBatch(batch)) {
+          for (int r = 0; r < batch.size; ++r) {
+            String value = String.format("row %06d", r + base);
+            assertEquals("row " + (r + base), value, strVector.toString(r));
+          }
+          base += batch.size;
+        }
+        // We should only read the first row group.
+        assertEquals(4 * 1024, base);
+      }
+
+      try (RecordReader recordReader = reader.rows()) {
+        VectorizedRowBatch batch = reader.getSchema().createRowBatch();
+        recordReader.seekToRow(4 * 1024);
+        assertTrue(recordReader.nextBatch(batch));
+        recordReader.seekToRow(0);
+        assertTrue(recordReader.nextBatch(batch));
       }
     }
   }

@@ -55,7 +55,7 @@ public class HadoopShimsPre2_3 implements HadoopShims {
   }
 
   @Override
-  public KeyProvider getKeyProvider(Configuration conf, Random random) {
+  public KeyProvider getHadoopKeyProvider(Configuration conf, Random random) {
     return new NullKeyProvider();
   }
 
@@ -78,6 +78,11 @@ public class HadoopShimsPre2_3 implements HadoopShims {
 
     @Override
     public Key decryptLocalKey(KeyMetadata key, byte[] encryptedKey) {
+      return null;
+    }
+
+    @Override
+    public KeyProviderKind getKind() {
       return null;
     }
   }

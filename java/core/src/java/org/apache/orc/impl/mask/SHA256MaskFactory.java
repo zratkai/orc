@@ -62,9 +62,9 @@ import java.util.Arrays;
  */
 public class SHA256MaskFactory extends MaskFactory {
 
-  final MessageDigest md;
+  private final MessageDigest md;
 
-  public SHA256MaskFactory(final String... params) {
+  SHA256MaskFactory() {
     super();
     try {
       md = MessageDigest.getInstance("SHA-256");
@@ -84,21 +84,18 @@ public class SHA256MaskFactory extends MaskFactory {
    */
   void maskString(final BytesColumnVector source, final int row,
       final BytesColumnVector target, final TypeDescription schema) {
-    final ByteBuffer sourceBytes = ByteBuffer
-        .wrap(source.vector[row], source.start[row], source.length[row]);
 
     // take SHA-256 Hash and convert to HEX
-    byte[] hash = DatatypeConverter
-        .printHexBinary(md.digest(sourceBytes.array()))
-        .getBytes(StandardCharsets.UTF_8);
+    md.update(source.vector[row], source.start[row], source.length[row]);
+    byte[] hash = DatatypeConverter.printHexBinary(md.digest())
+                      .getBytes(StandardCharsets.UTF_8);
     int targetLength = hash.length;
 
     switch (schema.getCategory()) {
-      /* For type varchar */
       case VARCHAR: {
         /* truncate the hash if max length for varchar is less than hash length
          * on the other hand if if the max length is more than hash length (64
-	 * bytes) we use the hash length (64 bytes) always.
+	       * bytes) we use the hash length (64 bytes) always.
          */
         if (schema.getMaxLength() < hash.length) {
           targetLength = schema.getMaxLength();
@@ -109,28 +106,22 @@ public class SHA256MaskFactory extends MaskFactory {
       case CHAR: {
         /* for char the length is always constant */
         targetLength = schema.getMaxLength();
+        /* pad the hash with blank char if targetlength is greater than hash */
+        if (targetLength > hash.length) {
+          byte[] tmp = new byte[targetLength];
+          System.arraycopy(hash, 0, tmp, 0, hash.length);
+          Arrays.fill(tmp, hash.length, tmp.length - 1, (byte) ' ');
+          hash = tmp;
+        }
         break;
       }
 
       default: {
-        targetLength = hash.length;
         break;
       }
     }
 
-    byte[] result;
-
-    /* pad the hash with blank char if targetlength is greater than hash */
-    if (targetLength > hash.length) {
-      result = new byte[targetLength];
-      System.arraycopy(hash, 0, result, 0, hash.length);
-      Arrays.fill(result, hash.length, targetLength - 1, (byte) ' ');
-    } else {
-      result = new byte[targetLength];
-      System.arraycopy(hash, 0, result, 0, targetLength);
-    }
-
-    target.vector[row] = result;
+    target.vector[row] = hash;
     target.start[row] = 0;
     target.length[row] = targetLength;
   }
@@ -138,9 +129,9 @@ public class SHA256MaskFactory extends MaskFactory {
   /**
    * Helper function to mask binary data with it's SHA-256 hash.
    *
-   * @param source
-   * @param row
-   * @param target
+   * @param source the source data
+   * @param row the row that we are translating
+   * @param target the output data
    */
   void maskBinary(final BytesColumnVector source, final int row,
       final BytesColumnVector target) {
@@ -207,7 +198,7 @@ public class SHA256MaskFactory extends MaskFactory {
     final TypeDescription schema;
 
     /* create an instance */
-    public StringMask(TypeDescription schema) {
+    StringMask(TypeDescription schema) {
       super();
       this.schema = schema;
     }
@@ -254,7 +245,7 @@ public class SHA256MaskFactory extends MaskFactory {
   class BinaryMask implements DataMask {
 
     /* create an instance */
-    public BinaryMask() {
+    BinaryMask() {
       super();
     }
 
