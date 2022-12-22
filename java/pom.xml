@@ -215,7 +215,6 @@
               <exclude>**/*.schema</exclude>
               <exclude>**/target/**</exclude>
               <exclude>.idea/**</exclude>
-              <exclude>**/*.iml</exclude>
             </excludes>
           </configuration>
         </plugin>

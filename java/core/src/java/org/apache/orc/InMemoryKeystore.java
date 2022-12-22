@@ -18,7 +18,6 @@
 package org.apache.orc;
 
 import org.apache.orc.impl.HadoopShims;
-import org.apache.orc.impl.KeyProvider;
 import org.apache.orc.impl.LocalKey;
 
 import javax.crypto.BadPaddingException;
@@ -41,7 +40,7 @@ import java.util.Random;
 import java.util.TreeMap;
 
 /**
- * This is an in-memory implementation of {@link KeyProvider}.
+ * This is an in-memory implementation of {@link HadoopShims.KeyProvider}.
  *
  * The primary use of this class is for when the user doesn't have a
  * Hadoop KMS running and wishes to use encryption. It is also useful for
@@ -53,7 +52,7 @@ import java.util.TreeMap;
  *
  * This class is not thread safe.
  */
-public class InMemoryKeystore implements KeyProvider {
+public class InMemoryKeystore implements HadoopShims.KeyProvider {
   /**
    * Support AES 256 ?
    */

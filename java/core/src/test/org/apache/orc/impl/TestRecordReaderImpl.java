@@ -90,9 +90,6 @@ import org.junit.Test;
 import org.mockito.MockSettings;
 import org.mockito.Mockito;
 
-import static org.apache.orc.impl.RecordReaderUtils.MAX_BYTE_WIDTH;
-import static org.apache.orc.impl.RecordReaderUtils.MAX_VALUES_LENGTH;
-
 public class TestRecordReaderImpl {
 
   @Test
@@ -1376,8 +1373,7 @@ public class TestRecordReaderImpl {
         new InStream.StreamOptions()
             .withCodec(OrcCodecPool.getCodec(CompressionKind.ZLIB))
             .withBufferSize(1024);
-    int stretchFactor = 2 + (MAX_VALUES_LENGTH * MAX_BYTE_WIDTH - 1) / options.getBufferSize();
-    final int SLOP = stretchFactor * (OutStream.HEADER_SIZE + options.getBufferSize());
+    final int SLOP = 2 * (OutStream.HEADER_SIZE + options.getBufferSize());
     MockDataReader dataReader = new MockDataReader(schema)
       .addStream(1, OrcProto.Stream.Kind.ROW_INDEX,
           createRowIndex(options,

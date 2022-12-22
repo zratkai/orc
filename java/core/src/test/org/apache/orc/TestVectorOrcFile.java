@@ -3737,12 +3737,14 @@ public class TestVectorOrcFile {
     InMemoryKeystore keys = new InMemoryKeystore()
         .addKey("pii", EncryptionAlgorithm.AES_CTR_128, piiKey)
         .addKey("credit", EncryptionAlgorithm.AES_CTR_256, creditKey);
+
     Writer writer = OrcFile.createWriter(testFilePath,
         OrcFile.writerOptions(conf)
             .setSchema(schema)
             .version(fileFormat)
             .setKeyProvider(keys)
-            .encrypt("pii:i;credit:x"));
+            .encryptColumn("i", "pii")
+            .encryptColumn("x", "credit"));
     VectorizedRowBatch batch = schema.createRowBatch();
     batch.size = ROWS;
     LongColumnVector i = (LongColumnVector) batch.cols[0];
@@ -3879,7 +3881,12 @@ public class TestVectorOrcFile {
             .version(fileFormat)
             .stripeSize(10000)
             .setKeyProvider(allKeys)
-            .encrypt("key_0:dec;key_1:dt;key_2:time;key_3:dbl;key_4:bool;key_5:bin"));
+            .encryptColumn("dec", "key_0")
+            .encryptColumn("dt", "key_1")
+            .encryptColumn("time", "key_2")
+            .encryptColumn("dbl", "key_3")
+            .encryptColumn("bool", "key_4")
+            .encryptColumn("bin", "key_5"));
     // Set size to 1000 precisely so that stripes are exactly 5000 rows long.
     VectorizedRowBatch batch = schema.createRowBatch(1000);
     DecimalColumnVector dec = (DecimalColumnVector) batch.cols[0];

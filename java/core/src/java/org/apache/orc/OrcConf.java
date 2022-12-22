@@ -164,17 +164,14 @@ public enum OrcConf {
   ORC_MAX_DISK_RANGE_CHUNK_LIMIT("orc.max.disk.range.chunk.limit", "hive.exec.orc.max.disk.range.chunk.limit",
     Integer.MAX_VALUE - 1024, "When reading stripes >2GB, specify max limit for the chunk size."),
   PROLEPTIC_GREGORIAN("orc.proleptic.gregorian", "orc.proleptic.gregorian", false,
-          "Should we read and write dates & times using the proleptic Gregorian calendar\n" +
-                  "instead of the hybrid Julian Gregorian? Hive before 3.1 and Spark before 3.0\n" +
-                  "used hybrid."),
+      "Should we read and write dates & times using the proleptic Gregorian calendar\n" +
+          "instead of the hybrid Julian Gregorian? Hive before 3.1 and Spark before 3.0\n" +
+          "used hybrid."),
   PROLEPTIC_GREGORIAN_DEFAULT("orc.proleptic.gregorian.default",
-          "orc.proleptic.gregorian.default", false,
-          "This value controls whether pre-ORC 27 files are using the hybrid or proleptic\n" +
-                  "calendar. Only Hive 3.1 and the C++ library wrote using the proleptic, so hybrid\n" +
-                  "is the default."),
-  ENCRYPTION("orc.encrypt", "orc.encrypt", null, "The list of keys and columns to encrypt with"),
-  DATA_MASK("orc.mask", "orc.mask", null, "The masks to apply to the encrypted columns"),
-  KEY_PROVIDER("orc.key.provider", "orc.key.provider", "hadoop", "The kind of KeyProvider to use for encryption.")
+      "orc.proleptic.gregorian.default", false,
+      "This value controls whether pre-ORC 27 files are using the hybrid or proleptic\n" +
+      "calendar. Only Hive 3.1 and the C++ library wrote using the proleptic, so hybrid\n" +
+      "is the default.")
   ;
 
   private final String attribute;
