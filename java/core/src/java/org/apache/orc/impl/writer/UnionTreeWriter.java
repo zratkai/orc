@@ -20,7 +20,6 @@ package org.apache.orc.impl.writer;
 
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.UnionColumnVector;
-import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcProto;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.impl.PositionRecorder;
@@ -166,10 +165,10 @@ public class UnionTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeFileStatistics() throws IOException {
-    super.writeFileStatistics();
+  public void writeFileStatistics(OrcProto.Footer.Builder footer) {
+    super.writeFileStatistics(footer);
     for (TreeWriter child : childrenWriters) {
-      child.writeFileStatistics();
+      child.writeFileStatistics(footer);
     }
   }
 
@@ -179,14 +178,6 @@ public class UnionTreeWriter extends TreeWriterBase {
     tags.flush();
     for (TreeWriter child : childrenWriters) {
       child.flushStreams();
-    }
-  }
-
-  @Override
-  public void getCurrentStatistics(ColumnStatistics[] output) {
-    super.getCurrentStatistics(output);
-    for (TreeWriter child: childrenWriters) {
-      child.getCurrentStatistics(output);
     }
   }
 }

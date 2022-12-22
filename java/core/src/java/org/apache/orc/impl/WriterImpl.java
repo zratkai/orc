@@ -167,7 +167,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
                               ? new PhysicalFsWriter(fs, path, opts)
                               : opts.getPhysicalWriter();
     physicalWriter.writeHeader();
-    CompressionCodec codec = physicalWriter.getStreamOptions().getCodec();
+    CompressionCodec codec = physicalWriter.getCompressionCodec();
     if (codec != null) {
       compress.withCodec(codec, codec.getDefaultOptions());
     }
@@ -331,7 +331,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * @return are the streams compressed
      */
     public boolean isCompressed() {
-      return physicalWriter.getStreamOptions().getCodec() != null;
+      return physicalWriter.getCompressionCodec() != null;
     }
 
     /**
@@ -396,13 +396,6 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
                                  OrcProto.BloomFilterIndex.Builder bloom
                                  ) throws IOException {
       physicalWriter.writeBloomFilter(name, bloom);
-    }
-
-    @Override
-    public void writeStatistics(StreamName name,
-                                OrcProto.ColumnStatistics.Builder stats
-                                ) throws IOException {
-      physicalWriter.writeStatistics(name, stats);
     }
 
     public boolean getUseUTCTimestamp() {
@@ -484,8 +477,9 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     }
   }
 
-  private void writeFileStatistics(TreeWriter writer) throws IOException {
-    writer.writeFileStatistics();
+  private void writeFileStatistics(OrcProto.Footer.Builder builder,
+                                   TreeWriter writer) throws IOException {
+    writer.writeFileStatistics(builder);
   }
 
   private void writeMetadata() throws IOException {
@@ -525,7 +519,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       builder.addStripes(stripe);
     }
     // add the column statistics
-    writeFileStatistics(treeWriter);
+    writeFileStatistics(builder, treeWriter);
     // add all of the user metadata
     for(Map.Entry<String, ByteString> entry: userMetadata.entrySet()) {
       builder.addMetadata(OrcProto.UserMetadataItem.newBuilder()
@@ -669,17 +663,23 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   }
 
   @Override
-  public ColumnStatistics[] getStatistics() {
-    // get the column statistics
-    final ColumnStatistics[] result =
-        new ColumnStatistics[schema.getMaximumId() + 1];
-    // Get the file statistics, preferring the encrypted one.
-    treeWriter.getCurrentStatistics(result);
+  public ColumnStatistics[] getStatistics()
+      throws IOException {
+    // Generate the stats
+    OrcProto.Footer.Builder builder = OrcProto.Footer.newBuilder();
+
+    // add the column statistics
+    writeFileStatistics(builder, treeWriter);
+    List<OrcProto.ColumnStatistics> fileStats = builder.getStatisticsList();
+    ColumnStatistics[] result = new ColumnStatistics[fileStats.size()];
+    for(int i=0; i < result.length; ++i) {
+      result[i] = ColumnStatisticsImpl.deserialize(schema.findSubtype(i), fileStats.get(i));
+    }
     return result;
   }
 
   public CompressionCodec getCompressionCodec() {
-    return physicalWriter.getStreamOptions().getCodec();
+    return physicalWriter.getCompressionCodec();
   }
 
   private static boolean hasTimestamp(TypeDescription schema) {

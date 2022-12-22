@@ -2152,7 +2152,7 @@ public class TestVectorOrcFile {
                                                    ) throws IOException {
     fs.delete(testFilePath, false);
     PhysicalWriter physical = new PhysicalFsWriter(fs, testFilePath, opts);
-    CompressionCodec codec = physical.getStreamOptions().getCodec();
+    CompressionCodec codec = physical.getCompressionCodec();
     Writer writer = OrcFile.createWriter(testFilePath,
         opts.physicalWriter(physical));
     writeRandomIntBytesBatches(writer, batch, count, size);
