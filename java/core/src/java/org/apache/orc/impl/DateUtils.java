@@ -97,12 +97,12 @@ public class DateUtils {
    * @return day of epoch in the hybrid Julian/Gregorian
    */
   public static int convertDateToHybrid(int proleptic) {
-    int hybrid = proleptic;
+    int hyrbid = proleptic;
     if (proleptic < SWITCHOVER_DAYS) {
       String dateStr = PROLEPTIC_DATE_FORMAT.format(LocalDate.ofEpochDay(proleptic));
-      hybrid = (int) LocalDate.from(HYBRID_DATE_FORMAT.parse(dateStr)).toEpochDay();
+      hyrbid = (int) LocalDate.from(HYBRID_DATE_FORMAT.parse(dateStr)).toEpochDay();
     }
-    return hybrid;
+    return hyrbid;
   }
 
   /**
