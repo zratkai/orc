@@ -17,15 +17,11 @@
  */
 package org.apache.orc;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.EnumSet;
 
-/**
- * The API for compression codecs for ORC.
- * Closeable.close() returns this codec to the OrcCodecPool.
- */
-public interface CompressionCodec extends Closeable {
+public interface CompressionCodec {
 
   enum SpeedModifier {
     /* speed/compression tradeoffs */
@@ -40,32 +36,15 @@ public interface CompressionCodec extends Closeable {
   }
 
   interface Options {
-    /**
-     * Make a copy before making changes.
-     * @return a new copy
-     */
-    Options copy();
-
-    /**
-     * Set the speed for the compression.
-     * @param newValue how aggressively to compress
-     * @return this
-     */
     Options setSpeed(SpeedModifier newValue);
-
-    /**
-     * Set the kind of data for the compression.
-     * @param newValue what kind of data this is
-     * @return this
-     */
     Options setData(DataKind newValue);
   }
 
   /**
-   * Get the default options for this codec.
-   * @return the default options object
+   * Create an instance of the default options for this codec.
+   * @return a new options object
    */
-  Options getDefaultOptions();
+  Options createOptions();
 
   /**
    * Compress the in buffer to the out buffer.
@@ -91,16 +70,10 @@ public interface CompressionCodec extends Closeable {
   void reset();
 
   /** Closes the codec, releasing the resources. */
-  void destroy();
+  void close();
 
   /**
    * Get the compression kind.
    */
   CompressionKind getKind();
-
-  /**
-   * Return the codec to the pool.
-   */
-  @Override
-  void close();
 }

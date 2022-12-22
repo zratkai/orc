@@ -21,8 +21,6 @@ import org.apache.orc.CompressionCodec;
 import org.apache.orc.EncryptionAlgorithm;
 
 import java.security.Key;
-import java.util.Arrays;
-import java.util.function.Consumer;
 
 /**
  * The compression and encryption options for writing a stream.
@@ -30,23 +28,10 @@ import java.util.function.Consumer;
 public class StreamOptions {
   private CompressionCodec codec;
   private CompressionCodec.Options options;
-  private int bufferSize;
+  private final int bufferSize;
   private EncryptionAlgorithm algorithm;
   private Key key;
   private byte[] iv;
-
-  public StreamOptions(StreamOptions other) {
-    this.codec = other.codec;
-    if (other.options != null) {
-      this.options = other.options.copy();
-    }
-    this.bufferSize = other.bufferSize;
-    this.algorithm = other.algorithm;
-    this.key = other.key;
-    if (other.iv != null) {
-      this.iv = Arrays.copyOf(other.iv, other.iv.length);
-    }
-  }
 
   /**
    * An option object with the given buffer size set.
@@ -54,11 +39,6 @@ public class StreamOptions {
    */
   public StreamOptions(int bufferSize) {
     this.bufferSize = bufferSize;
-  }
-
-  public StreamOptions bufferSize(int bufferSize) {
-    this.bufferSize = bufferSize;
-    return this;
   }
 
   /**
@@ -74,19 +54,11 @@ public class StreamOptions {
   }
 
   public StreamOptions withEncryption(EncryptionAlgorithm algorithm,
-                                      Key key) {
+                                      Key key,
+                                      byte[] iv) {
     this.algorithm = algorithm;
     this.key = key;
-    return this;
-  }
-
-  /**
-   * Modify the IV.
-   * @param modifier the function to modify the IV
-   * @return returns this
-   */
-  public StreamOptions modifyIv(Consumer<byte[]> modifier) {
-    modifier.accept(getIv());
+    this.iv = iv;
     return this;
   }
 
@@ -96,13 +68,6 @@ public class StreamOptions {
 
   public CompressionCodec.Options getCodecOptions() {
     return options;
-  }
-
-  public byte[] getIv() {
-    if (iv == null) {
-      iv = new byte[algorithm.getIvLength()];
-    }
-    return iv;
   }
 
   public int getBufferSize() {
@@ -121,23 +86,7 @@ public class StreamOptions {
     return algorithm;
   }
 
-  @Override
-  public String toString() {
-    StringBuilder builder = new StringBuilder();
-    builder.append("Compress: ");
-    if (codec == null) {
-      builder.append("none");
-    } else {
-      builder.append(codec.getKind());
-    }
-    builder.append(" buffer: ");
-    builder.append(bufferSize);
-    if (isEncrypted()) {
-      builder.append(" encryption: ");
-      builder.append(algorithm.getAlgorithm());
-      builder.append("/");
-      builder.append(algorithm.keyLength());
-    }
-    return builder.toString();
+  public byte[] getIv() {
+    return iv;
   }
 }

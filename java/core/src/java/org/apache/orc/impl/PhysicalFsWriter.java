@@ -32,6 +32,7 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.orc.CompressionCodec;
+import org.apache.orc.CompressionKind;
 import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.PhysicalWriter;
@@ -54,9 +55,11 @@ public class PhysicalFsWriter implements PhysicalWriter {
   private final Path path;
   private final HadoopShims shims;
   private final long blockSize;
+  private final int bufferSize;
   private final int maxPadding;
-  private final StreamOptions compress;
+  private final CompressionKind compress;
   private final OrcFile.CompressionStrategy compressionStrategy;
+  private CompressionCodec codec;
   private final boolean addBlockPadding;
   private final boolean writeVariableLengthBlocks;
 
@@ -79,26 +82,28 @@ public class PhysicalFsWriter implements PhysicalWriter {
     long defaultStripeSize = opts.getStripeSize();
     this.addBlockPadding = opts.getBlockPadding();
     if (opts.isEnforceBufferSize()) {
-      this.compress = new StreamOptions(opts.getBufferSize());
+      this.bufferSize = opts.getBufferSize();
     } else {
-      this.compress = new StreamOptions(
-          WriterImpl.getEstimatedBufferSize(defaultStripeSize,
+      this.bufferSize = WriterImpl.getEstimatedBufferSize(defaultStripeSize,
           opts.getSchema().getMaximumId() + 1,
-          opts.getBufferSize()));
+          opts.getBufferSize());
     }
-    CompressionCodec codec = OrcCodecPool.getCodec(opts.getCompress());
-    if (codec != null){
-      compress.withCodec(codec, codec.getDefaultOptions());
-    }
+    this.compress = opts.getCompress();
     this.compressionStrategy = opts.getCompressionStrategy();
     this.maxPadding = (int) (opts.getPaddingTolerance() * defaultStripeSize);
     this.blockSize = opts.getBlockSize();
     LOG.info("ORC writer created for path: {} with stripeSize: {} blockSize: {}" +
-        " compression: {}", path, defaultStripeSize, blockSize, compress);
+        " compression: {} bufferSize: {}", path, defaultStripeSize, blockSize,
+        compress, bufferSize);
     rawWriter = fs.create(path, opts.getOverwrite(), HDFS_BUFFER_SIZE,
         fs.getDefaultReplication(path), blockSize);
     blockOffset = 0;
-    writer = new OutStream("metadata", compress,
+    codec = OrcCodecPool.getCodec(compress);
+    StreamOptions options = new StreamOptions(bufferSize);
+    if (codec != null) {
+      options.withCodec(codec, codec.createOptions());
+    }
+    writer = new OutStream("metadata", options,
         new DirectStream(rawWriter));
     protobufWriter = CodedOutputStream.newInstance(writer);
     writeVariableLengthBlocks = opts.getWriteVariableLengthBlocks();
@@ -107,7 +112,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
 
   @Override
   public CompressionCodec getCompressionCodec() {
-    return compress.getCodec();
+    return codec;
   }
 
   /**
@@ -253,11 +258,8 @@ public class PhysicalFsWriter implements PhysicalWriter {
     // that is used in tests, for boolean checks, and in StreamFactory. Some of the changes that
     // would get rid of this pattern require cross-project interface changes, so just return the
     // codec for now.
-    CompressionCodec codec = compress.getCodec();
-    if (codec != null) {
-      OrcCodecPool.returnCodec(codec.getKind(), codec);
-    }
-    compress.withCodec(null, null);
+    OrcCodecPool.returnCodec(compress, codec);
+    codec = null;
     rawWriter.close();
     rawWriter = null;
   }
@@ -397,9 +399,13 @@ public class PhysicalFsWriter implements PhysicalWriter {
     return result;
   }
 
-  private StreamOptions getOptions(OrcProto.Stream.Kind kind) {
-    return SerializationUtils.getCustomizedCodec(compress, compressionStrategy,
-        kind);
+  StreamOptions getOptions(OrcProto.Stream.Kind kind) {
+    StreamOptions options = new StreamOptions(bufferSize);
+    if (codec != null) {
+      options.withCodec(codec, WriterImpl.getCustomizedCodec(codec,
+          compressionStrategy, kind));
+    }
+    return options;
   }
 
   @Override
