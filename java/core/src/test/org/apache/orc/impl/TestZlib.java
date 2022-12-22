@@ -36,8 +36,7 @@ public class TestZlib {
     in.put(new byte[]{1,2,3,4,5,6,7,10});
     in.flip();
     CompressionCodec codec = new ZlibCodec();
-    assertEquals(false, codec.compress(in, out, null,
-        codec.createOptions()));
+    assertEquals(false, codec.compress(in, out, null));
   }
 
   @Test

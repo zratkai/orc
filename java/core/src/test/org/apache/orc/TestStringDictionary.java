@@ -38,7 +38,6 @@ import org.apache.orc.impl.OutStream;
 import org.apache.orc.impl.RecordReaderImpl;
 import org.apache.orc.impl.StreamName;
 import org.apache.orc.impl.TestInStream;
-import org.apache.orc.impl.writer.StreamOptions;
 import org.apache.orc.impl.writer.StringTreeWriter;
 import org.apache.orc.impl.writer.TreeWriter;
 import org.apache.orc.impl.writer.WriterContext;
@@ -177,7 +176,7 @@ public class TestStringDictionary {
     public OutStream createStream(int column, OrcProto.Stream.Kind kind) throws IOException {
       TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
       streams.put(new StreamName(column, kind), collect);
-      return new OutStream("test", new StreamOptions(1000), collect);
+      return new OutStream("test", 1000, null, collect);
     }
 
     @Override

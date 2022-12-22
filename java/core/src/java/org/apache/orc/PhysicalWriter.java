@@ -68,7 +68,8 @@ public interface PhysicalWriter {
    * @param codec the compression codec to use
    */
   void writeIndex(StreamName name,
-                  OrcProto.RowIndex.Builder index) throws IOException;
+                  OrcProto.RowIndex.Builder index,
+                  CompressionCodec codec) throws IOException;
 
   /**
    * Write a bloom filter index in the given stream name.
@@ -77,7 +78,8 @@ public interface PhysicalWriter {
    * @param codec the compression codec to use
    */
   void writeBloomFilter(StreamName name,
-                        OrcProto.BloomFilterIndex.Builder bloom) throws IOException;
+                        OrcProto.BloomFilterIndex.Builder bloom,
+                        CompressionCodec codec) throws IOException;
 
   /**
    * Flushes the data in all the streams, spills them to disk, write out stripe

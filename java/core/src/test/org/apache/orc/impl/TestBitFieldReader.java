@@ -17,12 +17,11 @@
  */
 package org.apache.orc.impl;
 
-import static org.junit.Assert.assertEquals;
+import static junit.framework.Assert.assertEquals;
 
 import java.nio.ByteBuffer;
 
 import org.apache.orc.CompressionCodec;
-import org.apache.orc.impl.writer.StreamOptions;
 import org.junit.Test;
 
 public class TestBitFieldReader {
@@ -30,12 +29,8 @@ public class TestBitFieldReader {
   public void runSeekTest(CompressionCodec codec) throws Exception {
     TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
     final int COUNT = 16384;
-    StreamOptions options = new StreamOptions(500);
-    if (codec != null) {
-      options.withCodec(codec, codec.createOptions());
-    }
     BitFieldWriter out = new BitFieldWriter(
-        new OutStream("test", options, collect), 1);
+        new OutStream("test", 500, codec, collect), 1);
     TestInStream.PositionCollector[] positions =
         new TestInStream.PositionCollector[COUNT];
     for(int i=0; i < COUNT; ++i) {
@@ -88,7 +83,7 @@ public class TestBitFieldReader {
   public void testSkips() throws Exception {
     TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
     BitFieldWriter out = new BitFieldWriter(
-        new OutStream("test", new StreamOptions(100), collect), 1);
+        new OutStream("test", 100, null, collect), 1);
     final int COUNT = 16384;
     for(int i=0; i < COUNT; ++i) {
       if (i < COUNT/2) {
@@ -104,7 +99,7 @@ public class TestBitFieldReader {
     BitFieldReader in = new BitFieldReader(InStream.create("test",
         new BufferChunk(inBuf, 0), inBuf.remaining()));
     for(int i=0; i < COUNT; i += 5) {
-      int x = in.next();
+      int x = (int) in.next();
       if (i < COUNT/2) {
         assertEquals(i & 1, x);
       } else {
@@ -121,7 +116,7 @@ public class TestBitFieldReader {
   public void testSeekSkip() throws Exception {
     TestInStream.OutputCollector collect = new TestInStream.OutputCollector();
     BitFieldWriter out = new BitFieldWriter(
-        new OutStream("test", new StreamOptions(100), collect), 1);
+        new OutStream("test", 100, null, collect), 1);
     final int COUNT = 256;
     TestInStream.PositionCollector posn = new TestInStream.PositionCollector();
     for(int i=0; i < COUNT; ++i) {
@@ -143,7 +138,7 @@ public class TestBitFieldReader {
     in.seek(posn);
     in.skip(10);
     for(int r = 210; r < COUNT; ++r) {
-      int x = in.next();
+      int x = (int) in.next();
       if (r < COUNT/2) {
         assertEquals(r & 1, x);
       } else {

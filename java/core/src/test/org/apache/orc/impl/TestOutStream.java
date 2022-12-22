@@ -56,9 +56,7 @@ public class TestOutStream {
     PhysicalWriter.OutputReceiver receiver =
         Mockito.mock(PhysicalWriter.OutputReceiver.class);
     CompressionCodec codec = new ZlibCodec();
-    StreamOptions options = new StreamOptions(128 * 1024)
-        .withCodec(codec, codec.createOptions());
-    OutStream stream = new OutStream("test", options, receiver);
+    OutStream stream = new OutStream("test", 128*1024, codec, receiver);
     assertEquals(0L, stream.getBufferSize());
     stream.write(new byte[]{0, 1, 2});
     stream.flush();
@@ -185,9 +183,8 @@ public class TestOutStream {
     Key material = new SecretKeySpec(keyBytes, aes256.getAlgorithm());
     StreamName name = new StreamName(0x1, OrcProto.Stream.Kind.DATA);
     byte[] iv = CryptoUtils.createIvForStream(aes256, name, 0);
-    CompressionCodec codec = new ZlibCodec();
     StreamOptions options = new StreamOptions(1024)
-        .withCodec(codec, codec.createOptions())
+        .withCodec(new ZlibCodec())
         .withEncryption(aes256, material, iv);
     OutStream stream = new OutStream("test", options, receiver);
     for(int i=0; i < 10000; ++i) {
