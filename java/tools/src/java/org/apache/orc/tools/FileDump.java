@@ -417,7 +417,8 @@ public final class FileDump {
         for (int colIdx : rowIndexCols) {
           sargColumns[colIdx] = true;
         }
-        OrcIndex indices = rows.readRowIndex(stripeIx, null, sargColumns);
+        OrcIndex indices = rows
+            .readRowIndex(stripeIx, null, null, null, sargColumns);
         for (int col : rowIndexCols) {
           StringBuilder buf = new StringBuilder();
           String rowIdxString = getFormattedRowIndices(col,

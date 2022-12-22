@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -51,8 +51,6 @@ import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.orc.OrcFile;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.OrcProto;
-import org.apache.orc.impl.reader.ReaderEncryption;
-import org.apache.orc.impl.reader.StripePlanner;
 import org.apache.orc.impl.writer.TimestampTreeWriter;
 
 /**
@@ -76,8 +74,6 @@ public class TreeReaderFactory {
     boolean useProlepticGregorian();
 
     boolean fileUsedProlepticGregorian();
-
-    ReaderEncryption getEncryption();
   }
 
   public static class ReaderContext implements Context {
@@ -86,7 +82,6 @@ public class TreeReaderFactory {
     private boolean useUTCTimestamp = false;
     private String writerTimezone;
     private OrcFile.Version fileFormat;
-    private ReaderEncryption encryption;
     private boolean useProlepticGregorian;
     private boolean fileUsedProlepticGregorian;
     private Set<Integer> filterColumnIds = Collections.emptySet();
@@ -100,11 +95,6 @@ public class TreeReaderFactory {
     public ReaderContext setFilterCallback(Set<Integer> filterColumnsList, Consumer<VectorizedRowBatch> filterCallback) {
       this.filterColumnIds = filterColumnsList;
       this.filterCallback = filterCallback;
-      return this;
-    }
-
-    public ReaderContext setEncryption(ReaderEncryption value) {
-      encryption = value;
       return this;
     }
 
@@ -178,11 +168,6 @@ public class TreeReaderFactory {
     @Override
     public boolean fileUsedProlepticGregorian() {
       return fileUsedProlepticGregorian;
-    }
-
-    @Override
-    public ReaderEncryption getEncryption() {
-      return encryption;
     }
   }
 
@@ -258,9 +243,11 @@ public class TreeReaderFactory {
       }
     }
 
-    void startStripe(StripePlanner planner) throws IOException {
-      checkEncoding(planner.getEncoding(columnId));
-      InStream in = planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      checkEncoding(stripeFooter.getColumnsList().get(columnId));
+      InStream in = streams.get(new StreamName(columnId,
           OrcProto.Stream.Kind.PRESENT));
       if (in == null) {
         present = null;
@@ -386,7 +373,8 @@ public class TreeReaderFactory {
     }
 
     @Override
-    public void startStripe(StripePlanner planner) {
+    public void startStripe(Map<StreamName, InStream> streams,
+                            OrcProto.StripeFooter footer) {
       // PASS
     }
 
@@ -429,9 +417,11 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      reader = new BitFieldReader(planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      reader = new BitFieldReader(streams.get(new StreamName(columnId,
           OrcProto.Stream.Kind.DATA)));
     }
 
@@ -483,9 +473,11 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      reader = new RunLengthByteReader(planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      reader = new RunLengthByteReader(streams.get(new StreamName(columnId,
           OrcProto.Stream.Kind.DATA)));
     }
 
@@ -547,12 +539,14 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DATA);
-      reader = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(name), true, context);
+      reader = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(name), true, context);
     }
 
     @Override
@@ -613,12 +607,14 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DATA);
-      reader = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(name), true, context);
+      reader = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(name), true, context);
     }
 
     @Override
@@ -680,12 +676,14 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DATA);
-      reader = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(name), true, context);
+      reader = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(name), true, context);
     }
 
     @Override
@@ -734,11 +732,13 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DATA);
-      stream = planner.getStream(name);
+      stream = streams.get(name);
     }
 
     @Override
@@ -890,12 +890,14 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name =
           new StreamName(columnId,
               OrcProto.Stream.Kind.DATA);
-      stream = planner.getStream(name);
+      stream = streams.get(name);
     }
 
     @Override
@@ -1064,13 +1066,15 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DATA);
-      stream = planner.getStream(name);
-      lengths = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(new StreamName(columnId, OrcProto.Stream.Kind.LENGTH)), false, context);
+      stream = streams.get(name);
+      lengths = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(new StreamName(columnId, OrcProto.Stream.Kind.LENGTH)), false, context);
     }
 
     @Override
@@ -1179,17 +1183,18 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      OrcProto.ColumnEncoding.Kind kind = planner.getEncoding(columnId).getKind();
-      data = createIntegerReader(kind,
-          planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      data = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(new StreamName(columnId,
               OrcProto.Stream.Kind.DATA)), true, context);
-      nanos = createIntegerReader(kind,
-          planner.getStream(new StreamName(columnId,
+      nanos = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(new StreamName(columnId,
               OrcProto.Stream.Kind.SECONDARY)), false, context);
       if (!instantType) {
-        base_timestamp = getBaseTimestamp(planner.getWriterTimezone());
+        base_timestamp = getBaseTimestamp(stripeFooter.getWriterTimezone());
       }
     }
 
@@ -1375,12 +1380,14 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DATA);
-      reader = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(name), true, context);
+      reader = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(name), true, context);
     }
 
     @Override
@@ -1471,12 +1478,14 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      valueStream = planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      valueStream = streams.get(new StreamName(columnId,
           OrcProto.Stream.Kind.DATA));
-      scaleReader = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(new StreamName(columnId, OrcProto.Stream.Kind.SECONDARY)), true, context);
+      scaleReader = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(new StreamName(columnId, OrcProto.Stream.Kind.SECONDARY)), true, context);
     }
 
     @Override
@@ -1744,9 +1753,11 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      InStream stream = planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+                     OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      InStream stream = streams.get(new StreamName(columnId,
           OrcProto.Stream.Kind.DATA));
       valueReader = new RunLengthIntegerReaderV2(stream, true, skipCorrupt);
     }
@@ -1876,10 +1887,12 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
       // For each stripe, checks the encoding and initializes the appropriate
       // reader
-      switch (planner.getEncoding(columnId).getKind()) {
+      switch (stripeFooter.getColumnsList().get(columnId).getKind()) {
         case DIRECT:
         case DIRECT_V2:
           reader = new StringDirectTreeReader(columnId);
@@ -1890,9 +1903,9 @@ public class TreeReaderFactory {
           break;
         default:
           throw new IllegalArgumentException("Unsupported encoding " +
-              planner.getEncoding(columnId).getKind());
+              stripeFooter.getColumnsList().get(columnId).getKind());
       }
-      reader.startStripe(planner);
+      reader.startStripe(streams, stripeFooter);
     }
 
     @Override
@@ -2031,13 +2044,15 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DATA);
-      stream = planner.getStream(name);
-      lengths = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(new StreamName(columnId, OrcProto.Stream.Kind.LENGTH)),
+      stream = streams.get(name);
+      lengths = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(new StreamName(columnId, OrcProto.Stream.Kind.LENGTH)),
           false, context);
     }
 
@@ -2136,25 +2151,26 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
 
       // read the dictionary blob
       StreamName name = new StreamName(columnId,
           OrcProto.Stream.Kind.DICTIONARY_DATA);
-      InStream in = planner.getStream(name);
+      InStream in = streams.get(name);
       readDictionaryStream(in);
 
       // read the lengths
       name = new StreamName(columnId, OrcProto.Stream.Kind.LENGTH);
-      in = planner.getStream(name);
-      OrcProto.ColumnEncoding encoding = planner.getEncoding(columnId);
-      readDictionaryLengthStream(in, encoding);
+      in = streams.get(name);
+      readDictionaryLengthStream(in, stripeFooter.getColumnsList().get(columnId));
 
       // set up the row reader
       name = new StreamName(columnId, OrcProto.Stream.Kind.DATA);
-      reader = createIntegerReader(encoding.getKind(),
-          planner.getStream(name), false, context);
+      reader = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(name), false, context);
     }
 
     private void readDictionaryLengthStream(InStream in, OrcProto.ColumnEncoding encoding)
@@ -2526,11 +2542,13 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
       for (TreeReader field : fields) {
         if (field != null) {
-          field.startStripe(planner);
+          field.startStripe(streams, stripeFooter);
         }
       }
     }
@@ -2607,13 +2625,15 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      tags = new RunLengthByteReader(planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      tags = new RunLengthByteReader(streams.get(new StreamName(columnId,
           OrcProto.Stream.Kind.DATA)));
       for (TreeReader field : fields) {
         if (field != null) {
-          field.startStripe(planner);
+          field.startStripe(streams, stripeFooter);
         }
       }
     }
@@ -2721,13 +2741,15 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      lengths = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      lengths = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(new StreamName(columnId,
               OrcProto.Stream.Kind.LENGTH)), false, context);
       if (elementReader != null) {
-        elementReader.startStripe(planner);
+        elementReader.startStripe(streams, stripeFooter);
       }
     }
 
@@ -2817,16 +2839,18 @@ public class TreeReaderFactory {
     }
 
     @Override
-    void startStripe(StripePlanner planner) throws IOException {
-      super.startStripe(planner);
-      lengths = createIntegerReader(planner.getEncoding(columnId).getKind(),
-          planner.getStream(new StreamName(columnId,
+    void startStripe(Map<StreamName, InStream> streams,
+        OrcProto.StripeFooter stripeFooter
+    ) throws IOException {
+      super.startStripe(streams, stripeFooter);
+      lengths = createIntegerReader(stripeFooter.getColumnsList().get(columnId).getKind(),
+          streams.get(new StreamName(columnId,
               OrcProto.Stream.Kind.LENGTH)), false, context);
       if (keyReader != null) {
-        keyReader.startStripe(planner);
+        keyReader.startStripe(streams, stripeFooter);
       }
       if (valueReader != null) {
-        valueReader.startStripe(planner);
+        valueReader.startStripe(streams, stripeFooter);
       }
     }
 
