@@ -68,13 +68,12 @@ public class ReaderImpl implements Reader {
   private final long maxLength;
   protected final Path path;
   protected final OrcFile.ReaderOptions options;
-  protected final org.apache.orc.CompressionKind compressionKind;
+  private final org.apache.orc.CompressionKind compressionKind;
   protected FSDataInputStream file;
   protected int bufferSize;
   // the unencrypted stripe statistics or null if they haven't been read yet
   protected List<OrcProto.StripeStatistics> stripeStatistics;
   private final int metadataSize;
-  protected final List<OrcProto.Type> types;
   private TypeDescription schema;
   private final List<OrcProto.UserMetadataItem> userMetadata;
   private final List<OrcProto.ColumnStatistics> fileStats;
@@ -523,7 +522,6 @@ public class ReaderImpl implements Reader {
       this.encryption = new ReaderEncryption(tail.getFooter(), schema,
           tail.getStripeStatisticsOffset(), tail.getTailBuffer(), stripes, options.getKeyProvider(), conf);
     }
-    this.types = OrcUtils.getOrcTypes(schema);
   }
 
   protected FileSystem getFileSystem() throws IOException {
