@@ -2088,7 +2088,7 @@ public class TestRecordReaderImpl {
         .setKind(OrcProto.ColumnEncoding.Kind.DIRECT_V2).build());
     encodings.add(OrcProto.ColumnEncoding.newBuilder()
         .setKind(OrcProto.ColumnEncoding.Kind.DIRECT_V2).build());
-    boolean[] rows = applier.pickRowGroups(new ReaderImpl.StripeInformationImpl(stripe, 0, 1, null),
+    boolean[] rows = applier.pickRowGroups(new ReaderImpl.StripeInformationImpl(stripe),
         indexes, null, encodings, null, false);
     assertEquals(4, rows.length);
     assertEquals(false, rows[0]);
@@ -2134,7 +2134,7 @@ public class TestRecordReaderImpl {
         .setKind(OrcProto.ColumnEncoding.Kind.DIRECT_V2).build());
     encodings.add(OrcProto.ColumnEncoding.newBuilder()
         .setKind(OrcProto.ColumnEncoding.Kind.DIRECT_V2).build());
-    boolean[] rows = applier.pickRowGroups(new ReaderImpl.StripeInformationImpl(stripe, 0, 1, null),
+    boolean[] rows = applier.pickRowGroups(new ReaderImpl.StripeInformationImpl(stripe),
         indexes, null, encodings, null, false);
     assertEquals(3, rows.length);
     assertEquals(false, rows[0]);
@@ -2176,7 +2176,7 @@ public class TestRecordReaderImpl {
     List<OrcProto.ColumnEncoding> encodings = new ArrayList<>();
     encodings.add(OrcProto.ColumnEncoding.newBuilder().setKind(OrcProto.ColumnEncoding.Kind.DIRECT).build());
 
-    boolean[] rows = applier.pickRowGroups(new ReaderImpl.StripeInformationImpl(stripe, 0, 1, null),
+    boolean[] rows = applier.pickRowGroups(new ReaderImpl.StripeInformationImpl(stripe),
         indexes, null, encodings, null, false);
     assertEquals(RecordReaderImpl.SargApplier.READ_ALL_RGS, rows); //cannot filter for new column, return all rows
   }
