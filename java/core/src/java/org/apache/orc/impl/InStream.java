@@ -80,7 +80,6 @@ public abstract class InStream extends InputStream {
     protected long position;
     protected ByteBuffer decrypted;
     protected DiskRangeList currentRange;
-    protected long currentOffset;
 
     /**
      * Create the stream without calling reset on it.
@@ -102,11 +101,7 @@ public abstract class InStream extends InputStream {
 
     protected void reset(DiskRangeList input) {
       this.bytes = input;
-      if (input == null || input.getOffset() <= offset) {
-        position = 0;
-      } else {
-        position = input.getOffset() - offset;
-      }
+      position = input == null ? 0 : input.getOffset() - offset;
       setCurrent(input, true);
     }
 
@@ -125,16 +120,10 @@ public abstract class InStream extends InputStream {
     protected void setCurrent(DiskRangeList newRange, boolean isJump) {
       currentRange = newRange;
       if (newRange != null) {
-        // copy the buffer so that we don't change the BufferChunk
         decrypted = newRange.getData().slice();
-        currentOffset = newRange.getOffset();
         // Move the position in the ByteBuffer to match the currentOffset,
         // which is relative to the stream.
-        int start = (int) (position + offset - currentOffset);
-        decrypted.position(start);
-        // make sure the end of the buffer doesn't go past our stream
-        decrypted.limit(start + (int) Math.min(decrypted.remaining(),
-            length - position));
+        decrypted.position((int) (position + offset - newRange.getOffset()));
       }
     }
 
@@ -184,18 +173,18 @@ public abstract class InStream extends InputStream {
         return;
       }
       // compute the position of the desired point in file
-      long positionFile = desired + offset;
+      long posn = desired + offset;
       // If we are seeking inside of the current range, just reposition.
-      if (currentRange != null && positionFile >= currentRange.getOffset() &&
-          positionFile < currentRange.getEnd()) {
-        decrypted.position((int) (positionFile - currentOffset));
+      if (currentRange != null && posn >= currentRange.getOffset() &&
+          posn < currentRange.getEnd()) {
+        decrypted.position((int) (posn - currentRange.getOffset()));
         position = desired;
       } else {
         for (DiskRangeList curRange = bytes; curRange != null;
              curRange = curRange.next) {
-          if (curRange.getOffset() <= positionFile &&
-              (curRange.next == null ? positionFile <= curRange.getEnd() :
-                   positionFile < curRange.getEnd())) {
+          if (curRange.getOffset() <= posn &&
+              (curRange.next == null ? posn <= curRange.getEnd() :
+                  posn < curRange.getEnd())) {
             position = desired;
             setCurrent(curRange, true);
             return;
@@ -210,8 +199,7 @@ public abstract class InStream extends InputStream {
     public String toString() {
       return "uncompressed stream " + name + " position: " + position +
           " length: " + length + " range: " + getRangeNumber(bytes, currentRange) +
-          " offset: " + currentRange.getOffset() +
-          " position: " + (decrypted == null ? 0 : decrypted.position()) +
+          " offset: " + (decrypted == null ? 0 : decrypted.position()) +
           " limit: " + (decrypted == null ? 0 : decrypted.limit());
     }
   }
@@ -298,16 +286,18 @@ public abstract class InStream extends InputStream {
     /**
      * Decrypt the given range into the decrypted buffer. It is assumed that
      * the cipher is correctly initialized by changeIv before this is called.
-     * @param encrypted the bytes to decrypt
+     * @param newRange the range to decrypte
      * @return a reused ByteBuffer, which is used by each call to decrypt
      */
-    ByteBuffer decrypt(ByteBuffer encrypted)  {
-      int length = encrypted.remaining();
+    ByteBuffer decrypt(DiskRangeList newRange)  {
+      final long offset = newRange.getOffset();
+      final int length = newRange.getLength();
       if (decrypted == null || decrypted.capacity() < length) {
         decrypted = ByteBuffer.allocate(length);
       } else {
         decrypted.clear();
       }
+      ByteBuffer encrypted = newRange.getData().duplicate();
       try {
         int output = cipher.update(encrypted, decrypted);
         if (output != length) {
@@ -344,23 +334,11 @@ public abstract class InStream extends InputStream {
     protected void setCurrent(DiskRangeList newRange, boolean isJump) {
       currentRange = newRange;
       if (newRange != null) {
-        // what is the position of the start of the newRange?
-        currentOffset = newRange.getOffset();
-        ByteBuffer encrypted = newRange.getData().slice();
-        int ignoreBytes = 0;
-        if (currentOffset < offset) {
-          ignoreBytes = (int) (offset - currentOffset);
-          encrypted.position(ignoreBytes);
-          currentOffset = offset;
-        }
         if (isJump) {
-          encrypt.changeIv(currentOffset - offset);
+          encrypt.changeIv(newRange.getOffset() - offset);
         }
-        if (encrypted.remaining() > length + offset - currentOffset) {
-          encrypted.limit((int) (length + offset - currentOffset));
-        }
-        decrypted = encrypt.decrypt(encrypted);
-        decrypted.position((int) (position + offset - currentOffset));
+        decrypted = encrypt.decrypt(newRange);
+        decrypted.position((int) (position + offset - newRange.getOffset()));
       }
     }
 
@@ -432,11 +410,7 @@ public abstract class InStream extends InputStream {
      */
     void reset(DiskRangeList input) {
       bytes = input;
-      if (input == null || input.getOffset() <= offset) {
-        position = 0;
-      } else {
-        position = input.getOffset() - offset;
-      }
+      position = input == null ? 0 : input.getOffset() - offset;
       setCurrent(input, true);
     }
 
@@ -449,10 +423,7 @@ public abstract class InStream extends InputStream {
       currentRange = newRange;
       if (newRange != null) {
         compressed = newRange.getData().slice();
-        int pos = (int) (position + offset - newRange.getOffset());
-        compressed.position(pos);
-        compressed.limit(pos + (int) Math.min(compressed.remaining(),
-            length - position));
+        compressed.position((int) (position + offset - newRange.getOffset()));
       }
     }
 
@@ -683,23 +654,11 @@ public abstract class InStream extends InputStream {
     protected void setCurrent(DiskRangeList newRange, boolean isJump) {
       currentRange = newRange;
       if (newRange != null) {
-        // what is the position of the start of the newRange?
-        long rangeOffset = newRange.getOffset();
-        int ignoreBytes = 0;
-        ByteBuffer encrypted = newRange.getData().slice();
-        if (rangeOffset < offset) {
-          ignoreBytes = (int) (offset - rangeOffset);
-          encrypted.position(ignoreBytes);
-        }
         if (isJump) {
-          encrypt.changeIv(ignoreBytes + rangeOffset - offset);
+          encrypt.changeIv(newRange.getOffset() - offset);
         }
-        encrypted.limit(ignoreBytes +
-                            (int) Math.min(encrypted.remaining(), length));
-        compressed = encrypt.decrypt(encrypted);
-        if (position + offset > rangeOffset + ignoreBytes) {
-          compressed.position((int) (position + offset - rangeOffset - ignoreBytes));
-        }
+        compressed = encrypt.decrypt(newRange);
+        compressed.position((int) (position + offset - newRange.getOffset()));
       }
     }
 
