@@ -18,24 +18,17 @@ package org.apache.orc.impl;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.orc.CompressionKind;
 import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.OrcUtils;
-import org.apache.orc.Reader;
 import org.apache.orc.StripeInformation;
-import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 // TODO: Make OrcTail implement FileMetadata or Reader interface
 public final class OrcTail {
-  private static final Logger LOG = LoggerFactory.getLogger(OrcTail.class);
-
   // postscript + footer - Serialized in OrcSplit
   private final OrcProto.FileTail fileTail;
   // serialized representation of metadata, footer and postscript
@@ -43,7 +36,6 @@ public final class OrcTail {
   private final TypeDescription schema;
   // used to invalidate cache entries
   private final long fileModificationTime;
-  private final Reader reader;
 
   public OrcTail(OrcProto.FileTail fileTail,
                  ByteBuffer serializedTail) throws IOException {
@@ -58,19 +50,13 @@ public final class OrcTail {
   }
 
   public OrcTail(OrcProto.FileTail fileTail, BufferChunk serializedTail,
-                 long fileModificationTime) throws IOException {
-    this(fileTail, serializedTail, fileModificationTime, null);
-  }
-
-  public OrcTail(OrcProto.FileTail fileTail, BufferChunk serializedTail,
-                 long fileModificationTime, Reader reader) throws IOException {
+    long fileModificationTime) throws IOException {
     this.fileTail = fileTail;
     this.serializedTail = serializedTail;
     this.fileModificationTime = fileModificationTime;
     List<OrcProto.Type> types = getTypes();
     OrcUtils.isValidTypeTree(types, 0);
     this.schema = OrcUtils.convertTypeFromProtobuf(types, 0);
-    this.reader = reader;
   }
 
   public ByteBuffer getSerializedTail() {
@@ -198,35 +184,5 @@ public final class OrcTail {
     footerBuilder.clearStatistics();
     fileTailBuilder.setFooter(footerBuilder.build());
     return fileTailBuilder.build();
-  }
-
-  /**
-   * Get statistics, assuming the dates aren't and shouldn't be proleptic gregorian.
-   * @return
-   * @throws IOException
-   * @deprecated Use {@link #getStripeStatistics(boolean, boolean)} instead
-   */
-  @Deprecated
-  public List<StripeStatistics> getStripeStatistics()
-          throws IOException {
-    OrcProto.Footer footer = fileTail.getFooter();
-    boolean writerUsedProlepticGregorian =
-            footer.hasCalendar() ?
-                    footer.getCalendar() == OrcProto.CalendarKind.PROLEPTIC_GREGORIAN :
-                    false;
-    return getStripeStatistics(writerUsedProlepticGregorian, false);
-  }
-
-  public List<StripeStatistics> getStripeStatistics(
-          boolean writerUsedProlepticGregorian, boolean convertToProlepticGregorian)
-          throws IOException {
-    List<StripeStatistics> result = new ArrayList<>();
-    List<OrcProto.StripeStatistics> ssProto = reader.getOrcProtoStripeStatistics();
-    if (ssProto != null) {
-      for (OrcProto.StripeStatistics ss : ssProto) {
-        result.add(new StripeStatistics(null, ss.getColStatsList(), writerUsedProlepticGregorian, convertToProlepticGregorian));
-      }
-    }
-    return result;
   }
 }

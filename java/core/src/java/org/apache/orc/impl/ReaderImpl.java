@@ -630,7 +630,7 @@ public class ReaderImpl implements Reader {
     result.setPostscript(postscript);
     result.setFileLength(0);
     result.setPostscriptLength(0);
-    return new OrcTail(result.build(), new BufferChunk(0, 0), -1, this);
+    return new OrcTail(result.build(), new BufferChunk(0, 0), -1);
   }
 
   private static void read(FSDataInputStream file,
@@ -731,7 +731,7 @@ public class ReaderImpl implements Reader {
                 new IOException("Problem reading file footer " + path, thr);
     }
 
-    return new OrcTail(fileTailBuilder.build(), buffer, modificationTime, this);
+    return new OrcTail(fileTailBuilder.build(), buffer, modificationTime);
   }
 
   @Override
