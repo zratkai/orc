@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.security.Key;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import org.apache.orc.EncryptionAlgorithm;
@@ -792,22 +793,6 @@ public class ReaderImpl implements Reader {
       }
     }
     return getRawDataSizeFromColIndices(include, schema, fileStats);
-  }
-
-  public static long getRawDataSizeFromColIndices(
-      List<Integer> colIndices,
-      List<OrcProto.Type> types,
-      List<OrcProto.ColumnStatistics> stats)
-      throws FileFormatException {
-    TypeDescription schema = OrcUtils.convertTypeFromProtobuf(types, 0);
-    boolean[] include = new boolean[schema.getMaximumId() + 1];
-    for(Integer rootId: colIndices) {
-      TypeDescription root = schema.findSubtype(rootId);
-      for(int c = root.getId(); c <= root.getMaximumId(); ++c) {
-        include[c] = true;
-      }
-    }
-    return getRawDataSizeFromColIndices(include, schema, stats);
   }
 
   static long getRawDataSizeFromColIndices(boolean[] include,
