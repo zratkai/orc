@@ -43,7 +43,6 @@ import org.apache.orc.OrcProto;
 import org.apache.orc.OrcUtils;
 import org.apache.orc.PhysicalWriter;
 import org.apache.orc.StripeInformation;
-import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.impl.writer.WriterEncryptionKey;
 import org.apache.orc.impl.writer.WriterEncryptionVariant;
@@ -81,6 +80,7 @@ import com.google.protobuf.ByteString;
 public class WriterImpl implements WriterInternal, MemoryManager.Callback {
 
   private static final Logger LOG = LoggerFactory.getLogger(WriterImpl.class);
+  private static final HadoopShims SHIMS = HadoopShimsFactory.get();
 
   private static final int MIN_ROW_INDEX_STRIDE = 1000;
 
@@ -142,8 +142,6 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   public WriterImpl(FileSystem fs,
                     Path path,
                     OrcFile.WriterOptions opts) throws IOException {
-    this.path = path;
-    this.conf = opts.getConfiguration();
     // clone it so that we can annotate it with encryption
     this.schema = opts.getSchema().clone();
     int numColumns = schema.getMaximumId() + 1;
@@ -155,10 +153,15 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     // Annotate the schema with the column encryption
     schema.annotateEncryption(opts.getEncryption(), opts.getMasks());
     columnEncryption = new WriterEncryptionVariant[numColumns];
-    columnMaskDescriptions = new MaskDescriptionImpl[numColumns];
-    encryption = setupEncryption(opts.getKeyProvider(), schema,
-        opts.getKeyOverrides());
-    needKeyFlush = encryption.length > 0;
+    if (opts.getEncryption() == null) {
+      columnMaskDescriptions = null;
+      encryption = new WriterEncryptionVariant[0];
+      needKeyFlush = false;
+    } else {
+      columnMaskDescriptions = new MaskDescriptionImpl[numColumns];
+      encryption = setupEncryption(opts.getKeyProvider(), schema);
+      needKeyFlush = true;
+    }
 
     // Set up the physical writer
     this.physicalWriter = opts.getPhysicalWriter() == null ?
@@ -167,6 +170,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     unencryptedOptions = physicalWriter.getStreamOptions();
     OutStream.assertBufferSizeValid(unencryptedOptions.getBufferSize());
 
+    this.path = path;
+    this.conf = opts.getConfiguration();
     useProlepticGregorian = opts.getProlepticGregorian();
     this.callback = opts.getCallback();
     this.writerVersion = opts.getWriterVersion();
@@ -431,14 +436,10 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
 
     @Override
     public DataMask getUnencryptedMask(int columnId) {
-      if (columnMaskDescriptions != null) {
-        MaskDescriptionImpl descr = columnMaskDescriptions[columnId];
-        if (descr != null) {
-          return DataMask.Factory.build(descr, schema.findSubtype(columnId),
-              (type) -> columnMaskDescriptions[type.getId()]);
-        }
-      }
-      return null;
+      MaskDescriptionImpl descr = columnMaskDescriptions[columnId];
+      return descr == null ? null :
+                 DataMask.Factory.build(descr, schema.findSubtype(columnId),
+                     (type) -> columnMaskDescriptions[type.getId()]);
     }
 
     @Override
@@ -668,46 +669,33 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
 
   @Override
   public void addRowBatch(VectorizedRowBatch batch) throws IOException {
-    try {
-      // If this is the first set of rows in this stripe, tell the tree writers
-      // to prepare the stripe.
-      if (batch.size != 0 && rowsInStripe == 0) {
-        treeWriter.prepareStripe(stripes.size() + 1);
-      }
-      if (buildIndex) {
-        // Batch the writes up to the rowIndexStride so that we can get the
-        // right size indexes.
-        int posn = 0;
-        while (posn < batch.size) {
-          int chunkSize = Math.min(batch.size - posn,
-              rowIndexStride - rowsInIndex);
-          treeWriter.writeRootBatch(batch, posn, chunkSize);
-          posn += chunkSize;
-          rowsInIndex += chunkSize;
-          rowsInStripe += chunkSize;
-          if (rowsInIndex >= rowIndexStride) {
-            createRowIndexEntry();
-          }
+    // If this is the first set of rows in this stripe, tell the tree writers
+    // to prepare the stripe.
+    if (batch.size != 0 && rowsInStripe == 0) {
+      treeWriter.prepareStripe(stripes.size() + 1);
+    }
+    if (buildIndex) {
+      // Batch the writes up to the rowIndexStride so that we can get the
+      // right size indexes.
+      int posn = 0;
+      while (posn < batch.size) {
+        int chunkSize = Math.min(batch.size - posn,
+            rowIndexStride - rowsInIndex);
+        treeWriter.writeRootBatch(batch, posn, chunkSize);
+        posn += chunkSize;
+        rowsInIndex += chunkSize;
+        rowsInStripe += chunkSize;
+        if (rowsInIndex >= rowIndexStride) {
+          createRowIndexEntry();
         }
-      } else {
-        rowsInStripe += batch.size;
-        treeWriter.writeRootBatch(batch, 0, batch.size);
       }
-      rowsSinceCheck += batch.size;
+    } else {
+      rowsInStripe += batch.size;
+      treeWriter.writeRootBatch(batch, 0, batch.size);
+    }
+    rowsSinceCheck += batch.size;
       previousAllocation = memoryManager.checkMemory(previousAllocation, this);
       checkMemory();
-    } catch (Throwable t) {
-      try {
-        close();
-      } catch (Throwable ignore) {
-        // ignore
-      }
-      if (t instanceof IOException) {
-        throw (IOException) t;
-      } else {
-        throw new IOException("Problem adding row to " + path, t);
-      }
-    }
   }
 
   @Override
@@ -757,7 +745,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     return lastFlushOffset;
   }
 
-  private static void checkArgument(boolean expression, String message) {
+  static void checkArgument(boolean expression, String message) {
     if (!expression) {
       throw new IllegalArgumentException(message);
     }
@@ -767,16 +755,6 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   public void appendStripe(byte[] stripe, int offset, int length,
                            StripeInformation stripeInfo,
                            OrcProto.StripeStatistics stripeStatistics
-                           ) throws IOException {
-    appendStripe(stripe, offset, length, stripeInfo,
-        new StripeStatistics[]{
-            new StripeStatisticsImpl(schema, stripeStatistics.getColStatsList(), false, false)});
-  }
-
-  @Override
-  public void appendStripe(byte[] stripe, int offset, int length,
-                           StripeInformation stripeInfo,
-                           StripeStatistics[] stripeStatistics
                            ) throws IOException {
     checkArgument(stripe != null, "Stripe must not be null");
     checkArgument(length <= stripe.length,
@@ -792,24 +770,16 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     rowsInStripe = stripeInfo.getNumberOfRows();
     // update stripe information
     OrcProto.StripeInformation.Builder dirEntry = OrcProto.StripeInformation
-                                                      .newBuilder()
-                                                      .setNumberOfRows(rowsInStripe)
-                                                      .setIndexLength(stripeInfo.getIndexLength())
-                                                      .setDataLength(stripeInfo.getDataLength())
-                                                      .setFooterLength(stripeInfo.getFooterLength());
-    // If this is the first stripe of the original file, we need to copy the
-    // encryption information.
-    if (stripeInfo.hasEncryptionStripeId()) {
-      dirEntry.setEncryptStripeId(stripeInfo.getEncryptionStripeId());
-      for(byte[] key: stripeInfo.getEncryptedLocalKeys()) {
-        dirEntry.addEncryptedLocalKeys(ByteString.copyFrom(key));
-      }
-    }
+        .newBuilder()
+        .setNumberOfRows(rowsInStripe)
+        .setIndexLength(stripeInfo.getIndexLength())
+        .setDataLength(stripeInfo.getDataLength())
+        .setFooterLength(stripeInfo.getFooterLength());
     physicalWriter.appendRawStripe(ByteBuffer.wrap(stripe, offset, length),
         dirEntry);
 
     // since we have already written the stripe, just update stripe statistics
-    treeWriter.addStripeStatistics(stripeStatistics);
+    treeWriter.updateFileStatistics(stripeStatistics);
 
     stripes.add(dirEntry.build());
 
@@ -875,8 +845,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     return false;
   }
 
-  private WriterEncryptionKey getKey(String keyName,
-                                     KeyProvider provider) throws IOException {
+  WriterEncryptionKey getKey(String keyName,
+                             KeyProvider provider) throws IOException {
     WriterEncryptionKey result = keys.get(keyName);
     if (result == null) {
       result = new WriterEncryptionKey(provider.getCurrentKeyVersion(keyName));
@@ -885,9 +855,9 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     return result;
   }
 
-  private MaskDescriptionImpl getMask(String maskString) {
-    // if it is already there, get the earlier object
+  MaskDescriptionImpl getMask(String maskString) {
     MaskDescriptionImpl result = maskDescriptions.get(maskString);
+    // if it is already there, get the earlier object
     if (result == null) {
       result = ParserUtils.buildMaskDescription(maskString);
       maskDescriptions.put(maskString, result);
@@ -895,16 +865,13 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     return result;
   }
 
-  private int visitTypeTree(TypeDescription schema,
-                            boolean encrypted,
-                            KeyProvider provider) throws IOException {
+  int visitTypeTree(TypeDescription schema,
+                    boolean encrypted,
+                    KeyProvider provider) throws IOException {
     int result = 0;
     String keyName = schema.getAttributeValue(TypeDescription.ENCRYPT_ATTRIBUTE);
     String maskName = schema.getAttributeValue(TypeDescription.MASK_ATTRIBUTE);
     if (keyName != null) {
-      if (provider == null) {
-        throw new IllegalArgumentException("Encryption requires a KeyProvider.");
-      }
       if (encrypted) {
         throw new IllegalArgumentException("Nested encryption type: " + schema);
       }
@@ -913,7 +880,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       WriterEncryptionKey key = getKey(keyName, provider);
       HadoopShims.KeyMetadata metadata = key.getMetadata();
       WriterEncryptionVariant variant = new WriterEncryptionVariant(key,
-          schema, provider.createLocalKey(metadata));
+          schema, keyProvider.createLocalKey(metadata));
       key.addRoot(variant);
     }
     if (encrypted && (keyName != null || maskName != null)) {
@@ -933,29 +900,24 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
    * Iterate through the encryption options given by the user and set up
    * our data structures.
    * @param provider the KeyProvider to use to generate keys
-   * @param schema the type tree that we search for annotations
-   * @param keyOverrides user specified key overrides
+   * @param schema the a
    */
-  private WriterEncryptionVariant[] setupEncryption(KeyProvider provider,
-                                                    TypeDescription schema,
-                                                    Map<String, HadoopShims.KeyMetadata> keyOverrides
-                                                    ) throws IOException {
+  WriterEncryptionVariant[] setupEncryption(KeyProvider provider,
+                                            TypeDescription schema
+                                            ) throws IOException {
     keyProvider = provider != null ? provider :
                       CryptoUtils.getKeyProvider(conf, new SecureRandom());
-    // Load the overrides into the cache so that we use the required key versions.
-    for(HadoopShims.KeyMetadata key: keyOverrides.values()) {
-      keys.put(key.getKeyName(), new WriterEncryptionKey(key));
+    if (keyProvider == null) {
+      throw new IllegalArgumentException("Encryption requires a KeyProvider.");
     }
-    int variantCount = visitTypeTree(schema, false, keyProvider);
+    int variantCount = visitTypeTree(schema, false, provider);
 
     // Now that we have de-duped the keys and maskDescriptions, make the arrays
     int nextId = 0;
-    if (variantCount > 0) {
-      for (MaskDescriptionImpl mask : maskDescriptions.values()) {
-        mask.setId(nextId++);
-        for (TypeDescription column : mask.getColumns()) {
-          this.columnMaskDescriptions[column.getId()] = mask;
-        }
+    for (MaskDescriptionImpl mask: maskDescriptions.values()) {
+      mask.setId(nextId++);
+      for(TypeDescription column: mask.getColumns()) {
+        this.columnMaskDescriptions[column.getId()] = mask;
       }
     }
     nextId = 0;

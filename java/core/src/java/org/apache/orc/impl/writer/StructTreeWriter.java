@@ -23,7 +23,6 @@ import org.apache.hadoop.hive.ql.exec.vector.StructColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcProto;
-import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
 
 import java.io.IOException;
@@ -120,11 +119,10 @@ public class StructTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void addStripeStatistics(StripeStatistics[] stats
-                                  ) throws IOException {
-    super.addStripeStatistics(stats);
+  public void updateFileStatistics(OrcProto.StripeStatistics stats) {
+    super.updateFileStatistics(stats);
     for (TreeWriter child : childrenWriters) {
-      child.addStripeStatistics(stats);
+      child.updateFileStatistics(stats);
     }
   }
 

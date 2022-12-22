@@ -1314,7 +1314,8 @@ public class TestRecordReaderImpl {
 
     // filter by rows and groups
     StripePlanner planner = new StripePlanner(schema, new ReaderEncryption(),
-        dataReader, OrcFile.WriterVersion.ORC_14, false, Integer.MAX_VALUE);
+        new InStream.StreamOptions(), dataReader,
+        OrcFile.WriterVersion.ORC_14, false, Integer.MAX_VALUE);
     planner.parseStripe(stripe, columns);
     OrcIndex index = planner.readRowIndex(null, null);
     BufferChunkList result = planner.readData(index, rowGroups, false);
@@ -1407,7 +1408,8 @@ public class TestRecordReaderImpl {
     final long START = stripe.getStream(1, OrcProto.Stream.Kind.PRESENT).offset;
 
     StripePlanner planner = new StripePlanner(schema, new ReaderEncryption(),
-        dataReader, OrcFile.WriterVersion.ORC_14, false, Integer.MAX_VALUE);
+        options, dataReader, OrcFile.WriterVersion.ORC_14, false,
+        Integer.MAX_VALUE);
 
     // filter by rows and groups
     boolean[] columns = new boolean[]{true, true, false};
@@ -1467,6 +1469,7 @@ public class TestRecordReaderImpl {
 
     // filter by rows and groups
     StripePlanner planner = new StripePlanner(schema, new ReaderEncryption(),
+        new InStream.StreamOptions(),
         dataReader, OrcFile.WriterVersion.ORC_14, false, Integer.MAX_VALUE);
 
     // filter by rows and groups
@@ -1921,7 +1924,8 @@ public class TestRecordReaderImpl {
 
     // use old blooms
     ReaderEncryption encryption = new ReaderEncryption();
-    StripePlanner planner = new StripePlanner(schema, encryption, dataReader,
+    StripePlanner planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_4243, false, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, true, false, true});
     OrcIndex index =
@@ -1939,7 +1943,8 @@ public class TestRecordReaderImpl {
     // ignore non-utf8 bloom filter
     dataReader.resetCounts();
     Arrays.fill(bloomFilterKinds, null);
-    planner = new StripePlanner(schema, encryption, dataReader,
+    planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_4243, true, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, true, true, false});
     planner.readRowIndex(new boolean[]{false, true, true, false}, index);
@@ -1955,7 +1960,8 @@ public class TestRecordReaderImpl {
     // check that we are handling the post hive-12055 strings correctly
     dataReader.resetCounts();
     Arrays.fill(bloomFilterKinds, null);
-    planner = new StripePlanner(schema, encryption, dataReader,
+    planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_12055, true, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, true, true, true});
     planner.readRowIndex(new boolean[]{false, true, true, true}, index);
@@ -1972,7 +1978,8 @@ public class TestRecordReaderImpl {
     // ignore non-utf8 bloom filter on decimal
     dataReader.resetCounts();
     Arrays.fill(bloomFilterKinds, null);
-    planner = new StripePlanner(schema, encryption, dataReader,
+    planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_4243, true, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, false, true, false});
     planner.readRowIndex(new boolean[]{false, false, true, false}, index);
@@ -1994,7 +2001,8 @@ public class TestRecordReaderImpl {
 
     // use old bloom filters
     ReaderEncryption encryption = new ReaderEncryption();
-    StripePlanner planner = new StripePlanner(schema, encryption, dataReader,
+    StripePlanner planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_4243, true, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, true, false, true});
     OrcIndex index =
@@ -2015,7 +2023,8 @@ public class TestRecordReaderImpl {
     // ignore non-utf8 bloom filter
     Arrays.fill(bloomFilterKinds, null);
     dataReader.resetCounts();
-    planner = new StripePlanner(schema, encryption, dataReader,
+    planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_4243, true, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, true, true, false});
     planner.readRowIndex(new boolean[]{false, true, true, false}, index);
@@ -2039,7 +2048,8 @@ public class TestRecordReaderImpl {
 
     // use old bloom filters
     ReaderEncryption encryption = new ReaderEncryption();
-    StripePlanner planner = new StripePlanner(schema, encryption, dataReader,
+    StripePlanner planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_4243, true, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, true, false, true});
     OrcIndex index =
@@ -2058,7 +2068,8 @@ public class TestRecordReaderImpl {
     // ignore non-utf8 bloom filter
     Arrays.fill(bloomFilterKinds, null);
     dataReader.resetCounts();
-    planner = new StripePlanner(schema, encryption, dataReader,
+    planner = new StripePlanner(schema, encryption,
+        new InStream.StreamOptions(), dataReader,
         OrcFile.WriterVersion.HIVE_4243, true, Integer.MAX_VALUE);
     planner.parseStripe(stripe, new boolean[]{true, true, true, false});
     planner.readRowIndex(new boolean[]{false, true, true, false}, index);

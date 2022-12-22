@@ -23,7 +23,6 @@ import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
-import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
 
 import java.io.IOException;
@@ -93,12 +92,10 @@ public interface TreeWriter {
   void writeStripe(int requiredIndexEntries) throws IOException;
 
   /**
-   * During a stripe append, we need to handle the stripe statistics.
-   * @param stripeStatistics the statistics for the new stripe across the
-   *                         encryption variants
+   * During a stripe append, we need to update the file statistics.
+   * @param stripeStatistics the statistics for the new stripe
    */
-  void addStripeStatistics(StripeStatistics[] stripeStatistics
-                           ) throws IOException;
+  void updateFileStatistics(OrcProto.StripeStatistics stripeStatistics);
 
   /**
    * Write the FileStatistics for each column in each encryption variant.
