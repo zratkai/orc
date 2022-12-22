@@ -1145,7 +1145,7 @@ public class RecordReaderImpl implements RecordReader {
           if (!(range instanceof BufferChunk)) {
             continue;
           }
-          dataReader.releaseBuffer(range.getData());
+          dataReader.releaseBuffer(((BufferChunk) range).getChunk());
         }
       }
     }
@@ -1297,7 +1297,7 @@ public class RecordReaderImpl implements RecordReader {
           ranges, streamOffset, streamDesc.getLength());
       StreamName name = new StreamName(column, streamDesc.getKind());
       streams.put(name, InStream.create(name.toString(), buffers,
-          0, streamDesc.getLength(), options));
+          streamDesc.getLength(), options));
       streamOffset += streamDesc.getLength();
     }
   }

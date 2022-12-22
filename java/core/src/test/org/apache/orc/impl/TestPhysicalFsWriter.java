@@ -57,7 +57,7 @@ public class TestPhysicalFsWriter {
     }
 
     @Override
-    public void write(int b) {
+    public void write(int b) throws IOException {
       contents.add(new byte[]{(byte) b});
     }
 
@@ -97,12 +97,12 @@ public class TestPhysicalFsWriter {
 
     @Override
     public FSDataOutputStream append(Path f, int bufferSize,
-                                     Progressable progress) {
+                                     Progressable progress) throws IOException {
       throw new UnsupportedOperationException("append not supported");
     }
 
     @Override
-    public boolean rename(Path src, Path dst) {
+    public boolean rename(Path src, Path dst) throws IOException {
       boolean result = fileContents.containsKey(src) &&
           !fileContents.containsKey(dst);
       if (result) {
@@ -113,14 +113,14 @@ public class TestPhysicalFsWriter {
     }
 
     @Override
-    public boolean delete(Path f, boolean recursive) {
+    public boolean delete(Path f, boolean recursive) throws IOException {
       boolean result = fileContents.containsKey(f);
       fileContents.remove(f);
       return result;
     }
 
     @Override
-    public FileStatus[] listStatus(Path f) {
+    public FileStatus[] listStatus(Path f) throws IOException {
       return new FileStatus[]{getFileStatus(f)};
     }
 
@@ -135,12 +135,12 @@ public class TestPhysicalFsWriter {
     }
 
     @Override
-    public boolean mkdirs(Path f, FsPermission permission) {
+    public boolean mkdirs(Path f, FsPermission permission) throws IOException {
       return false;
     }
 
     @Override
-    public FileStatus getFileStatus(Path f) {
+    public FileStatus getFileStatus(Path f) throws IOException {
       List<byte[]> contents = fileContents.get(f);
       if (contents != null) {
         long sum = 0;
@@ -262,8 +262,7 @@ public class TestPhysicalFsWriter {
     }
 
     @Override
-    public ZeroCopyReaderShim getZeroCopyReader(FSDataInputStream in,
-                                                ByteBufferPoolShim pool) {
+    public ZeroCopyReaderShim getZeroCopyReader(FSDataInputStream in, ByteBufferPoolShim pool) throws IOException {
       return null;
     }
 
@@ -277,7 +276,7 @@ public class TestPhysicalFsWriter {
     }
 
     @Override
-    public KeyProvider getKeyProvider(Configuration conf, Random random) {
+    public KeyProvider getKeyProvider(Configuration conf, Random random) throws IOException {
       return null;
     }
   }
