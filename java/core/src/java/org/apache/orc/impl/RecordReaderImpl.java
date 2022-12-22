@@ -251,7 +251,7 @@ public class RecordReaderImpl implements RecordReader {
     reader = TreeReaderFactory.createTreeReader(evolution.getReaderSchema(),
         readerContext);
 
-    int columns = evolution.getFileSchema().getMaximumId() + 1;
+    int columns = schema.getMaximumId() + 1;
     indexes = new OrcIndex(new OrcProto.RowIndex[columns],
         new OrcProto.Stream.Kind[columns],
         new OrcProto.BloomFilterIndex[columns]);
@@ -285,13 +285,6 @@ public class RecordReaderImpl implements RecordReader {
     @Override
     public long getNext() {
       return entry.getPositions(index++);
-    }
-  }
-
-  public static final class ZeroPositionProvider implements PositionProvider {
-    @Override
-    public long getNext() {
-      return 0;
     }
   }
 
@@ -1344,13 +1337,7 @@ public class RecordReaderImpl implements RecordReader {
     PositionProvider[] index = new PositionProvider[rowIndices.length];
     for (int i = 0; i < index.length; ++i) {
       if (rowIndices[i] != null) {
-        OrcProto.RowIndexEntry entry = rowIndices[i].getEntry(rowEntry);
-        // This is effectively a test for pre-ORC-569 files.
-        if (rowEntry == 0 && entry.getPositionsCount() == 0) {
-          index[i] = new ZeroPositionProvider();
-        } else {
-          index[i] = new PositionProviderImpl(entry);
-        }
+        index[i] = new PositionProviderImpl(rowIndices[i].getEntry(rowEntry));
       }
     }
     reader.seek(index);
