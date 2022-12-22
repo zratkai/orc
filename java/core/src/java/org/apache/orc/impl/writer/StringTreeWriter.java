@@ -26,10 +26,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 public class StringTreeWriter extends StringBaseTreeWriter {
-  StringTreeWriter(TypeDescription schema,
-                   WriterEncryptionVariant encryption,
-                   WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
+  StringTreeWriter(int columnId,
+                   TypeDescription schema,
+                   WriterContext writer,
+                   boolean nullable) throws IOException {
+    super(columnId, schema, writer, nullable);
   }
 
   @Override

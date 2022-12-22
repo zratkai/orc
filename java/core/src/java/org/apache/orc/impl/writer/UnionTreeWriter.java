@@ -23,10 +23,8 @@ import org.apache.hadoop.hive.ql.exec.vector.UnionColumnVector;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcProto;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.impl.CryptoUtils;
 import org.apache.orc.impl.PositionRecorder;
 import org.apache.orc.impl.RunLengthByteWriter;
-import org.apache.orc.impl.StreamName;
 
 import java.io.IOException;
 import java.util.List;
@@ -35,18 +33,19 @@ public class UnionTreeWriter extends TreeWriterBase {
   private final RunLengthByteWriter tags;
   private final TreeWriter[] childrenWriters;
 
-  UnionTreeWriter(TypeDescription schema,
-                  WriterEncryptionVariant encryption,
-                  WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
+  UnionTreeWriter(int columnId,
+                  TypeDescription schema,
+                  WriterContext writer,
+                  boolean nullable) throws IOException {
+    super(columnId, schema, writer, nullable);
     List<TypeDescription> children = schema.getChildren();
     childrenWriters = new TreeWriterBase[children.size()];
     for (int i = 0; i < childrenWriters.length; ++i) {
-      childrenWriters[i] = Factory.create(children.get(i), encryption, writer);
+      childrenWriters[i] = Factory.create(children.get(i), writer, true);
     }
     tags =
-        new RunLengthByteWriter(writer.createStream(
-            new StreamName(id, OrcProto.Stream.Kind.DATA, encryption)));
+        new RunLengthByteWriter(writer.createStream(columnId,
+            OrcProto.Stream.Kind.DATA));
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -122,10 +121,12 @@ public class UnionTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeStripe(int requiredIndexEntries) throws IOException {
-    super.writeStripe(requiredIndexEntries);
+  public void writeStripe(OrcProto.StripeFooter.Builder builder,
+                          OrcProto.StripeStatistics.Builder stats,
+                          int requiredIndexEntries) throws IOException {
+    super.writeStripe(builder, stats, requiredIndexEntries);
     for (TreeWriter child : childrenWriters) {
-      child.writeStripe(requiredIndexEntries);
+      child.writeStripe(builder, stats, requiredIndexEntries);
     }
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
@@ -184,17 +185,8 @@ public class UnionTreeWriter extends TreeWriterBase {
   @Override
   public void getCurrentStatistics(ColumnStatistics[] output) {
     super.getCurrentStatistics(output);
-    for(TreeWriter child: childrenWriters) {
-      child.getCurrentStatistics(output);
-    }
-  }
-
-  @Override
-  public void prepareStripe(int stripeId) {
-    super.prepareStripe(stripeId);
-    tags.changeIv(CryptoUtils.modifyIvForStripe(stripeId));
     for (TreeWriter child: childrenWriters) {
-      child.prepareStripe(stripeId);
+      child.getCurrentStatistics(output);
     }
   }
 }

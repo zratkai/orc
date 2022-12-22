@@ -19,7 +19,6 @@
 package org.apache.orc.impl;
 
 import java.io.IOException;
-import java.util.function.Consumer;
 
 /**
  * Interface for writing integers.
@@ -51,6 +50,4 @@ public interface IntegerWriter {
    * @return number of bytes
    */
   long estimateMemory();
-
-  void changeIv(Consumer<byte[]> modifier);
 }

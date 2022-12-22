@@ -23,10 +23,8 @@ import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.OrcProto;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.impl.CryptoUtils;
 import org.apache.orc.impl.IntegerWriter;
 import org.apache.orc.impl.PositionRecorder;
-import org.apache.orc.impl.StreamName;
 
 import java.io.IOException;
 
@@ -35,15 +33,15 @@ public class ListTreeWriter extends TreeWriterBase {
   private final boolean isDirectV2;
   private final TreeWriter childWriter;
 
-  ListTreeWriter(TypeDescription schema,
-                 WriterEncryptionVariant encryption,
-                 WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
+  ListTreeWriter(int columnId,
+                 TypeDescription schema,
+                 WriterContext writer,
+                 boolean nullable) throws IOException {
+    super(columnId, schema, writer, nullable);
     this.isDirectV2 = isNewWriteFormat(writer);
-    childWriter = Factory.create(schema.getChildren().get(0), encryption, writer);
-    lengths = createIntegerWriter(writer.createStream(
-        new StreamName(id, OrcProto.Stream.Kind.LENGTH, encryption)),
-        false, isDirectV2, writer);
+    childWriter = Factory.create(schema.getChildren().get(0), writer, true);
+    lengths = createIntegerWriter(writer.createStream(columnId,
+        OrcProto.Stream.Kind.LENGTH), false, isDirectV2, writer);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -122,9 +120,11 @@ public class ListTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeStripe(int requiredIndexEntries) throws IOException {
-    super.writeStripe(requiredIndexEntries);
-    childWriter.writeStripe(requiredIndexEntries);
+  public void writeStripe(OrcProto.StripeFooter.Builder builder,
+                          OrcProto.StripeStatistics.Builder stats,
+                          int requiredIndexEntries) throws IOException {
+    super.writeStripe(builder, stats, requiredIndexEntries);
+    childWriter.writeStripe(builder, stats, requiredIndexEntries);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -170,12 +170,5 @@ public class ListTreeWriter extends TreeWriterBase {
   public void getCurrentStatistics(ColumnStatistics[] output) {
     super.getCurrentStatistics(output);
     childWriter.getCurrentStatistics(output);
-  }
-
-  @Override
-  public void prepareStripe(int stripeId) {
-    super.prepareStripe(stripeId);
-    lengths.changeIv(CryptoUtils.modifyIvForStripe(stripeId));
-    childWriter.prepareStripe(stripeId);
   }
 }

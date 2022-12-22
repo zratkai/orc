@@ -18,7 +18,6 @@
 package org.apache.orc.impl;
 
 import java.io.IOException;
-import java.util.function.Consumer;
 
 /**
  * <p>A writer that performs light weight compression over sequence of integers.
@@ -824,10 +823,5 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
   @Override
   public long estimateMemory() {
     return output.getBufferSize();
-  }
-
-  @Override
-  public void changeIv(Consumer<byte[]> modifier) {
-    output.changeIv(modifier);
   }
 }

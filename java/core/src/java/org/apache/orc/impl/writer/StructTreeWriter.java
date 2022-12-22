@@ -31,14 +31,15 @@ import java.util.List;
 public class StructTreeWriter extends TreeWriterBase {
   final TreeWriter[] childrenWriters;
 
-  public StructTreeWriter(TypeDescription schema,
-                          WriterEncryptionVariant encryption,
-                          WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
+  public StructTreeWriter(int columnId,
+                          TypeDescription schema,
+                          WriterContext writer,
+                          boolean nullable) throws IOException {
+    super(columnId, schema, writer, nullable);
     List<TypeDescription> children = schema.getChildren();
-    childrenWriters = new TreeWriter[children.size()];
+    childrenWriters = new TreeWriterBase[children.size()];
     for (int i = 0; i < childrenWriters.length; ++i) {
-      childrenWriters[i] = Factory.create(children.get(i), encryption, writer);
+      childrenWriters[i] = Factory.create(children.get(i), writer, true);
     }
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
@@ -108,10 +109,12 @@ public class StructTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeStripe(int requiredIndexEntries) throws IOException {
-    super.writeStripe(requiredIndexEntries);
+  public void writeStripe(OrcProto.StripeFooter.Builder builder,
+                          OrcProto.StripeStatistics.Builder stats,
+                          int requiredIndexEntries) throws IOException {
+    super.writeStripe(builder, stats, requiredIndexEntries);
     for (TreeWriter child : childrenWriters) {
-      child.writeStripe(requiredIndexEntries);
+      child.writeStripe(builder, stats, requiredIndexEntries);
     }
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
@@ -165,14 +168,6 @@ public class StructTreeWriter extends TreeWriterBase {
     super.getCurrentStatistics(output);
     for (TreeWriter child: childrenWriters) {
       child.getCurrentStatistics(output);
-    }
-  }
-
-  @Override
-  public void prepareStripe(int stripeId) {
-    super.prepareStripe(stripeId);
-    for (TreeWriter child: childrenWriters) {
-      child.prepareStripe(stripeId);
     }
   }
 }

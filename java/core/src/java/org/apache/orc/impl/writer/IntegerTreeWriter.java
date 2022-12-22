@@ -23,11 +23,9 @@ import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.orc.OrcProto;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.impl.CryptoUtils;
 import org.apache.orc.impl.IntegerWriter;
 import org.apache.orc.impl.OutStream;
 import org.apache.orc.impl.PositionRecorder;
-import org.apache.orc.impl.StreamName;
 
 import java.io.IOException;
 
@@ -36,12 +34,13 @@ public class IntegerTreeWriter extends TreeWriterBase {
   private boolean isDirectV2 = true;
   private final boolean isLong;
 
-  public IntegerTreeWriter(TypeDescription schema,
-                           WriterEncryptionVariant encryption,
-                           WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
-    OutStream out = writer.createStream(
-        new StreamName(id, OrcProto.Stream.Kind.DATA, encryption));
+  public IntegerTreeWriter(int columnId,
+                           TypeDescription schema,
+                           WriterContext writer,
+                           boolean nullable) throws IOException {
+    super(columnId, schema, writer, nullable);
+    OutStream out = writer.createStream(id,
+        OrcProto.Stream.Kind.DATA);
     this.isDirectV2 = isNewWriteFormat(writer);
     this.writer = createIntegerWriter(out, true, isDirectV2, writer);
     if (rowIndexPosition != null) {
@@ -98,8 +97,10 @@ public class IntegerTreeWriter extends TreeWriterBase {
   }
 
   @Override
-  public void writeStripe(int requiredIndexEntries) throws IOException {
-    super.writeStripe(requiredIndexEntries);
+  public void writeStripe(OrcProto.StripeFooter.Builder builder,
+                          OrcProto.StripeStatistics.Builder stats,
+                          int requiredIndexEntries) throws IOException {
+    super.writeStripe(builder, stats, requiredIndexEntries);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
@@ -127,11 +128,5 @@ public class IntegerTreeWriter extends TreeWriterBase {
   public void flushStreams() throws IOException {
     super.flushStreams();
     writer.flush();
-  }
-
-  @Override
-  public void prepareStripe(int stripeId) {
-    super.prepareStripe(stripeId);
-    writer.changeIv(CryptoUtils.modifyIvForStripe(stripeId));
   }
 }
