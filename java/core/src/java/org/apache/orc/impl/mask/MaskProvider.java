@@ -18,7 +18,6 @@
 package org.apache.orc.impl.mask;
 
 import org.apache.orc.DataMask;
-import org.apache.orc.DataMaskDescription;
 import org.apache.orc.TypeDescription;
 
 /**
@@ -27,17 +26,15 @@ import org.apache.orc.TypeDescription;
 public class MaskProvider implements DataMask.Provider {
 
   @Override
-  public DataMask build(DataMaskDescription description,
+  public DataMask build(String name,
                         TypeDescription schema,
-                        DataMask.MaskOverrides overrides) {
-    String name = description.getName();
+                        String... params) {
     if (name.equals(DataMask.Standard.NULLIFY.getName())) {
       return new NullifyMask();
     } else if (name.equals(DataMask.Standard.REDACT.getName())) {
-      return new RedactMaskFactory(description.getParameters())
-                 .build(schema, overrides);
+      return new RedactMaskFactory(params).build(schema);
     } else if(name.equals(DataMask.Standard.SHA256.getName())) {
-      return new SHA256MaskFactory().build(schema, overrides);
+      return new SHA256MaskFactory(params).build(schema);
     }
     return null;
   }

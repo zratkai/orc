@@ -31,7 +31,7 @@ public class TestCryptoUtils {
 
   @Test
   public void testCreateStreamIv() throws Exception {
-    byte[] iv = CryptoUtils.createIvForStream(EncryptionAlgorithm.AES_CTR_128,
+    byte[] iv = CryptoUtils.createIvForStream(EncryptionAlgorithm.AES_128,
         new StreamName(0x234567,
         OrcProto.Stream.Kind.BLOOM_FILTER_UTF8), 0x123456);
     assertEquals(16, iv.length);
