@@ -240,7 +240,7 @@ public class RecordReaderUtils {
             case ROW_INDEX:
               if (included == null || included[column]) {
                 ByteBuffer bb = range.getData().duplicate();
-                bb.position((int) (offset - range.getOffset() + bb.position()));
+                bb.position((int) (offset - range.getOffset()));
                 bb.limit((int) (bb.position() + stream.getLength()));
                 indexes[column] = OrcProto.RowIndex.parseFrom(
                     InStream.createCodedInputStream("index",
