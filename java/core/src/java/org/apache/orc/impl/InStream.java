@@ -78,6 +78,7 @@ public abstract class InStream extends InputStream {
     private DiskRangeList bytes;
     // position in the stream (0..length)
     protected long position;
+    protected long length;
     protected ByteBuffer decrypted;
     protected DiskRangeList currentRange;
     protected long currentOffset;
@@ -97,7 +98,7 @@ public abstract class InStream extends InputStream {
                               long offset,
                               long length) {
       super(name, offset, length);
-      reset(input);
+      reset(input, length);
     }
 
     protected void reset(DiskRangeList input) {
@@ -108,6 +109,11 @@ public abstract class InStream extends InputStream {
         position = input.getOffset() - offset;
       }
       setCurrent(input, true);
+    }
+    
+    protected void reset(DiskRangeList input, long length) {
+      this.length = length;
+      reset(input);
     }
 
     @Override
@@ -337,7 +343,7 @@ public abstract class InStream extends InputStream {
                            StreamOptions options) {
       super(name, offset, length);
       encrypt = new EncryptionState(name, offset, options);
-      reset(input);
+      reset(input, length);
     }
 
     @Override
