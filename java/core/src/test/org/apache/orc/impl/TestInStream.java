@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.Key;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.apache.hadoop.hive.common.io.DiskRangeList;
@@ -660,5 +661,56 @@ public class TestInStream {
       }
     });
     assertEquals(0, stream.available());
+  }
+
+  private static byte[] input(int... data) {
+    byte[] result = new byte[data.length];
+    for(int i = 0; i < data.length; ++i) {
+      result[i] = (byte) data[i];
+    }
+    return result;
+  }
+  
+  private static final byte[] uncompressed = input(
+          0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+  
+  @Test
+  public void testStreamResetWithIncreasedLength() throws IOException {
+    // Set up an initial buffer of PREVIOUS_LENGTH followed by our stream
+    // at START.
+    final long START = 1_000;
+    final int PREVIOUS_LENGTH = 30;
+    BufferChunkList list = new BufferChunkList();
+    byte[] previous = new byte[PREVIOUS_LENGTH];
+    Arrays.fill(previous, (byte) -1);
+    list.add(new BufferChunk(ByteBuffer.wrap(previous), START - PREVIOUS_LENGTH));
+    list.add(new BufferChunk(ByteBuffer.wrap(uncompressed), START));
+    // Creating a stream of 10 bytes, but with a length of 5
+    InStream.UncompressedStream uncompressedStream = new InStream.UncompressedStream("test", list.get(), START, 5);
+    // Resetting the stream with the increased length
+    uncompressedStream.reset(list.get(), 10);
+    // Reading the stream and expecting to read 10 bytes
+    byte[] inBuffer = new byte[10];
+    assertEquals(10, uncompressedStream.read(inBuffer));
+  }
+
+  @Test
+  public void testStreamResetWithoutIncreasedLength() throws IOException {
+    // Set up an initial buffer of PREVIOUS_LENGTH followed by our stream
+    // at START.
+    final long START = 1_000;
+    final int PREVIOUS_LENGTH = 30;
+    BufferChunkList list = new BufferChunkList();
+    byte[] previous = new byte[PREVIOUS_LENGTH];
+    Arrays.fill(previous, (byte) -1);
+    list.add(new BufferChunk(ByteBuffer.wrap(previous), START - PREVIOUS_LENGTH));
+    list.add(new BufferChunk(ByteBuffer.wrap(uncompressed), START));
+    // Creating a stream of 10 bytes, but with a shorter length of 5
+    InStream.UncompressedStream uncompressedStream = new InStream.UncompressedStream("test", list.get(), START, 5);
+    // Resetting the stream without updating its length
+    uncompressedStream.reset(list.get());
+    // Reading the stream and expecting to read 5 bytes as the initial stream length
+    byte[] inBuffer = new byte[5];
+    assertEquals(5, uncompressedStream.read(inBuffer));
   }
 }
