@@ -18,21 +18,8 @@
 
 package org.apache.orc;
 
-import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.DateColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.Decimal64ColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.MapColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.StructColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.UnionColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.impl.ParserUtils;
-import org.apache.orc.impl.SchemaEvolution;
 import org.apache.orc.impl.TypeUtils;
 import org.jetbrains.annotations.NotNull;
 
@@ -129,7 +116,7 @@ public class TypeDescription
     MAP("map", false),
     STRUCT("struct", false),
     UNION("uniontype", false),
-    TIMESTAMP_INSTANT("timestamp with local time zone", false);
+    TIMESTAMP_INSTANT("timestamp with local time zone", true);
 
     Category(String name, boolean isPrimitive) {
       this.name = name;
@@ -251,15 +238,20 @@ public class TypeDescription
     this.scale = scale;
     return this;
   }
-
+  
   /**
    * Set an attribute on this type.
    * @param key the attribute name
    * @param value the attribute value or null to clear the value
    * @return this for method chaining
    */
-  public TypeDescription setAttribute(String key, String value) {
-    attributes.put(key, value);
+  public TypeDescription setAttribute(@NotNull String key,
+                                      String value) {
+    if (value == null) {
+      attributes.remove(key);
+    } else {
+      attributes.put(key, value);
+    }
     return this;
   }
 
@@ -268,7 +260,7 @@ public class TypeDescription
    * @param key the attribute name
    * @return this for method chaining
    */
-  public TypeDescription removeAttribute(String key) {
+  public TypeDescription removeAttribute(@NotNull String key) {
     attributes.remove(key);
     return this;
   }
@@ -368,6 +360,7 @@ public class TypeDescription
     return id;
   }
 
+  @Override
   public TypeDescription clone() {
     TypeDescription result = new TypeDescription(category);
     result.maxLength = maxLength;
@@ -391,13 +384,16 @@ public class TypeDescription
 
   @Override
   public int hashCode() {
-    long result = category.ordinal() * 4241 + maxLength + precision * 13 + scale;
+    final int prime = 31;
+    int result = 1;
+    result = prime * result + category.hashCode();
     if (children != null) {
-      for(TypeDescription child: children) {
-        result = result * 6959 + child.hashCode();
-      }
+      result = prime * result + children.hashCode();
     }
-    return (int) result;
+    result = prime * result + maxLength;
+    result = prime * result + precision;
+    result = prime * result + scale;
+    return result;
   }
 
   @Override
@@ -575,8 +571,7 @@ public class TypeDescription
    * @return a list of sorted attribute names
    */
   public List<String> getAttributeNames() {
-    List<String> result = new ArrayList<>(attributes.size());
-    result.addAll(attributes.keySet());
+    List<String> result = new ArrayList<>(attributes.keySet());
     Collections.sort(result);
     return result;
   }
@@ -588,6 +583,14 @@ public class TypeDescription
    */
   public String getAttributeValue(String attributeName) {
     return attributes.get(attributeName);
+  }
+
+  /**
+   * Get the parent of the current type
+   * @return null if root else parent
+   */
+  public TypeDescription getParent() {
+    return parent;
   }
 
   /**
@@ -718,6 +721,7 @@ public class TypeDescription
     }
   }
 
+  @Override
   public String toString() {
     StringBuilder buffer = new StringBuilder();
     printToBuffer(buffer);
@@ -765,8 +769,10 @@ public class TypeDescription
         buffer.append(", \"fields\": [");
         for(int i=0; i < children.size(); ++i) {
           buffer.append('\n');
+          buffer.append('{');
           children.get(i).printJsonToBuffer("\"" + fieldNames.get(i) + "\": ",
               buffer, indent + 2);
+          buffer.append('}');
           if (i != children.size() - 1) {
             buffer.append(',');
           }
@@ -791,24 +797,9 @@ public class TypeDescription
    * @return the subtype
    */
   public TypeDescription findSubtype(int goal) {
-    // call getId method to make sure the ids are assigned
-    int id = getId();
-    if (goal < id || goal > maxId) {
-      throw new IllegalArgumentException("Unknown type id " + id + " in " +
-          toJson());
-    }
-    if (goal == id) {
-      return this;
-    } else {
-      TypeDescription prev = null;
-      for(TypeDescription next: children) {
-        if (next.id > goal) {
-          return prev.findSubtype(goal);
-        }
-        prev = next;
-      }
-      return prev.findSubtype(goal);
-    }
+    ParserUtils.TypeFinder result = new ParserUtils.TypeFinder(this);
+    ParserUtils.findSubtype(this, goal, result);
+    return result.current;
   }
 
   /**
@@ -826,8 +817,14 @@ public class TypeDescription
    * @return the subtype
    */
   public TypeDescription findSubtype(String columnName) {
+    return findSubtype(columnName, true);
+  }
+
+  public TypeDescription findSubtype(String columnName,
+      boolean isSchemaEvolutionCaseAware) {
     ParserUtils.StringPosition source = new ParserUtils.StringPosition(columnName);
-    TypeDescription result = ParserUtils.findSubtype(this, source);
+    TypeDescription result = ParserUtils.findSubtype(this, source,
+        isSchemaEvolutionCaseAware);
     if (source.hasCharactersLeft()) {
       throw new IllegalArgumentException("Remaining text in parsing field name "
           + source);
@@ -870,5 +867,72 @@ public class TypeDescription
       throw new IllegalArgumentException("Remaining text in parsing encryption masks "
           + source);
     }
+  }
+
+  /**
+   * Find the index of a given child object using == comparison.
+   * @param child The child type
+   * @return the index 0 to N-1 of the children.
+   */
+  private int getChildIndex(TypeDescription child) {
+    for(int i=children.size() - 1; i >= 0; --i) {
+      if (children.get(i) == child) {
+        return i;
+      }
+    }
+    throw new IllegalArgumentException("Child not found");
+  }
+
+  /**
+   * For a complex type, get the partial name for this child. For structures,
+   * it returns the corresponding field name. For lists and maps, it uses the
+   * special names "_elem", "_key", and "_value". Unions use the integer index.
+   * @param child The desired child, which must be the same object (==)
+   * @return The name of the field for the given child.
+   */
+  private String getPartialName(TypeDescription child) {
+    switch (category) {
+      case LIST:
+        return "_elem";
+      case MAP:
+        return getChildIndex(child) == 0 ? "_key" : "_value";
+      case STRUCT:
+        return fieldNames.get(getChildIndex(child));
+      case UNION:
+        return Integer.toString(getChildIndex(child));
+      default:
+        throw new IllegalArgumentException(
+            "Can't get the field name of a primitive type");
+    }
+  }
+
+  /**
+   * Get the full field name for the given type. For
+   * "struct&lt;a:struct&lt;list&lt;struct&lt;b:int,c:int&gt;&gt;&gt;&gt;" when
+   * called on c, would return "a._elem.c".
+   * @return A string that is the inverse of findSubtype
+   */
+  public String getFullFieldName() {
+    List<String> parts = new ArrayList<>(getId());
+    TypeDescription current = this;
+    TypeDescription parent = current.getParent();
+    // Handle the root as a special case so that it isn't an empty string.
+    if (parent == null) {
+      return Integer.toString(current.getId());
+    }
+    while (parent != null) {
+      parts.add(parent.getPartialName(current));
+      current = parent;
+      parent = current.getParent();
+    }
+    // Put the string together backwards
+    StringBuilder buffer = new StringBuilder();
+    for (int part=parts.size() - 1; part >= 0; --part) {
+      buffer.append(parts.get(part));
+      if (part != 0) {
+        buffer.append('.');
+      }
+    }
+    return buffer.toString();
   }
 }

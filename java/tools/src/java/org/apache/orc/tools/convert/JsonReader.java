@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,43 +20,41 @@ package org.apache.orc.tools.convert;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonStreamParser;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.Seekable;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.DateColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.MapColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.StructColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.UnionColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
-import org.threeten.bp.LocalDateTime;
-import org.threeten.bp.ZonedDateTime;
-import org.threeten.bp.ZoneId;
-import org.threeten.bp.format.DateTimeFormatter;
-import org.threeten.bp.temporal.TemporalAccessor;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAccessor;
 import java.util.Iterator;
 import java.util.List;
-import java.util.zip.GZIPInputStream;
+import java.util.Map;
 
 public class JsonReader implements RecordReader {
-  private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern(
-    "yyyy[[-][/]]MM[[-][/]]dd[['T'][ ]]HH:mm:ss[ ][XXX][X]");
 
   private final TypeDescription schema;
   private final Iterator<JsonElement> parser;
@@ -64,12 +62,16 @@ public class JsonReader implements RecordReader {
   private final long totalSize;
   private final FSDataInputStream input;
   private long rowNumber = 0;
+  private final DateTimeFormatter dateTimeFormatter;
+  private String unionTag = "tag";
+  private String unionValue = "value";
 
   interface JsonConverter {
     void convert(JsonElement value, ColumnVector vect, int row);
   }
 
   static class BooleanColumnConverter implements JsonConverter {
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -82,6 +84,7 @@ public class JsonReader implements RecordReader {
   }
 
   static class LongColumnConverter implements JsonConverter {
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -94,6 +97,7 @@ public class JsonReader implements RecordReader {
   }
 
   static class DoubleColumnConverter implements JsonConverter {
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -106,6 +110,7 @@ public class JsonReader implements RecordReader {
   }
 
   static class StringColumnConverter implements JsonConverter {
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -119,6 +124,7 @@ public class JsonReader implements RecordReader {
   }
 
   static class BinaryColumnConverter implements JsonConverter {
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -135,19 +141,48 @@ public class JsonReader implements RecordReader {
     }
   }
 
-  static class TimestampColumnConverter implements JsonConverter {
+  static class DateColumnConverter implements JsonConverter {
+    public void convert(JsonElement value, ColumnVector vect, int row) {
+      if (value == null || value.isJsonNull()) {
+        vect.noNulls = false;
+        vect.isNull[row] = true;
+      } else {
+        DateColumnVector vector = (DateColumnVector) vect;
+
+        final LocalDate dt = LocalDate.parse(value.getAsString());
+
+        if (dt != null) {
+          vector.vector[row] = dt.toEpochDay();
+        } else {
+          vect.noNulls = false;
+          vect.isNull[row] = true;
+        }
+      }
+    }
+  }
+
+  class TimestampColumnConverter implements JsonConverter {
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
         vect.isNull[row] = true;
       } else {
         TimestampColumnVector vector = (TimestampColumnVector) vect;
-        TemporalAccessor temporalAccessor = DATE_TIME_FORMATTER.parseBest(value.getAsString(),
-          ZonedDateTime.FROM, LocalDateTime.FROM);
+        TemporalAccessor temporalAccessor = dateTimeFormatter.parseBest(value.getAsString(),
+            ZonedDateTime::from, OffsetDateTime::from, LocalDateTime::from);
         if (temporalAccessor instanceof ZonedDateTime) {
-          vector.set(row, new Timestamp(((ZonedDateTime) temporalAccessor).toEpochSecond() * 1000L));
+          ZonedDateTime zonedDateTime = ((ZonedDateTime) temporalAccessor);
+          Timestamp timestamp = Timestamp.from(zonedDateTime.toInstant());
+          vector.set(row, timestamp);
+        } else if (temporalAccessor instanceof OffsetDateTime) {
+          OffsetDateTime offsetDateTime = (OffsetDateTime) temporalAccessor;
+          Timestamp timestamp = Timestamp.from(offsetDateTime.toInstant());
+          vector.set(row, timestamp);
         } else if (temporalAccessor instanceof LocalDateTime) {
-          vector.set(row, new Timestamp(((LocalDateTime) temporalAccessor).atZone(ZoneId.systemDefault()).toEpochSecond() * 1000L));
+          ZonedDateTime tz = ((LocalDateTime) temporalAccessor).atZone(ZoneId.systemDefault());
+          Timestamp timestamp = Timestamp.from(tz.toInstant());
+          vector.set(row, timestamp);
         } else {
           vect.noNulls = false;
           vect.isNull[row] = true;
@@ -157,6 +192,7 @@ public class JsonReader implements RecordReader {
   }
 
   static class DecimalColumnConverter implements JsonConverter {
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -168,11 +204,11 @@ public class JsonReader implements RecordReader {
     }
   }
 
-  static class StructColumnConverter implements JsonConverter {
+  class StructColumnConverter implements JsonConverter {
     private JsonConverter[] childrenConverters;
     private List<String> fieldNames;
 
-    public StructColumnConverter(TypeDescription schema) {
+    StructColumnConverter(TypeDescription schema) {
       List<TypeDescription> kids = schema.getChildren();
       childrenConverters = new JsonConverter[kids.size()];
       for(int c=0; c < childrenConverters.length; ++c) {
@@ -181,6 +217,7 @@ public class JsonReader implements RecordReader {
       fieldNames = schema.getFieldNames();
     }
 
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -196,13 +233,14 @@ public class JsonReader implements RecordReader {
     }
   }
 
-  static class ListColumnConverter implements JsonConverter {
+  class ListColumnConverter implements JsonConverter {
     private JsonConverter childrenConverter;
 
-    public ListColumnConverter(TypeDescription schema) {
+    ListColumnConverter(TypeDescription schema) {
       childrenConverter = createConverter(schema.getChildren().get(0));
     }
 
+    @Override
     public void convert(JsonElement value, ColumnVector vect, int row) {
       if (value == null || value.isJsonNull()) {
         vect.noNulls = false;
@@ -222,7 +260,69 @@ public class JsonReader implements RecordReader {
     }
   }
 
-  static JsonConverter createConverter(TypeDescription schema) {
+  class MapColumnConverter implements JsonConverter {
+    private JsonConverter keyConverter;
+    private JsonConverter valueConverter;
+
+    MapColumnConverter(TypeDescription schema) {
+      TypeDescription keyType = schema.getChildren().get(0);
+      if (keyType.getCategory() != TypeDescription.Category.STRING) {
+        throw new IllegalArgumentException("JSON can only support MAP key in STRING type: " + schema);
+      }
+      keyConverter = createConverter(keyType);
+      valueConverter = createConverter(schema.getChildren().get(1));
+    }
+
+    @Override
+    public void convert(JsonElement value, ColumnVector vect, int row) {
+      if (value == null || value.isJsonNull()) {
+        vect.noNulls = false;
+        vect.isNull[row] = true;
+      } else {
+        MapColumnVector vector = (MapColumnVector) vect;
+        JsonObject obj = value.getAsJsonObject();
+        vector.lengths[row] = obj.entrySet().size();
+        vector.offsets[row] = vector.childCount;
+        vector.childCount += vector.lengths[row];
+        vector.keys.ensureSize(vector.childCount, true);
+        vector.values.ensureSize(vector.childCount, true);
+        int cnt = 0;
+        for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+          int offset = (int) vector.offsets[row] + cnt++;
+          keyConverter.convert(new JsonPrimitive(entry.getKey()), vector.keys, offset);
+          valueConverter.convert(entry.getValue(), vector.values, offset);
+        }
+      }
+    }
+  }
+
+  class UnionColumnConverter implements JsonConverter {
+    private JsonConverter[] childConverter;
+
+    UnionColumnConverter(TypeDescription schema) {
+      int size = schema.getChildren().size();
+      childConverter = new JsonConverter[size];
+      for (int i = 0; i < size; i++) {
+        childConverter[i] = createConverter(schema.getChildren().get(i));
+      }
+    }
+
+    @Override
+    public void convert(JsonElement value, ColumnVector vect, int row) {
+      if (value == null || value.isJsonNull()) {
+        vect.noNulls = false;
+        vect.isNull[row] = true;
+      } else {
+        UnionColumnVector vector = (UnionColumnVector) vect;
+        JsonObject obj = value.getAsJsonObject();
+        int tag = obj.get(unionTag).getAsInt();
+        vector.tags[row] = tag;
+        childConverter[tag].convert(obj.get(unionValue), vector.fields[tag], row);
+      }
+    }
+  }
+
+  JsonConverter createConverter(TypeDescription schema) {
     switch (schema.getCategory()) {
       case BYTE:
       case SHORT:
@@ -238,6 +338,8 @@ public class JsonReader implements RecordReader {
         return new StringColumnConverter();
       case DECIMAL:
         return new DecimalColumnConverter();
+      case DATE:
+        return new DateColumnConverter();
       case TIMESTAMP:
       case TIMESTAMP_INSTANT:
         return new TimestampColumnConverter();
@@ -249,6 +351,10 @@ public class JsonReader implements RecordReader {
         return new StructColumnConverter(schema);
       case LIST:
         return new ListColumnConverter(schema);
+      case MAP:
+        return new MapColumnConverter(schema);
+      case UNION:
+        return new UnionColumnConverter(schema);
       default:
         throw new IllegalArgumentException("Unhandled type " + schema);
     }
@@ -257,14 +363,28 @@ public class JsonReader implements RecordReader {
   public JsonReader(Reader reader,
                     FSDataInputStream underlying,
                     long size,
-                    TypeDescription schema) throws IOException {
-    this(new JsonStreamParser(reader), underlying, size, schema);
+                    TypeDescription schema,
+                    String timestampFormat,
+                    String unionTag,
+                    String unionValue) throws IOException {
+    this(new JsonStreamParser(reader), underlying, size, schema, timestampFormat);
+    this.unionTag = unionTag;
+    this.unionValue = unionValue;
+  }
+
+  public JsonReader(Reader reader,
+                    FSDataInputStream underlying,
+                    long size,
+                    TypeDescription schema,
+                    String timestampFormat) throws IOException {
+    this(new JsonStreamParser(reader), underlying, size, schema, timestampFormat);
   }
 
   public JsonReader(Iterator<JsonElement> parser,
                     FSDataInputStream underlying,
                     long size,
-                    TypeDescription schema) throws IOException {
+                    TypeDescription schema,
+                    String timestampFormat) throws IOException {
     this.schema = schema;
     if (schema.getCategory() != TypeDescription.Category.STRUCT) {
       throw new IllegalArgumentException("Root must be struct - " + schema);
@@ -272,6 +392,7 @@ public class JsonReader implements RecordReader {
     this.input = underlying;
     this.totalSize = size;
     this.parser = parser;
+    this.dateTimeFormatter = DateTimeFormatter.ofPattern(timestampFormat);
     List<TypeDescription> fieldTypes = schema.getChildren();
     converters = new JsonConverter[fieldTypes.size()];
     for(int c = 0; c < converters.length; ++c) {
@@ -279,6 +400,7 @@ public class JsonReader implements RecordReader {
     }
   }
 
+  @Override
   public boolean nextBatch(VectorizedRowBatch batch) throws IOException {
     batch.reset();
     int maxSize = batch.getMaxSize();
@@ -313,6 +435,7 @@ public class JsonReader implements RecordReader {
     return totalSize != 0 && pos < totalSize ? (float) pos / totalSize : 1;
   }
 
+  @Override
   public void close() throws IOException {
     input.close();
   }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,13 +17,13 @@
  */
 package org.apache.orc.impl;
 
-import java.io.EOFException;
-import java.io.IOException;
-import java.util.Arrays;
-
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.EOFException;
+import java.io.IOException;
+import java.util.Arrays;
 
 /**
  * A reader that reads a sequence of light weight compressed integers. Refer
@@ -36,7 +36,6 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
   private InStream input;
   private final boolean signed;
   private final long[] literals = new long[RunLengthIntegerWriterV2.MAX_SCOPE];
-  private boolean isRepeating = false;
   private int numLiterals = 0;
   private int used = 0;
   private final boolean skipCorrupt;
@@ -51,10 +50,10 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
     this.utils = new SerializationUtils();
   }
 
-  private final static RunLengthIntegerWriterV2.EncodingType[] encodings = RunLengthIntegerWriterV2.EncodingType.values();
+  private static final RunLengthIntegerWriterV2.EncodingType[] encodings =
+    RunLengthIntegerWriterV2.EncodingType.values();
   private void readValues(boolean ignoreEof) throws IOException {
     // read the first 2 bits and determine the encoding type
-    isRepeating = false;
     int firstByte = input.read();
     if (firstByte < 0) {
       if (!ignoreEof) {
@@ -65,11 +64,20 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
     }
     currentEncoding = encodings[(firstByte >>> 6) & 0x03];
     switch (currentEncoding) {
-    case SHORT_REPEAT: readShortRepeatValues(firstByte); break;
-    case DIRECT: readDirectValues(firstByte); break;
-    case PATCHED_BASE: readPatchedBaseValues(firstByte); break;
-    case DELTA: readDeltaValues(firstByte); break;
-    default: throw new IOException("Unknown encoding " + currentEncoding);
+      case SHORT_REPEAT:
+        readShortRepeatValues(firstByte);
+        break;
+      case DIRECT:
+        readDirectValues(firstByte);
+        break;
+      case PATCHED_BASE:
+        readPatchedBaseValues(firstByte);
+        break;
+      case DELTA:
+        readDeltaValues(firstByte);
+        break;
+      default:
+        throw new IOException("Unknown encoding " + currentEncoding);
     }
   }
 
@@ -88,9 +96,9 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
     // read the first value stored as vint
     long firstVal = 0;
     if (signed) {
-      firstVal = utils.readVslong(input);
+      firstVal = SerializationUtils.readVslong(input);
     } else {
-      firstVal = utils.readVulong(input);
+      firstVal = SerializationUtils.readVulong(input);
     }
 
     // store first value to result buffer
@@ -101,9 +109,8 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
     if (fb == 0) {
       // read the fixed delta value stored as vint (deltas can be negative even
       // if all number are positive)
-      long fd = utils.readVslong(input);
+      long fd = SerializationUtils.readVslong(input);
       if (fd == 0) {
-        isRepeating = true;
         assert numLiterals == 1;
         Arrays.fill(literals, numLiterals, numLiterals + len, literals[0]);
         numLiterals += len;
@@ -114,7 +121,7 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
         }
       }
     } else {
-      long deltaBase = utils.readVslong(input);
+      long deltaBase = SerializationUtils.readVslong(input);
       // add delta base and first value
       literals[numLiterals++] = firstVal + deltaBase;
       prevVal = literals[numLiterals - 1];
@@ -301,7 +308,6 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
       throw new AssertionError("readValues called with existing values present");
     }
     // repeat the value for length times
-    isRepeating = true;
     // TODO: this is not so useful and V1 reader doesn't do that. Fix? Same if delta == 0
     for(int i = 0; i < len; i++) {
       literals[i] = val;
@@ -390,20 +396,15 @@ public class RunLengthIntegerReaderV2 implements IntegerReader {
   }
 
   @Override
-  public void nextVector(ColumnVector vector,
-                         int[] data,
-                         int size) throws IOException {
+  public void nextVector(ColumnVector vector, int[] data, int size) throws IOException {
+    final int batchSize = Math.min(data.length, size);
     if (vector.noNulls) {
-      for(int r=0; r < data.length && r < size; ++r) {
+      for (int r = 0; r < batchSize; ++r) {
         data[r] = (int) next();
       }
     } else if (!(vector.isRepeating && vector.isNull[0])) {
-      for(int r=0; r < data.length && r < size; ++r) {
-        if (!vector.isNull[r]) {
-          data[r] = (int) next();
-        } else {
-          data[r] = 1;
-        }
+      for (int r = 0; r < batchSize; ++r) {
+        data[r] = (vector.isNull[r]) ? 1 : (int) next();
       }
     }
   }

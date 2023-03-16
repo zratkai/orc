@@ -18,15 +18,13 @@
 
 package org.apache.orc.impl;
 
+import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.orc.CompressionCodec;
 import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.impl.writer.StreamOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.commons.io.IOUtils;
-import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -35,14 +33,24 @@ import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.sql.Date;
+import java.util.Arrays;
 import java.util.TimeZone;
 
 public final class SerializationUtils {
   private static final Logger LOG = LoggerFactory.getLogger(SerializationUtils.class);
 
-  private final static int BUFFER_SIZE = 64;
+  private static final int BUFFER_SIZE = 64;
   private final byte[] readBuffer;
   private final byte[] writeBuffer;
+
+  /**
+   * Buffer for histogram that store the encoded bit requirement for each bit
+   * size. Maximum number of discrete bits that can encoded is ordinal of
+   * FixedBitSizes.
+   *
+   * @see FixedBitSizes
+   */
+  private final int[] histBuffer = new int[32];
 
   public SerializationUtils() {
     this.readBuffer = new byte[BUFFER_SIZE];
@@ -91,7 +99,7 @@ public final class SerializationUtils {
   }
 
   public float readFloat(InputStream in) throws IOException {
-    readFully(in, readBuffer, 0, 4);
+    readFully(in, readBuffer, 4);
     int val = (((readBuffer[0] & 0xff) << 0)
         + ((readBuffer[1] & 0xff) << 8)
         + ((readBuffer[2] & 0xff) << 16)
@@ -118,7 +126,7 @@ public final class SerializationUtils {
   }
 
   public long readLongLE(InputStream in) throws IOException {
-    readFully(in, readBuffer, 0, 8);
+    readFully(in, readBuffer, 8);
     return (((readBuffer[0] & 0xff) << 0)
         + ((readBuffer[1] & 0xff) << 8)
         + ((readBuffer[2] & 0xff) << 16)
@@ -129,15 +137,19 @@ public final class SerializationUtils {
         + ((long) (readBuffer[7] & 0xff) << 56));
   }
 
-  private void readFully(final InputStream in, final byte[] buffer, final int off, final int len)
+  private void readFully(final InputStream in, final byte[] buffer, int len)
       throws IOException {
-    int n = 0;
-    while (n < len) {
-      int count = in.read(buffer, off + n, len - n);
-      if (count < 0) {
+    int offset = 0;
+    for (;;) {
+      final int n = in.read(buffer, offset, len);
+      if (n == len) {
+        return;
+      }
+      if (n < 0) {
         throw new EOFException("Read past EOF for " + in);
       }
-      n += count;
+      offset += n;
+      len -= n;
     }
   }
 
@@ -145,20 +157,22 @@ public final class SerializationUtils {
     IOUtils.skipFully(in, numOfDoubles * 8L);
   }
 
-  public void writeDouble(OutputStream output,
-                          double value) throws IOException {
-    writeLongLE(output, Double.doubleToLongBits(value));
-  }
-
-  private void writeLongLE(OutputStream output, long value) throws IOException {
-    writeBuffer[0] = (byte) ((value >> 0)  & 0xff);
-    writeBuffer[1] = (byte) ((value >> 8)  & 0xff);
-    writeBuffer[2] = (byte) ((value >> 16) & 0xff);
-    writeBuffer[3] = (byte) ((value >> 24) & 0xff);
-    writeBuffer[4] = (byte) ((value >> 32) & 0xff);
-    writeBuffer[5] = (byte) ((value >> 40) & 0xff);
-    writeBuffer[6] = (byte) ((value >> 48) & 0xff);
-    writeBuffer[7] = (byte) ((value >> 56) & 0xff);
+  public void writeDouble(OutputStream output, double value)
+      throws IOException {
+    final long bits = Double.doubleToLongBits(value);
+    final int first = (int) (bits & 0xFFFFFFFF);
+    final int second = (int) ((bits >>> 32) & 0xFFFFFFFF);
+    // Implementation taken from Apache Avro (org.apache.avro.io.BinaryData)
+    // the compiler seems to execute this order the best, likely due to
+    // register allocation -- the lifetime of constants is minimized.
+    writeBuffer[0] = (byte) (first);
+    writeBuffer[4] = (byte) (second);
+    writeBuffer[5] = (byte) (second >>> 8);
+    writeBuffer[1] = (byte) (first >>> 8);
+    writeBuffer[2] = (byte) (first >>> 16);
+    writeBuffer[6] = (byte) (second >>> 16);
+    writeBuffer[7] = (byte) (second >>> 24);
+    writeBuffer[3] = (byte) (first >>> 24);
     output.write(writeBuffer, 0, 8);
   }
 
@@ -256,12 +270,11 @@ public final class SerializationUtils {
    * @return bits required to store value
    */
   public int findClosestNumBits(long value) {
-    int count = 0;
-    while (value != 0) {
-      count++;
-      value = value >>> 1;
-    }
-    return getClosestFixedBits(count);
+    return getClosestFixedBits(findNumBits(value));
+  }
+
+  private int findNumBits(long value) {
+    return 64 - Long.numberOfLeadingZeros(value);
   }
 
   /**
@@ -288,27 +301,24 @@ public final class SerializationUtils {
    * @param p - percentile value (&gt;=0.0 to &lt;=1.0)
    * @return pth percentile bits
    */
-  public int percentileBits(long[] data, int offset, int length,
-                            double p) {
+  public int percentileBits(long[] data, int offset, int length, double p) {
     if ((p > 1.0) || (p <= 0.0)) {
       return -1;
     }
 
-    // histogram that store the encoded bit requirement for each values.
-    // maximum number of bits that can encoded is 32 (refer FixedBitSizes)
-    int[] hist = new int[32];
+    Arrays.fill(this.histBuffer, 0);
 
     // compute the histogram
     for(int i = offset; i < (offset + length); i++) {
-      int idx = encodeBitWidth(findClosestNumBits(data[i]));
-      hist[idx] += 1;
+      int idx = encodeBitWidth(findNumBits(data[i]));
+      this.histBuffer[idx] += 1;
     }
 
     int perLen = (int) (length * (1.0 - p));
 
     // return the bits required by pth percentile length
-    for(int i = hist.length - 1; i >= 0; i--) {
-      perLen -= hist[i];
+    for(int i = this.histBuffer.length - 1; i >= 0; i--) {
+      perLen -= this.histBuffer[i];
       if (perLen < 0) {
         return decodeBitWidth(i);
       }
@@ -353,26 +363,31 @@ public final class SerializationUtils {
     if (n == 0) {
       return 1;
     }
-
-    if (n >= 1 && n <= 24) {
+    if (n <= 24) {
       return n;
-    } else if (n > 24 && n <= 26) {
-      return 26;
-    } else if (n > 26 && n <= 28) {
-      return 28;
-    } else if (n > 28 && n <= 30) {
-      return 30;
-    } else if (n > 30 && n <= 32) {
-      return 32;
-    } else if (n > 32 && n <= 40) {
-      return 40;
-    } else if (n > 40 && n <= 48) {
-      return 48;
-    } else if (n > 48 && n <= 56) {
-      return 56;
-    } else {
-      return 64;
     }
+    if (n <= 26) {
+      return 26;
+    }
+    if (n <= 28) {
+      return 28;
+    }
+    if (n <= 30) {
+      return 30;
+    }
+    if (n <= 32) {
+      return 32;
+    }
+    if (n <= 40) {
+      return 40;
+    }
+    if (n <= 48) {
+      return 48;
+    }
+    if (n <= 56) {
+      return 56;
+    }
+    return 64;
   }
 
   public int getClosestAlignedFixedBits(int n) {
@@ -403,8 +418,9 @@ public final class SerializationUtils {
 
   /**
    * Finds the closest available fixed bit width match and returns its encoded
-   * value (ordinal)
-   * @param n - fixed bit width to encode
+   * value (ordinal).
+   *
+   * @param n fixed bit width to encode
    * @return encoded fixed bit width
    */
   public int encodeBitWidth(int n) {
@@ -412,23 +428,29 @@ public final class SerializationUtils {
 
     if (n >= 1 && n <= 24) {
       return n - 1;
-    } else if (n > 24 && n <= 26) {
-      return FixedBitSizes.TWENTYSIX.ordinal();
-    } else if (n > 26 && n <= 28) {
-      return FixedBitSizes.TWENTYEIGHT.ordinal();
-    } else if (n > 28 && n <= 30) {
-      return FixedBitSizes.THIRTY.ordinal();
-    } else if (n > 30 && n <= 32) {
-      return FixedBitSizes.THIRTYTWO.ordinal();
-    } else if (n > 32 && n <= 40) {
-      return FixedBitSizes.FORTY.ordinal();
-    } else if (n > 40 && n <= 48) {
-      return FixedBitSizes.FORTYEIGHT.ordinal();
-    } else if (n > 48 && n <= 56) {
-      return FixedBitSizes.FIFTYSIX.ordinal();
-    } else {
-      return FixedBitSizes.SIXTYFOUR.ordinal();
     }
+    if (n <= 26) {
+      return FixedBitSizes.TWENTYSIX.ordinal();
+    }
+    if (n <= 28) {
+      return FixedBitSizes.TWENTYEIGHT.ordinal();
+    }
+    if (n <= 30) {
+      return FixedBitSizes.THIRTY.ordinal();
+    }
+    if (n <= 32) {
+      return FixedBitSizes.THIRTYTWO.ordinal();
+    }
+    if (n <= 40) {
+      return FixedBitSizes.FORTY.ordinal();
+    }
+    if (n <= 48) {
+      return FixedBitSizes.FORTYEIGHT.ordinal();
+    }
+    if (n <= 56) {
+      return FixedBitSizes.FIFTYSIX.ordinal();
+    }
+    return FixedBitSizes.SIXTYFOUR.ordinal();
   }
 
   /**
@@ -476,41 +498,41 @@ public final class SerializationUtils {
     }
 
     switch (bitSize) {
-    case 1:
-      unrolledBitPack1(input, offset, len, output);
-      return;
-    case 2:
-      unrolledBitPack2(input, offset, len, output);
-      return;
-    case 4:
-      unrolledBitPack4(input, offset, len, output);
-      return;
-    case 8:
-      unrolledBitPack8(input, offset, len, output);
-      return;
-    case 16:
-      unrolledBitPack16(input, offset, len, output);
-      return;
-    case 24:
-      unrolledBitPack24(input, offset, len, output);
-      return;
-    case 32:
-      unrolledBitPack32(input, offset, len, output);
-      return;
-    case 40:
-      unrolledBitPack40(input, offset, len, output);
-      return;
-    case 48:
-      unrolledBitPack48(input, offset, len, output);
-      return;
-    case 56:
-      unrolledBitPack56(input, offset, len, output);
-      return;
-    case 64:
-      unrolledBitPack64(input, offset, len, output);
-      return;
-    default:
-      break;
+      case 1:
+        unrolledBitPack1(input, offset, len, output);
+        return;
+      case 2:
+        unrolledBitPack2(input, offset, len, output);
+        return;
+      case 4:
+        unrolledBitPack4(input, offset, len, output);
+        return;
+      case 8:
+        unrolledBitPack8(input, offset, len, output);
+        return;
+      case 16:
+        unrolledBitPack16(input, offset, len, output);
+        return;
+      case 24:
+        unrolledBitPack24(input, offset, len, output);
+        return;
+      case 32:
+        unrolledBitPack32(input, offset, len, output);
+        return;
+      case 40:
+        unrolledBitPack40(input, offset, len, output);
+        return;
+      case 48:
+        unrolledBitPack48(input, offset, len, output);
+        return;
+      case 56:
+        unrolledBitPack56(input, offset, len, output);
+        return;
+      case 64:
+        unrolledBitPack64(input, offset, len, output);
+        return;
+      default:
+        break;
     }
 
     int bitsLeft = 8;
@@ -665,7 +687,8 @@ public final class SerializationUtils {
     unrolledBitPackBytes(input, offset, len, output, 8);
   }
 
-  private void unrolledBitPackBytes(long[] input, int offset, int len, OutputStream output, int numBytes) throws IOException {
+  private void unrolledBitPackBytes(long[] input, int offset, int len,
+      OutputStream output, int numBytes) throws IOException {
     final int numHops = 8;
     final int remainder = len % numHops;
     final int endOffset = offset + len;
@@ -686,153 +709,154 @@ public final class SerializationUtils {
 
     int idx = 0;
     switch (numBytes) {
-    case 1:
-      while (remainder > 0) {
-        writeBuffer[idx] = (byte) (input[offset + idx] & 255);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 2:
-      while (remainder > 0) {
-        writeLongBE2(output, input[offset + idx], idx * 2);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 3:
-      while (remainder > 0) {
-        writeLongBE3(output, input[offset + idx], idx * 3);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 4:
-      while (remainder > 0) {
-        writeLongBE4(output, input[offset + idx], idx * 4);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 5:
-      while (remainder > 0) {
-        writeLongBE5(output, input[offset + idx], idx * 5);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 6:
-      while (remainder > 0) {
-        writeLongBE6(output, input[offset + idx], idx * 6);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 7:
-      while (remainder > 0) {
-        writeLongBE7(output, input[offset + idx], idx * 7);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 8:
-      while (remainder > 0) {
-        writeLongBE8(output, input[offset + idx], idx * 8);
-        remainder--;
-        idx++;
-      }
-      break;
-    default:
-      break;
+      case 1:
+        while (remainder > 0) {
+          writeBuffer[idx] = (byte) (input[offset + idx] & 255);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 2:
+        while (remainder > 0) {
+          writeLongBE2(output, input[offset + idx], idx * 2);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 3:
+        while (remainder > 0) {
+          writeLongBE3(output, input[offset + idx], idx * 3);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 4:
+        while (remainder > 0) {
+          writeLongBE4(output, input[offset + idx], idx * 4);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 5:
+        while (remainder > 0) {
+          writeLongBE5(output, input[offset + idx], idx * 5);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 6:
+        while (remainder > 0) {
+          writeLongBE6(output, input[offset + idx], idx * 6);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 7:
+        while (remainder > 0) {
+          writeLongBE7(output, input[offset + idx], idx * 7);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 8:
+        while (remainder > 0) {
+          writeLongBE8(output, input[offset + idx], idx * 8);
+          remainder--;
+          idx++;
+        }
+        break;
+      default:
+        break;
     }
 
     final int toWrite = numHops * numBytes;
     output.write(writeBuffer, 0, toWrite);
   }
 
-  private void writeLongBE(OutputStream output, long[] input, int offset, int numHops, int numBytes) throws IOException {
+  private void writeLongBE(OutputStream output, long[] input, int offset,
+                           int numHops, int numBytes) throws IOException {
 
     switch (numBytes) {
-    case 1:
-      writeBuffer[0] = (byte) (input[offset + 0] & 255);
-      writeBuffer[1] = (byte) (input[offset + 1] & 255);
-      writeBuffer[2] = (byte) (input[offset + 2] & 255);
-      writeBuffer[3] = (byte) (input[offset + 3] & 255);
-      writeBuffer[4] = (byte) (input[offset + 4] & 255);
-      writeBuffer[5] = (byte) (input[offset + 5] & 255);
-      writeBuffer[6] = (byte) (input[offset + 6] & 255);
-      writeBuffer[7] = (byte) (input[offset + 7] & 255);
-      break;
-    case 2:
-      writeLongBE2(output, input[offset + 0], 0);
-      writeLongBE2(output, input[offset + 1], 2);
-      writeLongBE2(output, input[offset + 2], 4);
-      writeLongBE2(output, input[offset + 3], 6);
-      writeLongBE2(output, input[offset + 4], 8);
-      writeLongBE2(output, input[offset + 5], 10);
-      writeLongBE2(output, input[offset + 6], 12);
-      writeLongBE2(output, input[offset + 7], 14);
-      break;
-    case 3:
-      writeLongBE3(output, input[offset + 0], 0);
-      writeLongBE3(output, input[offset + 1], 3);
-      writeLongBE3(output, input[offset + 2], 6);
-      writeLongBE3(output, input[offset + 3], 9);
-      writeLongBE3(output, input[offset + 4], 12);
-      writeLongBE3(output, input[offset + 5], 15);
-      writeLongBE3(output, input[offset + 6], 18);
-      writeLongBE3(output, input[offset + 7], 21);
-      break;
-    case 4:
-      writeLongBE4(output, input[offset + 0], 0);
-      writeLongBE4(output, input[offset + 1], 4);
-      writeLongBE4(output, input[offset + 2], 8);
-      writeLongBE4(output, input[offset + 3], 12);
-      writeLongBE4(output, input[offset + 4], 16);
-      writeLongBE4(output, input[offset + 5], 20);
-      writeLongBE4(output, input[offset + 6], 24);
-      writeLongBE4(output, input[offset + 7], 28);
-      break;
-    case 5:
-      writeLongBE5(output, input[offset + 0], 0);
-      writeLongBE5(output, input[offset + 1], 5);
-      writeLongBE5(output, input[offset + 2], 10);
-      writeLongBE5(output, input[offset + 3], 15);
-      writeLongBE5(output, input[offset + 4], 20);
-      writeLongBE5(output, input[offset + 5], 25);
-      writeLongBE5(output, input[offset + 6], 30);
-      writeLongBE5(output, input[offset + 7], 35);
-      break;
-    case 6:
-      writeLongBE6(output, input[offset + 0], 0);
-      writeLongBE6(output, input[offset + 1], 6);
-      writeLongBE6(output, input[offset + 2], 12);
-      writeLongBE6(output, input[offset + 3], 18);
-      writeLongBE6(output, input[offset + 4], 24);
-      writeLongBE6(output, input[offset + 5], 30);
-      writeLongBE6(output, input[offset + 6], 36);
-      writeLongBE6(output, input[offset + 7], 42);
-      break;
-    case 7:
-      writeLongBE7(output, input[offset + 0], 0);
-      writeLongBE7(output, input[offset + 1], 7);
-      writeLongBE7(output, input[offset + 2], 14);
-      writeLongBE7(output, input[offset + 3], 21);
-      writeLongBE7(output, input[offset + 4], 28);
-      writeLongBE7(output, input[offset + 5], 35);
-      writeLongBE7(output, input[offset + 6], 42);
-      writeLongBE7(output, input[offset + 7], 49);
-      break;
-    case 8:
-      writeLongBE8(output, input[offset + 0], 0);
-      writeLongBE8(output, input[offset + 1], 8);
-      writeLongBE8(output, input[offset + 2], 16);
-      writeLongBE8(output, input[offset + 3], 24);
-      writeLongBE8(output, input[offset + 4], 32);
-      writeLongBE8(output, input[offset + 5], 40);
-      writeLongBE8(output, input[offset + 6], 48);
-      writeLongBE8(output, input[offset + 7], 56);
-      break;
+      case 1:
+        writeBuffer[0] = (byte) (input[offset + 0] & 255);
+        writeBuffer[1] = (byte) (input[offset + 1] & 255);
+        writeBuffer[2] = (byte) (input[offset + 2] & 255);
+        writeBuffer[3] = (byte) (input[offset + 3] & 255);
+        writeBuffer[4] = (byte) (input[offset + 4] & 255);
+        writeBuffer[5] = (byte) (input[offset + 5] & 255);
+        writeBuffer[6] = (byte) (input[offset + 6] & 255);
+        writeBuffer[7] = (byte) (input[offset + 7] & 255);
+        break;
+      case 2:
+        writeLongBE2(output, input[offset + 0], 0);
+        writeLongBE2(output, input[offset + 1], 2);
+        writeLongBE2(output, input[offset + 2], 4);
+        writeLongBE2(output, input[offset + 3], 6);
+        writeLongBE2(output, input[offset + 4], 8);
+        writeLongBE2(output, input[offset + 5], 10);
+        writeLongBE2(output, input[offset + 6], 12);
+        writeLongBE2(output, input[offset + 7], 14);
+        break;
+      case 3:
+        writeLongBE3(output, input[offset + 0], 0);
+        writeLongBE3(output, input[offset + 1], 3);
+        writeLongBE3(output, input[offset + 2], 6);
+        writeLongBE3(output, input[offset + 3], 9);
+        writeLongBE3(output, input[offset + 4], 12);
+        writeLongBE3(output, input[offset + 5], 15);
+        writeLongBE3(output, input[offset + 6], 18);
+        writeLongBE3(output, input[offset + 7], 21);
+        break;
+      case 4:
+        writeLongBE4(output, input[offset + 0], 0);
+        writeLongBE4(output, input[offset + 1], 4);
+        writeLongBE4(output, input[offset + 2], 8);
+        writeLongBE4(output, input[offset + 3], 12);
+        writeLongBE4(output, input[offset + 4], 16);
+        writeLongBE4(output, input[offset + 5], 20);
+        writeLongBE4(output, input[offset + 6], 24);
+        writeLongBE4(output, input[offset + 7], 28);
+        break;
+      case 5:
+        writeLongBE5(output, input[offset + 0], 0);
+        writeLongBE5(output, input[offset + 1], 5);
+        writeLongBE5(output, input[offset + 2], 10);
+        writeLongBE5(output, input[offset + 3], 15);
+        writeLongBE5(output, input[offset + 4], 20);
+        writeLongBE5(output, input[offset + 5], 25);
+        writeLongBE5(output, input[offset + 6], 30);
+        writeLongBE5(output, input[offset + 7], 35);
+        break;
+      case 6:
+        writeLongBE6(output, input[offset + 0], 0);
+        writeLongBE6(output, input[offset + 1], 6);
+        writeLongBE6(output, input[offset + 2], 12);
+        writeLongBE6(output, input[offset + 3], 18);
+        writeLongBE6(output, input[offset + 4], 24);
+        writeLongBE6(output, input[offset + 5], 30);
+        writeLongBE6(output, input[offset + 6], 36);
+        writeLongBE6(output, input[offset + 7], 42);
+        break;
+      case 7:
+        writeLongBE7(output, input[offset + 0], 0);
+        writeLongBE7(output, input[offset + 1], 7);
+        writeLongBE7(output, input[offset + 2], 14);
+        writeLongBE7(output, input[offset + 3], 21);
+        writeLongBE7(output, input[offset + 4], 28);
+        writeLongBE7(output, input[offset + 5], 35);
+        writeLongBE7(output, input[offset + 6], 42);
+        writeLongBE7(output, input[offset + 7], 49);
+        break;
+      case 8:
+        writeLongBE8(output, input[offset + 0], 0);
+        writeLongBE8(output, input[offset + 1], 8);
+        writeLongBE8(output, input[offset + 2], 16);
+        writeLongBE8(output, input[offset + 3], 24);
+        writeLongBE8(output, input[offset + 4], 32);
+        writeLongBE8(output, input[offset + 5], 40);
+        writeLongBE8(output, input[offset + 6], 48);
+        writeLongBE8(output, input[offset + 7], 56);
+        break;
       default:
         break;
     }
@@ -912,41 +936,41 @@ public final class SerializationUtils {
     int current = 0;
 
     switch (bitSize) {
-    case 1:
-      unrolledUnPack1(buffer, offset, len, input);
-      return;
-    case 2:
-      unrolledUnPack2(buffer, offset, len, input);
-      return;
-    case 4:
-      unrolledUnPack4(buffer, offset, len, input);
-      return;
-    case 8:
-      unrolledUnPack8(buffer, offset, len, input);
-      return;
-    case 16:
-      unrolledUnPack16(buffer, offset, len, input);
-      return;
-    case 24:
-      unrolledUnPack24(buffer, offset, len, input);
-      return;
-    case 32:
-      unrolledUnPack32(buffer, offset, len, input);
-      return;
-    case 40:
-      unrolledUnPack40(buffer, offset, len, input);
-      return;
-    case 48:
-      unrolledUnPack48(buffer, offset, len, input);
-      return;
-    case 56:
-      unrolledUnPack56(buffer, offset, len, input);
-      return;
-    case 64:
-      unrolledUnPack64(buffer, offset, len, input);
-      return;
-    default:
-      break;
+      case 1:
+        unrolledUnPack1(buffer, offset, len, input);
+        return;
+      case 2:
+        unrolledUnPack2(buffer, offset, len, input);
+        return;
+      case 4:
+        unrolledUnPack4(buffer, offset, len, input);
+        return;
+      case 8:
+        unrolledUnPack8(buffer, offset, len, input);
+        return;
+      case 16:
+        unrolledUnPack16(buffer, offset, len, input);
+        return;
+      case 24:
+        unrolledUnPack24(buffer, offset, len, input);
+        return;
+      case 32:
+        unrolledUnPack32(buffer, offset, len, input);
+        return;
+      case 40:
+        unrolledUnPack40(buffer, offset, len, input);
+        return;
+      case 48:
+        unrolledUnPack48(buffer, offset, len, input);
+        return;
+      case 56:
+        unrolledUnPack56(buffer, offset, len, input);
+        return;
+      case 64:
+        unrolledUnPack64(buffer, offset, len, input);
+        return;
+      default:
+        break;
     }
 
     for(int i = offset; i < (offset + len); i++) {
@@ -1115,64 +1139,64 @@ public final class SerializationUtils {
 
     int idx = 0;
     switch (numBytes) {
-    case 1:
-      while (remainder > 0) {
-        buffer[offset++] = readBuffer[idx] & 255;
-        remainder--;
-        idx++;
-      }
-      break;
-    case 2:
-      while (remainder > 0) {
-        buffer[offset++] = readLongBE2(input, idx * 2);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 3:
-      while (remainder > 0) {
-        buffer[offset++] = readLongBE3(input, idx * 3);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 4:
-      while (remainder > 0) {
-        buffer[offset++] = readLongBE4(input, idx * 4);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 5:
-      while (remainder > 0) {
-        buffer[offset++] = readLongBE5(input, idx * 5);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 6:
-      while (remainder > 0) {
-        buffer[offset++] = readLongBE6(input, idx * 6);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 7:
-      while (remainder > 0) {
-        buffer[offset++] = readLongBE7(input, idx * 7);
-        remainder--;
-        idx++;
-      }
-      break;
-    case 8:
-      while (remainder > 0) {
-        buffer[offset++] = readLongBE8(input, idx * 8);
-        remainder--;
-        idx++;
-      }
-      break;
-    default:
-      break;
+      case 1:
+        while (remainder > 0) {
+          buffer[offset++] = readBuffer[idx] & 255;
+          remainder--;
+          idx++;
+        }
+        break;
+      case 2:
+        while (remainder > 0) {
+          buffer[offset++] = readLongBE2(input, idx * 2);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 3:
+        while (remainder > 0) {
+          buffer[offset++] = readLongBE3(input, idx * 3);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 4:
+        while (remainder > 0) {
+          buffer[offset++] = readLongBE4(input, idx * 4);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 5:
+        while (remainder > 0) {
+          buffer[offset++] = readLongBE5(input, idx * 5);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 6:
+        while (remainder > 0) {
+          buffer[offset++] = readLongBE6(input, idx * 6);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 7:
+        while (remainder > 0) {
+          buffer[offset++] = readLongBE7(input, idx * 7);
+          remainder--;
+          idx++;
+        }
+        break;
+      case 8:
+        while (remainder > 0) {
+          buffer[offset++] = readLongBE8(input, idx * 8);
+          remainder--;
+          idx++;
+        }
+        break;
+      default:
+        break;
     }
   }
 
@@ -1186,88 +1210,88 @@ public final class SerializationUtils {
     }
 
     switch (numBytes) {
-    case 1:
-      buffer[start + 0] = readBuffer[0] & 255;
-      buffer[start + 1] = readBuffer[1] & 255;
-      buffer[start + 2] = readBuffer[2] & 255;
-      buffer[start + 3] = readBuffer[3] & 255;
-      buffer[start + 4] = readBuffer[4] & 255;
-      buffer[start + 5] = readBuffer[5] & 255;
-      buffer[start + 6] = readBuffer[6] & 255;
-      buffer[start + 7] = readBuffer[7] & 255;
-      break;
-    case 2:
-      buffer[start + 0] = readLongBE2(in, 0);
-      buffer[start + 1] = readLongBE2(in, 2);
-      buffer[start + 2] = readLongBE2(in, 4);
-      buffer[start + 3] = readLongBE2(in, 6);
-      buffer[start + 4] = readLongBE2(in, 8);
-      buffer[start + 5] = readLongBE2(in, 10);
-      buffer[start + 6] = readLongBE2(in, 12);
-      buffer[start + 7] = readLongBE2(in, 14);
-      break;
-    case 3:
-      buffer[start + 0] = readLongBE3(in, 0);
-      buffer[start + 1] = readLongBE3(in, 3);
-      buffer[start + 2] = readLongBE3(in, 6);
-      buffer[start + 3] = readLongBE3(in, 9);
-      buffer[start + 4] = readLongBE3(in, 12);
-      buffer[start + 5] = readLongBE3(in, 15);
-      buffer[start + 6] = readLongBE3(in, 18);
-      buffer[start + 7] = readLongBE3(in, 21);
-      break;
-    case 4:
-      buffer[start + 0] = readLongBE4(in, 0);
-      buffer[start + 1] = readLongBE4(in, 4);
-      buffer[start + 2] = readLongBE4(in, 8);
-      buffer[start + 3] = readLongBE4(in, 12);
-      buffer[start + 4] = readLongBE4(in, 16);
-      buffer[start + 5] = readLongBE4(in, 20);
-      buffer[start + 6] = readLongBE4(in, 24);
-      buffer[start + 7] = readLongBE4(in, 28);
-      break;
-    case 5:
-      buffer[start + 0] = readLongBE5(in, 0);
-      buffer[start + 1] = readLongBE5(in, 5);
-      buffer[start + 2] = readLongBE5(in, 10);
-      buffer[start + 3] = readLongBE5(in, 15);
-      buffer[start + 4] = readLongBE5(in, 20);
-      buffer[start + 5] = readLongBE5(in, 25);
-      buffer[start + 6] = readLongBE5(in, 30);
-      buffer[start + 7] = readLongBE5(in, 35);
-      break;
-    case 6:
-      buffer[start + 0] = readLongBE6(in, 0);
-      buffer[start + 1] = readLongBE6(in, 6);
-      buffer[start + 2] = readLongBE6(in, 12);
-      buffer[start + 3] = readLongBE6(in, 18);
-      buffer[start + 4] = readLongBE6(in, 24);
-      buffer[start + 5] = readLongBE6(in, 30);
-      buffer[start + 6] = readLongBE6(in, 36);
-      buffer[start + 7] = readLongBE6(in, 42);
-      break;
-    case 7:
-      buffer[start + 0] = readLongBE7(in, 0);
-      buffer[start + 1] = readLongBE7(in, 7);
-      buffer[start + 2] = readLongBE7(in, 14);
-      buffer[start + 3] = readLongBE7(in, 21);
-      buffer[start + 4] = readLongBE7(in, 28);
-      buffer[start + 5] = readLongBE7(in, 35);
-      buffer[start + 6] = readLongBE7(in, 42);
-      buffer[start + 7] = readLongBE7(in, 49);
-      break;
-    case 8:
-      buffer[start + 0] = readLongBE8(in, 0);
-      buffer[start + 1] = readLongBE8(in, 8);
-      buffer[start + 2] = readLongBE8(in, 16);
-      buffer[start + 3] = readLongBE8(in, 24);
-      buffer[start + 4] = readLongBE8(in, 32);
-      buffer[start + 5] = readLongBE8(in, 40);
-      buffer[start + 6] = readLongBE8(in, 48);
-      buffer[start + 7] = readLongBE8(in, 56);
-      break;
-    default:
-      break;
+      case 1:
+        buffer[start + 0] = readBuffer[0] & 255;
+        buffer[start + 1] = readBuffer[1] & 255;
+        buffer[start + 2] = readBuffer[2] & 255;
+        buffer[start + 3] = readBuffer[3] & 255;
+        buffer[start + 4] = readBuffer[4] & 255;
+        buffer[start + 5] = readBuffer[5] & 255;
+        buffer[start + 6] = readBuffer[6] & 255;
+        buffer[start + 7] = readBuffer[7] & 255;
+        break;
+      case 2:
+        buffer[start + 0] = readLongBE2(in, 0);
+        buffer[start + 1] = readLongBE2(in, 2);
+        buffer[start + 2] = readLongBE2(in, 4);
+        buffer[start + 3] = readLongBE2(in, 6);
+        buffer[start + 4] = readLongBE2(in, 8);
+        buffer[start + 5] = readLongBE2(in, 10);
+        buffer[start + 6] = readLongBE2(in, 12);
+        buffer[start + 7] = readLongBE2(in, 14);
+        break;
+      case 3:
+        buffer[start + 0] = readLongBE3(in, 0);
+        buffer[start + 1] = readLongBE3(in, 3);
+        buffer[start + 2] = readLongBE3(in, 6);
+        buffer[start + 3] = readLongBE3(in, 9);
+        buffer[start + 4] = readLongBE3(in, 12);
+        buffer[start + 5] = readLongBE3(in, 15);
+        buffer[start + 6] = readLongBE3(in, 18);
+        buffer[start + 7] = readLongBE3(in, 21);
+        break;
+      case 4:
+        buffer[start + 0] = readLongBE4(in, 0);
+        buffer[start + 1] = readLongBE4(in, 4);
+        buffer[start + 2] = readLongBE4(in, 8);
+        buffer[start + 3] = readLongBE4(in, 12);
+        buffer[start + 4] = readLongBE4(in, 16);
+        buffer[start + 5] = readLongBE4(in, 20);
+        buffer[start + 6] = readLongBE4(in, 24);
+        buffer[start + 7] = readLongBE4(in, 28);
+        break;
+      case 5:
+        buffer[start + 0] = readLongBE5(in, 0);
+        buffer[start + 1] = readLongBE5(in, 5);
+        buffer[start + 2] = readLongBE5(in, 10);
+        buffer[start + 3] = readLongBE5(in, 15);
+        buffer[start + 4] = readLongBE5(in, 20);
+        buffer[start + 5] = readLongBE5(in, 25);
+        buffer[start + 6] = readLongBE5(in, 30);
+        buffer[start + 7] = readLongBE5(in, 35);
+        break;
+      case 6:
+        buffer[start + 0] = readLongBE6(in, 0);
+        buffer[start + 1] = readLongBE6(in, 6);
+        buffer[start + 2] = readLongBE6(in, 12);
+        buffer[start + 3] = readLongBE6(in, 18);
+        buffer[start + 4] = readLongBE6(in, 24);
+        buffer[start + 5] = readLongBE6(in, 30);
+        buffer[start + 6] = readLongBE6(in, 36);
+        buffer[start + 7] = readLongBE6(in, 42);
+        break;
+      case 7:
+        buffer[start + 0] = readLongBE7(in, 0);
+        buffer[start + 1] = readLongBE7(in, 7);
+        buffer[start + 2] = readLongBE7(in, 14);
+        buffer[start + 3] = readLongBE7(in, 21);
+        buffer[start + 4] = readLongBE7(in, 28);
+        buffer[start + 5] = readLongBE7(in, 35);
+        buffer[start + 6] = readLongBE7(in, 42);
+        buffer[start + 7] = readLongBE7(in, 49);
+        break;
+      case 8:
+        buffer[start + 0] = readLongBE8(in, 0);
+        buffer[start + 1] = readLongBE8(in, 8);
+        buffer[start + 2] = readLongBE8(in, 16);
+        buffer[start + 3] = readLongBE8(in, 24);
+        buffer[start + 4] = readLongBE8(in, 32);
+        buffer[start + 5] = readLongBE8(in, 40);
+        buffer[start + 6] = readLongBE8(in, 48);
+        buffer[start + 7] = readLongBE8(in, 56);
+        break;
+      default:
+        break;
     }
   }
 
@@ -1330,7 +1354,18 @@ public final class SerializationUtils {
   // Do not want to use Guava LongMath.checkedSubtract() here as it will throw
   // ArithmeticException in case of overflow
   public boolean isSafeSubtract(long left, long right) {
-    return (left ^ right) >= 0 | (left ^ (left - right)) >= 0;
+    return (left ^ right) >= 0 || (left ^ (left - right)) >= 0;
+  }
+
+  /**
+   * Convert a UTC time to a local timezone
+   * @param local the local timezone
+   * @param time the number of seconds since 1970
+   * @return the converted timestamp
+   */
+  public static double convertFromUtc(TimeZone local, double time) {
+    int offset = local.getOffset((long) (time*1000) - local.getRawOffset());
+    return time - offset / 1000.0;
   }
 
   public static long convertFromUtc(TimeZone local, long time) {
@@ -1351,36 +1386,35 @@ public final class SerializationUtils {
    * @param kind the stream kind
    * @return the tuned options or the original if it is the same
    */
-  public static
-  StreamOptions getCustomizedCodec(StreamOptions base,
-                                   OrcFile.CompressionStrategy strategy,
-                                   OrcProto.Stream.Kind kind) {
+  public static StreamOptions getCustomizedCodec(StreamOptions base,
+                                                 OrcFile.CompressionStrategy strategy,
+                                                 OrcProto.Stream.Kind kind) {
     if (base.getCodec() != null) {
       CompressionCodec.Options options = base.getCodecOptions();
       switch (kind) {
-      case BLOOM_FILTER:
-      case DATA:
-      case DICTIONARY_DATA:
-      case BLOOM_FILTER_UTF8:
-        options = options.copy().setData(CompressionCodec.DataKind.TEXT);
-        if (strategy == OrcFile.CompressionStrategy.SPEED) {
-          options.setSpeed(CompressionCodec.SpeedModifier.FAST);
-        } else {
-          options.setSpeed(CompressionCodec.SpeedModifier.DEFAULT);
-        }
-        break;
-      case LENGTH:
-      case DICTIONARY_COUNT:
-      case PRESENT:
-      case ROW_INDEX:
-      case SECONDARY:
-        options = options.copy()
-                      .setSpeed(CompressionCodec.SpeedModifier.FASTEST)
-                      .setData(CompressionCodec.DataKind.BINARY);
-        break;
-      default:
-        LOG.info("Missing ORC compression modifiers for " + kind);
-        break;
+        case BLOOM_FILTER:
+        case DATA:
+        case DICTIONARY_DATA:
+        case BLOOM_FILTER_UTF8:
+          options = options.copy().setData(CompressionCodec.DataKind.TEXT);
+          if (strategy == OrcFile.CompressionStrategy.SPEED) {
+            options.setSpeed(CompressionCodec.SpeedModifier.FAST);
+          } else {
+            options.setSpeed(CompressionCodec.SpeedModifier.DEFAULT);
+          }
+          break;
+        case LENGTH:
+        case DICTIONARY_COUNT:
+        case PRESENT:
+        case ROW_INDEX:
+        case SECONDARY:
+          options = options.copy()
+                        .setSpeed(CompressionCodec.SpeedModifier.FASTEST)
+                        .setData(CompressionCodec.DataKind.BINARY);
+          break;
+        default:
+          LOG.info("Missing ORC compression modifiers for " + kind);
+          break;
       }
       if (!base.getCodecOptions().equals(options)) {
         StreamOptions result = new StreamOptions(base)
@@ -1389,32 +1423,6 @@ public final class SerializationUtils {
       }
     }
     return base;
-  }
-  /**
-   * Convert a UTC time to a local timezone
-   * @param local the local timezone
-   * @param time the number of seconds since 1970
-   * @return the converted timestamp
-   */
-  public static double convertFromUtc(TimeZone local, double time) {
-    int offset = local.getOffset((long) (time*1000) - local.getRawOffset());
-    return time - offset / 1000.0;
-  }
-
-  /**
-   * Convert a bytes vector element into a String.
-   * @param vector the vector to use
-   * @param elementNum the element number to stringify
-   * @return a string or null if the value was null
-   */
-  public static String bytesVectorToString(BytesColumnVector vector,
-                                           int elementNum) {
-    if (vector.isRepeating) {
-      elementNum = 0;
-    }
-    return vector.noNulls || !vector.isNull[elementNum] ?
-               new String(vector.vector[elementNum], vector.start[elementNum],
-                   vector.length[elementNum], StandardCharsets.UTF_8) : null;
   }
 
   /**
@@ -1439,6 +1447,22 @@ public final class SerializationUtils {
     // need to reevaluate the offsets.
     long adjustedReader = reader.getOffset(adjustedMillis);
     return writerOffset - adjustedReader;
+  }
+
+  /**
+   * Convert a bytes vector element into a String.
+   * @param vector the vector to use
+   * @param elementNum the element number to stringify
+   * @return a string or null if the value was null
+   */
+  public static String bytesVectorToString(BytesColumnVector vector,
+                                           int elementNum) {
+    if (vector.isRepeating) {
+      elementNum = 0;
+    }
+    return vector.noNulls || !vector.isNull[elementNum] ?
+               new String(vector.vector[elementNum], vector.start[elementNum],
+                   vector.length[elementNum], StandardCharsets.UTF_8) : null;
   }
 
   /**

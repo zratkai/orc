@@ -17,7 +17,7 @@
  */
 package org.apache.orc.impl.mask;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
@@ -42,7 +42,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * Masking strategy that hides most string and numeric values based on unicode
  * character categories.
- *
+ * <p>
  * Masking Parameters:
  *   character replacements: string of 10 characters one per group below
  *     letter, upper case (default X)
@@ -55,7 +55,7 @@ import java.util.concurrent.TimeUnit;
  *     mark               (default ः)
  *     number, other      (default ²)
  *     other              (default ۝)
- *
+ * <p>
  *   time replacements: string of 6 numbers or _ one per field below
  *     year (0 to 4000, default no masking)
  *     month (1 to 12, default 1)
@@ -63,7 +63,7 @@ import java.util.concurrent.TimeUnit;
  *     hour (0 to 23, default 0)
  *     minute (0 to 59, default 0)
  *     second (0 to 59, default 0)
- *
+ * <p>
  * Parameters use "_" for preserve original.
  */
 public class RedactMaskFactory extends MaskFactory {
@@ -93,7 +93,7 @@ public class RedactMaskFactory extends MaskFactory {
   // The replacement codepoint for each character category. We use codepoints
   // here so that we don't have to worry about handling long UTF characters
   // as special cases.
-  private final int UPPPER_REPLACEMENT;
+  private final int UPPER_REPLACEMENT;
   private final int LOWER_REPLACEMENT;
   private final int OTHER_LETTER_REPLACEMENT;
   private final int MARK_REPLACEMENT;
@@ -123,7 +123,7 @@ public class RedactMaskFactory extends MaskFactory {
   public RedactMaskFactory(String... params) {
     ByteBuffer param = params.length < 1 ? ByteBuffer.allocate(0) :
         ByteBuffer.wrap(params[0].getBytes(StandardCharsets.UTF_8));
-    UPPPER_REPLACEMENT = getNextCodepoint(param, DEFAULT_LETTER_UPPER);
+    UPPER_REPLACEMENT = getNextCodepoint(param, DEFAULT_LETTER_UPPER);
     LOWER_REPLACEMENT = getNextCodepoint(param, DEFAULT_LETTER_LOWER);
     DIGIT_CP_REPLACEMENT = getNextCodepoint(param, DEFAULT_NUMBER_DIGIT_CP);
     DIGIT_REPLACEMENT = getReplacementDigit(DIGIT_CP_REPLACEMENT);
@@ -733,7 +733,7 @@ public class RedactMaskFactory extends MaskFactory {
   int getReplacement(int codepoint) {
     switch (Character.getType(codepoint)) {
       case Character.UPPERCASE_LETTER:
-        return UPPPER_REPLACEMENT;
+        return UPPER_REPLACEMENT;
       case Character.LOWERCASE_LETTER:
         return LOWER_REPLACEMENT;
       case Character.TITLECASE_LETTER:
@@ -945,24 +945,24 @@ public class RedactMaskFactory extends MaskFactory {
   private boolean isIndexInUnmaskRange(final int index, final int length) {
 
     for(final Map.Entry<Integer, Integer> pair : unmaskIndexRanges.entrySet()) {
-       int start;
-       int end;
+      int start;
+      int end;
 
-       if(pair.getKey() >= 0) {
-         // for positive indexes
-         start = pair.getKey();
-       } else {
-         // for negative indexes
-         start = length + pair.getKey();
-       }
+      if(pair.getKey() >= 0) {
+        // for positive indexes
+        start = pair.getKey();
+      } else {
+        // for negative indexes
+        start = length + pair.getKey();
+      }
 
-       if(pair.getValue() >= 0) {
-         // for positive indexes
-         end = pair.getValue();
-       } else {
-         // for negative indexes
-         end = length + pair.getValue();
-       }
+      if(pair.getValue() >= 0) {
+        // for positive indexes
+        end = pair.getValue();
+      } else {
+        // for negative indexes
+        end = length + pair.getValue();
+      }
 
       // if the given index is in range
       if(index >= start && index <= end ) {

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -70,7 +70,7 @@ public interface CompressionCodec extends Closeable {
   /**
    * Compress the in buffer to the out buffer.
    * @param in the bytes to compress
-   * @param out the uncompressed bytes
+   * @param out the compressed bytes
    * @param overflow put any additional bytes here
    * @param options the options to control compression
    * @return true if the output is smaller than input

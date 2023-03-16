@@ -51,20 +51,20 @@ public class TimestampTreeWriter extends TreeWriterBase {
 
   public TimestampTreeWriter(TypeDescription schema,
                              WriterEncryptionVariant encryption,
-                             WriterContext writer,
+                             WriterContext context,
                              boolean instantType) throws IOException {
-    super(schema, encryption, writer);
-    this.isDirectV2 = isNewWriteFormat(writer);
-    this.seconds = createIntegerWriter(writer.createStream(
+    super(schema, encryption, context);
+    this.isDirectV2 = isNewWriteFormat(context);
+    this.seconds = createIntegerWriter(context.createStream(
         new StreamName(id, OrcProto.Stream.Kind.DATA, encryption)),
-        true, isDirectV2, writer);
-    this.nanos = createIntegerWriter(writer.createStream(
+        true, isDirectV2, context);
+    this.nanos = createIntegerWriter(context.createStream(
         new StreamName(id, OrcProto.Stream.Kind.SECONDARY, encryption)),
-        false, isDirectV2, writer);
+        false, isDirectV2, context);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
-    this.alwaysUTC = instantType || writer.getUseUTCTimestamp();
+    this.alwaysUTC = instantType || context.getUseUTCTimestamp();
     DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
     try {
       if (this.alwaysUTC) {
@@ -82,7 +82,7 @@ public class TimestampTreeWriter extends TreeWriterBase {
     } catch (ParseException e) {
       throw new IOException("Unable to create base timestamp tree writer", e);
     }
-    useProleptic = writer.getProlepticGregorian();
+    useProleptic = context.getProlepticGregorian();
   }
 
   @Override
@@ -111,7 +111,7 @@ public class TimestampTreeWriter extends TreeWriterBase {
         }
         long utc = vec.isUTC() || alwaysUTC ?
             millis : SerializationUtils.convertToUtc(localTimezone, millis);
-        indexStatistics.updateTimestamp(utc);
+        indexStatistics.updateTimestamp(utc, newNanos % 1_000_000);
         if (createBloomFilter) {
           if (bloomFilter != null) {
             bloomFilter.addLong(millis);
@@ -139,7 +139,7 @@ public class TimestampTreeWriter extends TreeWriterBase {
               millis : SerializationUtils.convertToUtc(localTimezone, millis);
           seconds.write(secs - epoch);
           nanos.write(formatNanos(newNanos));
-          indexStatistics.updateTimestamp(utc);
+          indexStatistics.updateTimestamp(utc, newNanos % 1_000_000);
           if (createBloomFilter) {
             if (bloomFilter != null) {
               bloomFilter.addLong(millis);

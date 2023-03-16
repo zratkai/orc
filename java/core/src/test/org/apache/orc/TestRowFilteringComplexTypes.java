@@ -30,13 +30,14 @@ import org.apache.hadoop.hive.ql.exec.vector.UnionColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.orc.impl.RecordReaderImpl;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestRowFilteringComplexTypes {
     private Path workDir = new Path(System.getProperty("test.tmp.dir", "target" + File.separator + "test"
@@ -48,14 +49,13 @@ public class TestRowFilteringComplexTypes {
 
     private static final int ColumnBatchRows = 1024;
 
-    @Rule
-    public TestName testCaseName = new TestName();
-
-    @Before
-    public void openFileSystem() throws Exception {
+    @BeforeEach
+    public void openFileSystem(TestInfo testInfo) throws Exception {
         conf = new Configuration();
+        OrcConf.READER_USE_SELECTED.setBoolean(conf, true);
         fs = FileSystem.getLocal(conf);
-        testFilePath = new Path(workDir, "TestRowFilteringComplexTypes." + testCaseName.getMethodName() + ".orc");
+        testFilePath = new Path(workDir,
+            "TestRowFilteringComplexTypes." + testInfo.getTestMethod().get().getName() + ".orc");
         fs.delete(testFilePath, false);
     }
 
@@ -107,8 +107,8 @@ public class TestRowFilteringComplexTypes {
 
             int noNullCnt = 0;
             while (rows.nextBatch(batch)) {
-                Assert.assertTrue(batch.selectedInUse);
-                Assert.assertEquals(ColumnBatchRows / 2, batch.size);
+                assertTrue(batch.selectedInUse);
+                assertEquals(ColumnBatchRows / 2, batch.size);
                 for (int r = 0; r < ColumnBatchRows; ++r) {
                     StringBuilder sb = new StringBuilder();
                     col2.stringifyValue(sb, r);
@@ -118,16 +118,15 @@ public class TestRowFilteringComplexTypes {
                 }
             }
             // Make sure that our filter worked
-            Assert.assertEquals(NUM_BATCHES * 512, noNullCnt);
-            Assert.assertEquals(0, batch.selected[0]);
-            Assert.assertEquals(2, batch.selected[1]);
+            assertEquals(NUM_BATCHES * 512, noNullCnt);
+            assertEquals(0, batch.selected[0]);
+            assertEquals(2, batch.selected[1]);
         }
     }
 
 
     @Test
     // Inner UNION should make use of the filterContext
-    // TODO: selected rows should be combined with ignored rows
     public void testInnerUnionRowFilter() throws Exception {
         // Set the row stride to a multiple of the batch size
         final int INDEX_STRIDE = 16 * ColumnBatchRows;
@@ -173,19 +172,19 @@ public class TestRowFilteringComplexTypes {
 
             int previousBatchRows = 0;
             while (rows.nextBatch(batch)) {
-                Assert.assertTrue(batch.selectedInUse);
-                Assert.assertEquals(ColumnBatchRows / 2, batch.size);
+                assertTrue(batch.selectedInUse);
+                assertEquals(ColumnBatchRows / 2, batch.size);
                 for (int r = 0; r < batch.size; ++r) {
                     int row = batch.selected[r];
                     int originalRow = (r + previousBatchRows) * 2;
-                    Assert.assertEquals("row " + originalRow, originalRow, col1.vector[row]);
-                    Assert.assertEquals("row " + originalRow, 0, col2.tags[row]);
-                    Assert.assertEquals("row " + originalRow,
-                        originalRow * 1000, innerCol1.vector[row]);
+                    String msg = "row " + originalRow;
+                    assertEquals(originalRow, col1.vector[row], msg);
+                    assertEquals(0, col2.tags[row], msg);
+                    assertEquals(originalRow * 1000, innerCol1.vector[row], msg);
                 }
                 // check to make sure that we didn't read innerCol2
                 for(int r = 1; r < ColumnBatchRows; r += 2) {
-                    Assert.assertEquals("row " + r, 0, innerCol2.vector[r]);
+                    assertEquals(0, innerCol2.vector[r], "row " + r);
                 }
                 previousBatchRows += batch.size;
             }
@@ -243,8 +242,8 @@ public class TestRowFilteringComplexTypes {
 
             int noNullCnt = 0;
             while (rows.nextBatch(batch)) {
-                Assert.assertTrue(batch.selectedInUse);
-                Assert.assertEquals(ColumnBatchRows / 2, batch.size);
+                assertTrue(batch.selectedInUse);
+                assertEquals(ColumnBatchRows / 2, batch.size);
                 for (int r = 0; r < ColumnBatchRows; ++r) {
                     StringBuilder sb = new StringBuilder();
                     col2.stringifyValue(sb, r);
@@ -254,10 +253,10 @@ public class TestRowFilteringComplexTypes {
                 }
             }
             // Make sure that we did NOT skip any rows
-            Assert.assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
+            assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
             // Even though selected Array is still used its not propagated
-            Assert.assertEquals(0, batch.selected[0]);
-            Assert.assertEquals(2, batch.selected[1]);
+            assertEquals(0, batch.selected[0]);
+            assertEquals(2, batch.selected[1]);
         }
     }
 
@@ -307,8 +306,8 @@ public class TestRowFilteringComplexTypes {
 
             int noNullCnt = 0;
             while (rows.nextBatch(batch)) {
-                Assert.assertTrue(batch.selectedInUse);
-                Assert.assertEquals(ColumnBatchRows / 2, batch.size);
+                assertTrue(batch.selectedInUse);
+                assertEquals(ColumnBatchRows / 2, batch.size);
                 for (int r = 0; r < ColumnBatchRows; ++r) {
                     StringBuilder sb = new StringBuilder();
                     col2.stringifyValue(sb, r);
@@ -318,10 +317,10 @@ public class TestRowFilteringComplexTypes {
                 }
             }
             // Make sure that we did NOT skip any rows
-            Assert.assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
+            assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
             // Even though selected Array is still used its not propagated
-            Assert.assertEquals(0, batch.selected[0]);
-            Assert.assertEquals(2, batch.selected[1]);
+            assertEquals(0, batch.selected[0]);
+            assertEquals(2, batch.selected[1]);
         }
     }
 }

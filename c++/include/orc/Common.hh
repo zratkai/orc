@@ -32,6 +32,10 @@ namespace orc {
     uint32_t majorVersion;
     uint32_t minorVersion;
   public:
+    static const FileVersion& v_0_11();
+    static const FileVersion& v_0_12();
+    static const FileVersion& UNSTABLE_PRE_2_0();
+
     FileVersion(uint32_t major, uint32_t minor) :
                 majorVersion(major), minorVersion(minor) {
     }
@@ -66,8 +70,12 @@ namespace orc {
     ORC_JAVA_WRITER = 0,
     ORC_CPP_WRITER = 1,
     PRESTO_WRITER = 2,
+    SCRITCHLEY_GO = 3,
+    TRINO_WRITER = 4,
     UNKNOWN_WRITER = INT32_MAX
   };
+
+  std::string writerIdToString(uint32_t id);
 
   enum CompressionKind {
     CompressionKind_NONE = 0,
@@ -76,7 +84,7 @@ namespace orc {
     CompressionKind_LZO = 3,
     CompressionKind_LZ4 = 4,
     CompressionKind_ZSTD = 5,
-    CompressionKind_MAX = INT64_MAX
+    CompressionKind_MAX = INT32_MAX
   };
 
   /**
@@ -92,7 +100,10 @@ namespace orc {
     WriterVersion_HIVE_13083 = 4,
     WriterVersion_ORC_101 = 5,
     WriterVersion_ORC_135 = 6,
-    WriterVersion_MAX = INT64_MAX
+    WriterVersion_ORC_517 = 7,
+    WriterVersion_ORC_203 = 8,
+    WriterVersion_ORC_14 = 9,
+    WriterVersion_MAX = INT32_MAX
   };
 
   /**
@@ -108,7 +119,19 @@ namespace orc {
     StreamKind_DICTIONARY_COUNT = 4,
     StreamKind_SECONDARY = 5,
     StreamKind_ROW_INDEX = 6,
-    StreamKind_BLOOM_FILTER = 7
+    StreamKind_BLOOM_FILTER = 7,
+    StreamKind_BLOOM_FILTER_UTF8 = 8
+  };
+
+  /**
+   * Specific read intention when selecting a certain TypeId.
+   * This enum currently only being utilized by LIST, MAP, and UNION type selection.
+   */
+  enum ReadIntent {
+    ReadIntent_ALL = 0,
+
+    // Only read the offsets of selected type. Do not read the children types.
+    ReadIntent_OFFSETS = 1
   };
 
   /**
@@ -259,6 +282,41 @@ namespace orc {
     }
     return false;
   }
+
+  enum BloomFilterVersion {
+    // Include both the BLOOM_FILTER and BLOOM_FILTER_UTF8 streams to support
+    // both old and new readers.
+    ORIGINAL = 0,
+    // Only include the BLOOM_FILTER_UTF8 streams that consistently use UTF8.
+    // See ORC-101
+    UTF8 = 1,
+    FUTURE = INT32_MAX
+  };
+
+  inline bool operator<(const Decimal& lhs, const Decimal& rhs) {
+    return compare(lhs, rhs);
+  }
+
+  inline bool operator>(const Decimal& lhs, const Decimal& rhs) {
+    return rhs < lhs;
+  }
+
+  inline bool operator<=(const Decimal& lhs, const Decimal& rhs) {
+    return !(lhs > rhs);
+  }
+
+  inline bool operator>=(const Decimal& lhs, const Decimal& rhs) {
+    return !(lhs < rhs);
+  }
+
+  inline bool operator!=(const Decimal& lhs, const Decimal& rhs) {
+    return lhs < rhs || rhs < lhs;
+  }
+
+  inline bool operator==(const Decimal& lhs, const Decimal& rhs) {
+    return !(lhs != rhs);
+  }
+
 }
 
 #endif

@@ -18,6 +18,9 @@
 
 #include "Adaptor.hh"
 #include "ByteRLE.hh"
+#include "Compression.hh"
+#include "MemoryInputStream.hh"
+#include "MemoryOutputStream.hh"
 #include "OrcTest.hh"
 #include "wrap/gtest-wrapper.h"
 
@@ -1104,7 +1107,7 @@ TEST(BooleanRle, skipTestWithNulls) {
       rle->skip(4);
     }
     rle->skip(0);
-    data.assign(data.size(), -1);;
+    data.assign(data.size(), -1);
     rle->next(data.data(), data.size(), allNull.data());
     for (size_t j = 0; j < data.size(); ++j) {
       EXPECT_EQ(0, data[j]) << "Output wrong at " << i << ", " << j;
@@ -1419,5 +1422,94 @@ TEST(BooleanRle, seekBoolAndByteRLE) {
   rle->seek(posProvider45th);
   rle->next(value, 1, nullptr);
   EXPECT_EQ(num[45], value[0]);
+  }
+
+  TEST(BooleanRle, seekAndSkipToEnd) {
+    // in total 1024 boolean values which are all true
+    constexpr uint64_t numValues = 1024;
+    char data[numValues];
+    memset(data, 0x01, sizeof(data));
+
+    // create BooleanRleEncoder and encode all 1024 values
+    constexpr uint64_t blockSize = 1024, capacity = 1024 * 1024;
+    MemoryOutputStream memStream(capacity);
+    std::unique_ptr<ByteRleEncoder> encoder = createBooleanRleEncoder
+      (createCompressor(CompressionKind_ZSTD,
+                        &memStream,
+                        CompressionStrategy_COMPRESSION,
+                        capacity,
+                        blockSize,
+                        *getDefaultPool()));
+    encoder->add(data, numValues, nullptr);
+    encoder->flush();
+
+    // create BooleanRleDecoder and prepare decoding
+    std::unique_ptr<ByteRleDecoder> decoder = createBooleanRleDecoder(
+      createDecompressor(CompressionKind_ZSTD,
+                         std::unique_ptr<SeekableInputStream>(
+                           new SeekableArrayInputStream(memStream.getData(),
+                                                        memStream.getLength())),
+                         blockSize,
+                         *getDefaultPool()));
+
+    // before fix of ORC-470, skip all remaining boolean values will get an
+    // exception since BooleanRLEDecoder still tries to read one last byte from
+    // underlying input stream even if the requested number of bits are multiple
+    // of 8 and then it reads over the end of stream.
+    decoder->skip(numValues);
+
+    // as we have reached the end of stream, try to read any data will get exception
+    EXPECT_ANY_THROW(decoder->next(data, 1, nullptr));
+  }
+
+
+
+  TEST(BooleanRle, testSeekWithRemainBitNotZero) {
+    MemoryOutputStream memStream(1024 * 1024);
+
+    uint64_t capacity = 500 * 1024;
+    uint64_t block = 1024;
+    std::unique_ptr<BufferedOutputStream> outStream(
+            new BufferedOutputStream(*getDefaultPool(), &memStream, capacity, block));
+
+    std::unique_ptr<ByteRleEncoder> encoder =
+            createBooleanRleEncoder(std::move(outStream));
+
+    uint64_t numValues = 1779;
+    char * data = new char[numValues];
+    for (uint64_t i = 0; i < numValues; ++i) {
+      data[i] = static_cast<char>(i % 2);
+    }
+    encoder->add(data, numValues, nullptr);
+    encoder->flush();
+
+    std::unique_ptr<SeekableInputStream> inStream(
+            new SeekableArrayInputStream(memStream.getData(), memStream.getLength()));
+
+    std::unique_ptr<ByteRleDecoder> decoder =
+            createBooleanRleDecoder(std::move(inStream));
+
+    char* decodedData = new char[numValues];
+    decoder->next(decodedData, 9, nullptr);
+
+    for (uint64_t i = 0; i < 9; ++i) {
+      bool expect = data[i] != 0;
+      bool actual = decodedData[i] != 0;
+      EXPECT_EQ(expect, actual) << "Output wrong at " << i;
+    }
+
+    std::list<uint64_t> positions = {0, 0, 0};
+    PositionProvider positionProvider(positions);
+    decoder->seek(positionProvider);
+    decoder->next(decodedData, numValues, nullptr);
+    for (uint64_t i = 0; i < numValues; ++i) {
+      bool expect = data[i] != 0;
+      bool actual = decodedData[i] != 0;
+      EXPECT_EQ(expect, actual)
+                    << "Output wrong at " << i;
+    }
+
+    delete [] data;
+    delete [] decodedData;
   }
 }  // namespace orc

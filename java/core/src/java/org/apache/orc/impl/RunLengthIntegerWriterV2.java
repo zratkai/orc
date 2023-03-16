@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -124,7 +124,7 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
 
   static final int MAX_SCOPE = 512;
   static final int MIN_REPEAT = 3;
-  static final long BASE_VALUE_LIMIT = 1l << 56;
+  static final long BASE_VALUE_LIMIT = 1L << 56;
   private static final int MAX_SHORT_REPEAT_LENGTH = 10;
   private long prevDelta = 0;
   private int fixedRunLength = 0;
@@ -134,7 +134,7 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
   private final boolean signed;
   private EncodingType encoding;
   private int numLiterals;
-  private final long[] zigzagLiterals = new long[MAX_SCOPE];
+  private final long[] zigzagLiterals;
   private final long[] baseRedLiterals = new long[MAX_SCOPE];
   private final long[] adjDeltas = new long[MAX_SCOPE];
   private long fixedDelta;
@@ -160,6 +160,7 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
       boolean alignedBitpacking) {
     this.output = output;
     this.signed = signed;
+    this.zigzagLiterals = signed ? new long[MAX_SCOPE] : null;
     this.alignedBitpacking = alignedBitpacking;
     this.utils = new SerializationUtils();
     clear();
@@ -278,7 +279,7 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
     final int headerSecondByte = variableRunLength & 0xff;
 
     // if the min value is negative toggle the sign
-    final boolean isNegative = min < 0 ? true : false;
+    final boolean isNegative = min < 0;
     if (isNegative) {
       min = -min;
     }
@@ -367,7 +368,8 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
     output.write(headerSecondByte);
 
     // bit packing the zigzag encoded literals
-    utils.writeInts(zigzagLiterals, 0, numLiterals, fb, output);
+    long[] currentZigzagLiterals = signed ? zigzagLiterals : literals;
+    utils.writeInts(currentZigzagLiterals, 0, numLiterals, fb, output);
 
     // reset run length
     variableRunLength = 0;
@@ -408,16 +410,28 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
     fixedRunLength = 0;
   }
 
-  private void determineEncoding() {
+  /**
+   * Prepare for Direct or PatchedBase encoding
+   * compute zigZagLiterals and zzBits100p (Max number of encoding bits required)
+   * @return zigzagLiterals
+   */
+  private long[] prepareForDirectOrPatchedBase() {
+    // only signed numbers need to compute zigzag values
+    if (signed) {
+      computeZigZagLiterals();
+    }
+    long[] currentZigzagLiterals = signed ? zigzagLiterals : literals;
+    zzBits100p = utils.percentileBits(currentZigzagLiterals, 0, numLiterals, 1.0);
+    return currentZigzagLiterals;
+  }
 
+  private void determineEncoding() {
     // we need to compute zigzag values for DIRECT encoding if we decide to
     // break early for delta overflows or for shorter runs
-    computeZigZagLiterals();
-
-    zzBits100p = utils.percentileBits(zigzagLiterals, 0, numLiterals, 1.0);
 
     // not a big win for shorter runs to determine encoding
     if (numLiterals <= MIN_REPEAT) {
+      prepareForDirectOrPatchedBase();
       encoding = EncodingType.DIRECT;
       return;
     }
@@ -457,6 +471,7 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
     // PATCHED_BASE condition as encoding using DIRECT is faster and has less
     // overhead than PATCHED_BASE
     if (!utils.isSafeSubtract(max, min)) {
+      prepareForDirectOrPatchedBase();
       encoding = EncodingType.DIRECT;
       return;
     }
@@ -503,8 +518,8 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
     // number of bit requirement between 90th and 100th percentile varies
     // beyond a threshold then we need to patch the values. if the variation
     // is not significant then we can use direct encoding
-
-    zzBits90p = utils.percentileBits(zigzagLiterals, 0, numLiterals, 0.9);
+    long[] currentZigzagLiterals = prepareForDirectOrPatchedBase();
+    zzBits90p = utils.percentileBits(currentZigzagLiterals, 0, numLiterals, 0.9);
     int diffBitsLH = zzBits100p - zzBits90p;
 
     // if the difference between 90th percentile and 100th percentile fixed
@@ -533,29 +548,21 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
       if ((brBits100p - brBits95p) != 0 && Math.abs(min) < BASE_VALUE_LIMIT) {
         encoding = EncodingType.PATCHED_BASE;
         preparePatchedBlob();
-        return;
       } else {
         encoding = EncodingType.DIRECT;
-        return;
       }
     } else {
       // if difference in bits between 95th percentile and 100th percentile is
       // 0, then patch length will become 0. Hence we will fallback to direct
       encoding = EncodingType.DIRECT;
-      return;
     }
   }
 
   private void computeZigZagLiterals() {
     // populate zigzag encoded literals
-    long zzEncVal = 0;
+    assert signed : "only signed numbers need to compute zigzag values";
     for (int i = 0; i < numLiterals; i++) {
-      if (signed) {
-        zzEncVal = utils.zigzagEncode(literals[i]);
-      } else {
-        zzEncVal = literals[i];
-      }
-      zigzagLiterals[i] = zzEncVal;
+      zigzagLiterals[i] = utils.zigzagEncode(literals[i]);
     }
   }
 
@@ -692,16 +699,13 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
           variableRunLength = fixedRunLength;
           fixedRunLength = 0;
           determineEncoding();
-          writeValues();
-        } else if (fixedRunLength >= MIN_REPEAT
-            && fixedRunLength <= MAX_SHORT_REPEAT_LENGTH) {
+        } else if (fixedRunLength <= MAX_SHORT_REPEAT_LENGTH) {
           encoding = EncodingType.SHORT_REPEAT;
-          writeValues();
         } else {
           encoding = EncodingType.DELTA;
           isFixedDelta = true;
-          writeValues();
         }
+        writeValues();
       }
     }
     output.flush();
@@ -760,7 +764,8 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
 
           // if fixed runs reached max repeat length then write values
           if (fixedRunLength == MAX_SCOPE) {
-            determineEncoding();
+            encoding = EncodingType.DELTA;
+            isFixedDelta = true;
             writeValues();
           }
         } else {
@@ -772,12 +777,11 @@ public class RunLengthIntegerWriterV2 implements IntegerWriter {
           if (fixedRunLength >= MIN_REPEAT) {
             if (fixedRunLength <= MAX_SHORT_REPEAT_LENGTH) {
               encoding = EncodingType.SHORT_REPEAT;
-              writeValues();
             } else {
               encoding = EncodingType.DELTA;
               isFixedDelta = true;
-              writeValues();
             }
+            writeValues();
           }
 
           // if fixed run length is <MIN_REPEAT and current value is

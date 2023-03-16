@@ -19,11 +19,31 @@ GITHUB_USER=$1
 URL=https://github.com/$GITHUB_USER/orc.git
 BRANCH=$2
 
+CLONE="git clone $URL -b $BRANCH"
+MAKEDIR="mkdir orc/build && cd orc/build"
+VOLUME="--volume m2cache:/root/.m2/repository"
+mkdir -p logs
+
+function failure {
+    echo "Failed tests"
+    grep -h "FAILED " logs/*-test.log
+    exit 1
+}
+rm -f logs/pids.txt logs/*.log
+
 start=`date`
-for os in centos6 centos7 debian7 debian8 ubuntu12 ubuntu14 ubuntu16; do
-  echo "Testing $os"
-  ( cd $os && docker build -t "orc-$os" . )
-  docker run "orc-$os" /bin/bash -c "git clone $URL -b $BRANCH && mkdir orc/build && cd orc/build && cmake .. && make package test-out" || exit 1
+
+for build in `cat os-list.txt`; do
+    ./run-one.sh $1 $2 $build > logs/$build-test.log 2>&1 &
+    echo "$!" >> logs/pids.txt
+    echo "Launching $build as $!"
 done
-echo "Start: $start"
+
+for job in `cat logs/pids.txt`; do
+    echo "Waiting for $job"
+    wait $job || failure
+done
+
+echo ""
+echo "Test start: $start"
 echo "End:" `date`

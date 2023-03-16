@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,13 +17,18 @@
  */
 package org.apache.orc;
 
+import org.apache.orc.impl.ParserUtils;
 import org.apache.orc.impl.ReaderImpl;
 import org.apache.orc.impl.SchemaEvolution;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
+
+import static org.apache.hadoop.util.StringUtils.COMMA_STR;
 
 import static org.apache.hadoop.util.StringUtils.COMMA_STR;
 
@@ -41,7 +46,7 @@ public class OrcUtils {
    * Index 0 is the root element of the struct which is set to false by default, index 1,2
    * corresponds to columns a and b. Index 3,4 correspond to column c which is list&lt;string&gt; and
    * index 5 correspond to column d. After flattening list&lt;string&gt; gets 2 columns.
-   *
+   * <p>
    * Column names that aren't found are ignored.
    * @param selectedColumns - comma separated list of selected column names
    * @param schema       - object schema
@@ -119,83 +124,83 @@ public class OrcUtils {
               .build());
     }
     switch (typeDescr.getCategory()) {
-    case BOOLEAN:
-      type.setKind(OrcProto.Type.Kind.BOOLEAN);
-      break;
-    case BYTE:
-      type.setKind(OrcProto.Type.Kind.BYTE);
-      break;
-    case SHORT:
-      type.setKind(OrcProto.Type.Kind.SHORT);
-      break;
-    case INT:
-      type.setKind(OrcProto.Type.Kind.INT);
-      break;
-    case LONG:
-      type.setKind(OrcProto.Type.Kind.LONG);
-      break;
-    case FLOAT:
-      type.setKind(OrcProto.Type.Kind.FLOAT);
-      break;
-    case DOUBLE:
-      type.setKind(OrcProto.Type.Kind.DOUBLE);
-      break;
-    case STRING:
-      type.setKind(OrcProto.Type.Kind.STRING);
-      break;
-    case CHAR:
-      type.setKind(OrcProto.Type.Kind.CHAR);
-      type.setMaximumLength(typeDescr.getMaxLength());
-      break;
-    case VARCHAR:
-      type.setKind(OrcProto.Type.Kind.VARCHAR);
-      type.setMaximumLength(typeDescr.getMaxLength());
-      break;
-    case BINARY:
-      type.setKind(OrcProto.Type.Kind.BINARY);
-      break;
-    case TIMESTAMP:
-      type.setKind(OrcProto.Type.Kind.TIMESTAMP);
-      break;
-    case TIMESTAMP_INSTANT:
+      case BOOLEAN:
+        type.setKind(OrcProto.Type.Kind.BOOLEAN);
+        break;
+      case BYTE:
+        type.setKind(OrcProto.Type.Kind.BYTE);
+        break;
+      case SHORT:
+        type.setKind(OrcProto.Type.Kind.SHORT);
+        break;
+      case INT:
+        type.setKind(OrcProto.Type.Kind.INT);
+        break;
+      case LONG:
+        type.setKind(OrcProto.Type.Kind.LONG);
+        break;
+      case FLOAT:
+        type.setKind(OrcProto.Type.Kind.FLOAT);
+        break;
+      case DOUBLE:
+        type.setKind(OrcProto.Type.Kind.DOUBLE);
+        break;
+      case STRING:
+        type.setKind(OrcProto.Type.Kind.STRING);
+        break;
+      case CHAR:
+        type.setKind(OrcProto.Type.Kind.CHAR);
+        type.setMaximumLength(typeDescr.getMaxLength());
+        break;
+      case VARCHAR:
+        type.setKind(OrcProto.Type.Kind.VARCHAR);
+        type.setMaximumLength(typeDescr.getMaxLength());
+        break;
+      case BINARY:
+        type.setKind(OrcProto.Type.Kind.BINARY);
+        break;
+      case TIMESTAMP:
+        type.setKind(OrcProto.Type.Kind.TIMESTAMP);
+        break;
+      case TIMESTAMP_INSTANT:
         type.setKind(OrcProto.Type.Kind.TIMESTAMP_INSTANT);
         break;
-    case DATE:
-      type.setKind(OrcProto.Type.Kind.DATE);
-      break;
-    case DECIMAL:
-      type.setKind(OrcProto.Type.Kind.DECIMAL);
-      type.setPrecision(typeDescr.getPrecision());
-      type.setScale(typeDescr.getScale());
-      break;
-    case LIST:
-      type.setKind(OrcProto.Type.Kind.LIST);
-      type.addSubtypes(children.get(0).getId());
-      break;
-    case MAP:
-      type.setKind(OrcProto.Type.Kind.MAP);
-      for(TypeDescription t: children) {
-        type.addSubtypes(t.getId());
-      }
-      break;
-    case STRUCT:
-      type.setKind(OrcProto.Type.Kind.STRUCT);
-      for(TypeDescription t: children) {
-        type.addSubtypes(t.getId());
-      }
-      for(String field: typeDescr.getFieldNames()) {
-        type.addFieldNames(field);
-      }
-      break;
-    case UNION:
-      type.setKind(OrcProto.Type.Kind.UNION);
-      for(TypeDescription t: children) {
-        type.addSubtypes(t.getId());
-      }
-      break;
-    default:
-      throw new IllegalArgumentException("Unknown category: " +
-          typeDescr.getCategory());
+      case DATE:
+        type.setKind(OrcProto.Type.Kind.DATE);
+        break;
+      case DECIMAL:
+        type.setKind(OrcProto.Type.Kind.DECIMAL);
+        type.setPrecision(typeDescr.getPrecision());
+        type.setScale(typeDescr.getScale());
+        break;
+      case LIST:
+        type.setKind(OrcProto.Type.Kind.LIST);
+        type.addSubtypes(children.get(0).getId());
+        break;
+      case MAP:
+        type.setKind(OrcProto.Type.Kind.MAP);
+        for(TypeDescription t: children) {
+          type.addSubtypes(t.getId());
+        }
+        break;
+      case STRUCT:
+        type.setKind(OrcProto.Type.Kind.STRUCT);
+        for(TypeDescription t: children) {
+          type.addSubtypes(t.getId());
+        }
+        for(String field: typeDescr.getFieldNames()) {
+          type.addFieldNames(field);
+        }
+        break;
+      case UNION:
+        type.setKind(OrcProto.Type.Kind.UNION);
+        for(TypeDescription t: children) {
+          type.addSubtypes(t.getId());
+        }
+        break;
+      default:
+        throw new IllegalArgumentException("Unknown category: " +
+            typeDescr.getCategory());
     }
     result.add(type.build());
     if (children != null) {
@@ -294,12 +299,11 @@ public class OrcUtils {
         result = TypeDescription.createString();
         break;
       case CHAR:
-      case VARCHAR: {
-          result = type.getKind() == OrcProto.Type.Kind.CHAR ?
-              TypeDescription.createChar() : TypeDescription.createVarchar();
-          if (type.hasMaximumLength()) {
-            result.withMaxLength(type.getMaximumLength());
-          }
+      case VARCHAR:
+        result = type.getKind() == OrcProto.Type.Kind.CHAR ?
+            TypeDescription.createChar() : TypeDescription.createVarchar();
+        if (type.hasMaximumLength()) {
+          result.withMaxLength(type.getMaximumLength());
         }
         break;
       case BINARY:
@@ -314,14 +318,13 @@ public class OrcUtils {
       case DATE:
         result = TypeDescription.createDate();
         break;
-      case DECIMAL: {
-          result = TypeDescription.createDecimal();
-          if (type.hasScale()) {
-            result.withScale(type.getScale());
-          }
-          if (type.hasPrecision()) {
-            result.withPrecision(type.getPrecision());
-          }
+      case DECIMAL:
+        result = TypeDescription.createDecimal();
+        if (type.hasScale()) {
+          result.withScale(type.getScale());
+        }
+        if (type.hasPrecision()) {
+          result.withPrecision(type.getPrecision());
         }
         break;
       case LIST:
@@ -341,24 +344,24 @@ public class OrcUtils {
             convertTypeFromProtobuf(types, type.getSubtypes(0)),
             convertTypeFromProtobuf(types, type.getSubtypes(1)));
         break;
-      case STRUCT: {
-          result = TypeDescription.createStruct();
-          for(int f=0; f < type.getSubtypesCount(); ++f) {
-            result.addField(type.getFieldNames(f),
-                convertTypeFromProtobuf(types, type.getSubtypes(f)));
-          }
+      case STRUCT:
+        result = TypeDescription.createStruct();
+        for(int f=0; f < type.getSubtypesCount(); ++f) {
+          String name = type.getFieldNames(f);
+          name = name.startsWith("`") ? name : "`" + name + "`";
+          String fieldName = ParserUtils.parseName(new ParserUtils.StringPosition(name));
+          result.addField(fieldName, convertTypeFromProtobuf(types, type.getSubtypes(f)));
         }
         break;
-      case UNION: {
-          if (type.getSubtypesCount() == 0) {
-            throw new FileFormatException("UNION type should contain at least" +
-                  " one subtype but has none");
-          }
-          result = TypeDescription.createUnion();
-          for(int f=0; f < type.getSubtypesCount(); ++f) {
-            result.addUnionChild(
-                convertTypeFromProtobuf(types, type.getSubtypes(f)));
-          }
+      case UNION:
+        if (type.getSubtypesCount() == 0) {
+          throw new FileFormatException("UNION type should contain at least" +
+                " one subtype but has none");
+        }
+        result = TypeDescription.createUnion();
+        for(int f=0; f < type.getSubtypesCount(); ++f) {
+          result.addUnionChild(
+              convertTypeFromProtobuf(types, type.getSubtypes(f)));
         }
         break;
       default:
@@ -386,5 +389,73 @@ public class OrcUtils {
       previousKeys = stripe.getEncryptedLocalKeys();
     }
     return result;
+  }
+
+  /**
+   * Get the user-facing version string for the software that wrote the file.
+   * @param writer the code for the writer from OrcProto.Footer
+   * @param version the orcVersion from OrcProto.Footer
+   * @return the version string
+   */
+  public static String getSoftwareVersion(int writer,
+                                          String version) {
+    String base;
+    switch (writer) {
+      case 0:
+        base = "ORC Java";
+        break;
+      case 1:
+        base = "ORC C++";
+        break;
+      case 2:
+        base = "Presto";
+        break;
+      case 3:
+        base = "Scritchley Go";
+        break;
+      case 4:
+        base = "Trino";
+        break;
+      default:
+        base = String.format("Unknown(%d)", writer);
+        break;
+    }
+    if (version == null) {
+      return base;
+    } else {
+      return base + " " + version;
+    }
+  }
+
+  /**
+   * Get the software version from Maven.
+   * @return The version of the software.
+   */
+  public static String getOrcVersion() {
+    Class<OrcFile> cls = OrcFile.class;
+    // try to load from maven properties first
+    try (InputStream is = cls.getResourceAsStream(
+        "/META-INF/maven/org.apache.orc/orc-core/pom.properties")) {
+      if (is != null) {
+        Properties p = new Properties();
+        p.load(is);
+        String version = p.getProperty("version", null);
+        if (version != null) {
+          return version;
+        }
+      }
+    } catch (IOException e) {
+      // ignore
+    }
+
+    // fallback to using Java API
+    Package aPackage = cls.getPackage();
+    if (aPackage != null) {
+      String version = aPackage.getImplementationVersion();
+      if (version != null) {
+        return version;
+      }
+    }
+    return "unknown";
   }
 }

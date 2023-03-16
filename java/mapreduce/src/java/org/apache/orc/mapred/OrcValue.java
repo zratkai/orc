@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -31,7 +31,7 @@ import java.io.IOException;
 /**
  * This type provides a wrapper for OrcStruct so that it can be sent through
  * the MapReduce shuffle as a value.
- *
+ * <p>
  * The user should set the JobConf with orc.mapred.value.type with the type
  * string of the type.
  */

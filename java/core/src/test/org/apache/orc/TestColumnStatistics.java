@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,10 +18,8 @@
 
 package org.apache.orc;
 
-import java.math.BigDecimal;
-
-import org.apache.commons.lang.RandomStringUtils;
-import org.apache.commons.lang.StringEscapeUtils;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -31,26 +29,37 @@ import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.orc.impl.ColumnStatisticsImpl;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.TimeZone;
 
-import static junit.framework.Assert.assertEquals;
-import static junit.framework.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test ColumnStatisticsImpl for ORC.
  */
 public class TestColumnStatistics {
+
+  @Test
+  public void testLongSumOverflow() {
+    TypeDescription schema = TypeDescription.createInt();
+    ColumnStatisticsImpl stats = ColumnStatisticsImpl.create(schema);
+    stats.updateInteger(1, 1);
+    assertTrue(((IntegerColumnStatistics) stats).isSumDefined());
+    stats.updateInteger(Long.MAX_VALUE, 3);
+    assertFalse(((IntegerColumnStatistics) stats).isSumDefined());
+  }
 
   @Test
   public void testLongMerge() throws Exception {
@@ -145,23 +154,28 @@ public class TestColumnStatistics {
     final StringColumnStatistics typed = (StringColumnStatistics) stats1;
     final StringColumnStatistics typed2 = (StringColumnStatistics) stats2;
 
-    assertTrue("Upperbound cannot be more than 1024 bytes",1024 >= typed.getUpperBound().getBytes().length);
-    assertTrue("Lowerbound cannot be more than 1024 bytes",1024 >= typed.getLowerBound().getBytes().length);
+    assertTrue(1024 >= typed.getUpperBound().getBytes(StandardCharsets.UTF_8).length,
+        "Upperbound cannot be more than 1024 bytes");
+    assertTrue(1024 >= typed.getLowerBound().getBytes(StandardCharsets.UTF_8).length,
+        "Lowerbound cannot be more than 1024 bytes");
 
-    assertEquals(null, typed.getMinimum());
-    assertEquals(null, typed.getMaximum());
+    assertNull(typed.getMinimum());
+    assertNull(typed.getMaximum());
 
     stats1.reset();
 
     /* test a scenario for the first max bytes */
     stats1.increment();
-    stats1.updateString(test.getBytes(), 0, test.getBytes().length, 0);
+    stats1.updateString(test.getBytes(StandardCharsets.UTF_8), 0,
+        test.getBytes(StandardCharsets.UTF_8).length, 0);
 
-    assertTrue("Lowerbound cannot be more than 1024 bytes", 1024 >= typed.getLowerBound().getBytes().length);
-    assertTrue("Upperbound cannot be more than 1024 bytes", 1024 >= typed.getUpperBound().getBytes().length);
+    assertTrue(1024 >= typed.getLowerBound().getBytes(StandardCharsets.UTF_8).length,
+        "Lowerbound cannot be more than 1024 bytes");
+    assertTrue(1024 >= typed.getUpperBound().getBytes(StandardCharsets.UTF_8).length,
+            "Upperbound cannot be more than 1024 bytes");
 
-    assertEquals(null, typed.getMinimum());
-    assertEquals(null, typed.getMaximum());
+    assertNull(typed.getMinimum());
+    assertNull(typed.getMaximum());
 
     stats1.reset();
     /* test upper bound - merging  */
@@ -175,12 +189,12 @@ public class TestColumnStatistics {
     stats2.updateString(new Text(fragment));
 
     assertEquals("anne", typed2.getMinimum());
-    assertEquals(null, typed2.getMaximum());
+    assertNull(typed2.getMaximum());
 
     stats1.merge(stats2);
 
     assertEquals("anne", typed.getMinimum());
-    assertEquals(null, typed.getMaximum());
+    assertNull(typed.getMaximum());
 
 
     /* test lower bound - merging  */
@@ -196,7 +210,7 @@ public class TestColumnStatistics {
 
     stats1.merge(stats2);
 
-    assertEquals(null, typed.getMinimum());
+    assertNull(typed.getMinimum());
     assertEquals("jane", typed.getMaximum());
   }
 
@@ -218,8 +232,8 @@ public class TestColumnStatistics {
     StringColumnStatistics stringStats = (StringColumnStatistics) stats;
 
     // make sure that the min/max are null
-    assertEquals(null, stringStats.getMinimum());
-    assertEquals(null, stringStats.getMaximum());
+    assertNull(stringStats.getMinimum());
+    assertNull(stringStats.getMaximum());
     assertEquals(5 * 256, stringStats.getSum());
 
     // and that the lower and upper bound are correct
@@ -259,8 +273,8 @@ public class TestColumnStatistics {
     StringColumnStatistics stringStats = (StringColumnStatistics) stats;
 
     // make sure that the min/max are null
-    assertEquals(null, stringStats.getMinimum());
-    assertEquals(null, stringStats.getMaximum());
+    assertNull(stringStats.getMinimum());
+    assertNull(stringStats.getMaximum());
     assertEquals(2 * 5 * 256, stringStats.getSum());
 
     // and that the lower and upper bound are correct
@@ -288,8 +302,8 @@ public class TestColumnStatistics {
     StringColumnStatistics stringStats = (StringColumnStatistics) stats;
 
     // make sure that the min/max are null
-    assertEquals(null, stringStats.getMinimum());
-    assertEquals(null, stringStats.getMaximum());
+    assertNull(stringStats.getMinimum());
+    assertNull(stringStats.getMaximum());
     assertEquals(3 * 5 * 256, stringStats.getSum());
 
     // and that the lower and upper bound are correct
@@ -317,8 +331,8 @@ public class TestColumnStatistics {
     StringColumnStatistics stringStats = (StringColumnStatistics) stats;
 
     // make sure that the min/max are null
-    assertEquals(null, stringStats.getMinimum());
-    assertEquals(null, stringStats.getMaximum());
+    assertNull(stringStats.getMinimum());
+    assertNull(stringStats.getMaximum());
     assertEquals(4 * 5 * 256, stringStats.getSum());
 
     // and that the lower and upper bound are correct
@@ -359,14 +373,24 @@ public class TestColumnStatistics {
     final ColumnStatisticsImpl stats1 = ColumnStatisticsImpl.create(schema);
     byte[] utf8 = input.getBytes(StandardCharsets.UTF_8);
     stats1.updateString(utf8, 0, utf8.length, 1);
-
+    stats1.increment();
     final StringColumnStatistics typed = (StringColumnStatistics) stats1;
 
     assertEquals(354, typed.getUpperBound().length());
     assertEquals(354, typed.getLowerBound().length());
+    assertEquals(1764L, typed.getSum());
 
     assertEquals(upperbound, typed.getUpperBound());
     assertEquals(lowerBound, typed.getLowerBound());
+    OrcProto.ColumnStatistics serial = stats1.serialize().build();
+    ColumnStatisticsImpl stats2 =
+        ColumnStatisticsImpl.deserialize(schema, serial);
+    StringColumnStatistics typed2 = (StringColumnStatistics) stats2;
+    assertNull(typed2.getMinimum());
+    assertNull(typed2.getMaximum());
+    assertEquals(lowerBound, typed2.getLowerBound());
+    assertEquals(upperbound, typed2.getUpperBound());
+    assertEquals(1764L, typed2.getSum());
   }
 
 
@@ -432,6 +456,8 @@ public class TestColumnStatistics {
     stats1.updateTimestamp(new Timestamp(100));
     stats2.updateTimestamp(new Timestamp(1));
     stats2.updateTimestamp(new Timestamp(1000));
+    stats1.increment(2);
+    stats2.increment(2);
     stats1.merge(stats2);
     TimestampColumnStatistics typed = (TimestampColumnStatistics) stats1;
     assertEquals(1, typed.getMinimum().getTime());
@@ -439,6 +465,7 @@ public class TestColumnStatistics {
     stats1.reset();
     stats1.updateTimestamp(new Timestamp(-10));
     stats1.updateTimestamp(new Timestamp(10000));
+    stats1.increment(2);
     stats1.merge(stats2);
     assertEquals(-10, typed.getMinimum().getTime());
     assertEquals(10000, typed.getMaximum().getTime());
@@ -479,6 +506,7 @@ public class TestColumnStatistics {
     stats1.reset();
     stats1.updateTimestamp(parseTime(format, "1999-04-04 00:00:00"));
     stats1.updateTimestamp(parseTime(format, "2009-03-08 12:00:00"));
+    stats1.increment(2);
     stats1.merge(stats2);
     assertEquals("1999-04-04 00:00:00.0", typed.getMinimum().toString());
     assertEquals("2009-03-08 12:00:00.0", typed.getMaximum().toString());
@@ -491,6 +519,136 @@ public class TestColumnStatistics {
         ((TimestampColumnStatistics) stats3).getMinimum().toString());
     assertEquals("2000-10-29 03:30:00.0",
         ((TimestampColumnStatistics) stats3).getMaximum().toString());
+    TimeZone.setDefault(original);
+  }
+
+  @Test
+  public void testTimestampNanoPrecision() {
+    TypeDescription schema = TypeDescription.createTimestamp();
+
+    TimeZone original = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
+
+    ColumnStatisticsImpl stats1 = ColumnStatisticsImpl.create(schema);
+    stats1.updateTimestamp(Timestamp.valueOf( "2000-04-02 03:31:00.000"));
+    stats1.increment(1);
+    TimestampColumnStatistics typed = (TimestampColumnStatistics) stats1;
+
+    // Base case no nanos
+    assertEquals("2000-04-02 03:31:00.0", typed.getMinimum().toString());
+    assertEquals("2000-04-02 03:31:00.0", typed.getMaximum().toString());
+
+    // Add nano precision to min
+    stats1.updateTimestamp(Timestamp.valueOf( "2000-04-01 03:30:00.0005"));
+    stats1.increment(1);
+    assertEquals("2000-04-01 03:30:00.0005", typed.getMinimum().toString());
+    assertEquals("2000-04-02 03:31:00.0", typed.getMaximum().toString());
+
+    // Change max with precision
+    stats1.updateTimestamp(Timestamp.valueOf( "2000-04-04 03:30:00.0008"));
+    stats1.increment(1);
+    assertEquals("2000-04-01 03:30:00.0005", typed.getMinimum().toString());
+    assertEquals("2000-04-04 03:30:00.0008", typed.getMaximum().toString());
+
+    // Equal min with nano diff
+    stats1.updateTimestamp(Timestamp.valueOf( "2000-04-04 03:30:00.0009"));
+    stats1.increment(1);
+    assertEquals("2000-04-01 03:30:00.0005", typed.getMinimum().toString());
+    assertEquals("2000-04-04 03:30:00.0009", typed.getMaximum().toString());
+
+    // Test serialisation/deserialisation
+    OrcProto.ColumnStatistics serial = stats1.serialize().build();
+    ColumnStatisticsImpl stats2 =
+        ColumnStatisticsImpl.deserialize(schema, serial);
+    TimestampColumnStatistics typed2 = (TimestampColumnStatistics) stats2;
+    assertEquals("2000-04-01 03:30:00.0005", typed2.getMinimum().toString());
+    assertEquals("2000-04-04 03:30:00.0009", typed2.getMaximum().toString());
+    assertEquals(4L, typed2.getNumberOfValues());
+    TimeZone.setDefault(original);
+  }
+
+  @Test
+  public void testTimestampNanoPrecisionMerge() {
+    TypeDescription schema = TypeDescription.createTimestamp();
+
+    TimeZone original = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
+
+    ColumnStatisticsImpl stats1 = ColumnStatisticsImpl.create(schema);
+    ColumnStatisticsImpl stats2 = ColumnStatisticsImpl.create(schema);
+    stats1.updateTimestamp(Timestamp.valueOf("2000-04-02 03:30:00.0001"));
+    stats1.updateTimestamp(Timestamp.valueOf( "2000-04-02 01:30:00.0009"));
+    stats1.increment(2);
+
+    stats2.updateTimestamp(Timestamp.valueOf( "2000-04-02 01:30:00.00088"));
+    stats2.updateTimestamp(Timestamp.valueOf( "2000-04-02 03:30:00.00001"));
+    stats2.increment(2);
+
+    TimestampColumnStatistics typed = (TimestampColumnStatistics) stats1;
+    assertEquals("2000-04-02 01:30:00.0009", typed.getMinimum().toString());
+    assertEquals("2000-04-02 03:30:00.0001", typed.getMaximum().toString());
+
+    TimestampColumnStatistics typed2 = (TimestampColumnStatistics) stats2;
+    assertEquals("2000-04-02 03:30:00.00001", typed2.getMaximum().toString());
+    assertEquals("2000-04-02 01:30:00.00088", typed2.getMinimum().toString());
+
+    // make sure merge goes down to ns precision
+    stats1.merge(stats2);
+    assertEquals("2000-04-02 01:30:00.00088", typed.getMinimum().toString());
+    assertEquals("2000-04-02 03:30:00.0001", typed.getMaximum().toString());
+
+    stats1.reset();
+    assertNull(typed.getMinimum());
+    assertNull(typed.getMaximum());
+
+    stats1.updateTimestamp(Timestamp.valueOf( "1999-04-04 00:00:00.000231"));
+    stats1.updateTimestamp(Timestamp.valueOf( "2009-03-08 12:00:00.000654"));
+    stats1.increment(2);
+
+    stats1.merge(stats2);
+    assertEquals("1999-04-04 00:00:00.000231", typed.getMinimum().toString());
+    assertEquals("2009-03-08 12:00:00.000654", typed.getMaximum().toString());
+    TimeZone.setDefault(original);
+  }
+
+  @Test
+  public void testNegativeTimestampNanoPrecision() {
+    TypeDescription schema = TypeDescription.createTimestamp();
+
+    TimeZone original = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
+
+    ColumnStatisticsImpl stats1 = ColumnStatisticsImpl.create(schema);
+    ColumnStatisticsImpl stats2 = ColumnStatisticsImpl.create(schema);
+    stats1.updateTimestamp(Timestamp.valueOf("1960-04-02 03:30:00.0001"));
+    stats1.updateTimestamp(Timestamp.valueOf( "1969-12-31 16:00:00.0009"));
+    stats1.increment(2);
+
+    stats2.updateTimestamp(Timestamp.valueOf( "1962-04-02 01:30:00.00088"));
+    stats2.updateTimestamp(Timestamp.valueOf( "1969-12-31 16:00:00.00001"));
+    stats2.increment(2);
+
+    stats1.merge(stats2);
+
+    TimestampColumnStatistics typed = (TimestampColumnStatistics) stats1;
+    assertEquals("1960-04-02 03:30:00.0001", typed.getMinimum().toString());
+    assertEquals("1969-12-31 16:00:00.0009", typed.getMaximum().toString());
+
+    stats1.reset();
+    assertNull(typed.getMinimum());
+    assertNull(typed.getMaximum());
+
+    stats1.updateTimestamp(Timestamp.valueOf("1969-12-31 15:00:00.0005"));
+    stats1.increment(1);
+
+    assertEquals("1969-12-31 15:00:00.0005", typed.getMinimum().toString());
+    assertEquals("1969-12-31 15:00:00.0005", typed.getMaximum().toString());
+
+    stats1.updateTimestamp(Timestamp.valueOf("1969-12-31 15:00:00.00055"));
+    stats1.increment(1);
+
+    assertEquals("1969-12-31 15:00:00.0005", typed.getMinimum().toString());
+    assertEquals("1969-12-31 15:00:00.00055", typed.getMaximum().toString());
     TimeZone.setDefault(original);
   }
 
@@ -535,8 +693,10 @@ public class TestColumnStatistics {
     Reader reader = OrcFile.createReader(testFilePath,
         OrcFile.readerOptions(conf).filesystem(fs));
     DecimalColumnStatistics statistics = (DecimalColumnStatistics) reader.getStatistics()[0];
-    assertEquals("Incorrect maximum value", new BigDecimal("-99999.99"), statistics.getMinimum().bigDecimalValue());
-    assertEquals("Incorrect minimum value", new BigDecimal("-88888.88"), statistics.getMaximum().bigDecimalValue());
+    assertEquals(new BigDecimal("-99999.99"), statistics.getMinimum().bigDecimalValue(),
+        "Incorrect maximum value");
+    assertEquals(new BigDecimal("-88888.88"), statistics.getMaximum().bigDecimalValue(),
+        "Incorrect minimum value");
   }
 
 
@@ -547,15 +707,13 @@ public class TestColumnStatistics {
   FileSystem fs;
   Path testFilePath;
 
-  @Rule
-  public TestName testCaseName = new TestName();
-
-  @Before
-  public void openFileSystem() throws Exception {
+  @BeforeEach
+  public void openFileSystem(TestInfo testInfo) throws Exception {
     conf = new Configuration();
     fs = FileSystem.getLocal(conf);
     fs.setWorkingDirectory(workDir);
-    testFilePath = new Path("TestOrcFile." + testCaseName.getMethodName() + ".orc");
+    testFilePath = new Path(
+        "TestOrcFile." + testInfo.getTestMethod().get().getName() + ".orc");
     fs.delete(testFilePath, false);
   }
 }

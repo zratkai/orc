@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,10 +17,15 @@
  */
 package org.apache.orc.tools.convert;
 
+import com.opencsv.CSVParser;
+import com.opencsv.CSVParserBuilder;
 import com.opencsv.CSVReader;
+import com.opencsv.CSVReaderBuilder;
+import com.opencsv.exceptions.CsvValidationException;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.DateColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
@@ -31,15 +36,16 @@ import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
-import org.threeten.bp.LocalDateTime;
-import org.threeten.bp.ZoneId;
-import org.threeten.bp.ZonedDateTime;
-import org.threeten.bp.format.DateTimeFormatter;
-import org.threeten.bp.temporal.TemporalAccessor;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAccessor;
 
 public class CsvReader implements RecordReader {
   private long rowNumber = 0;
@@ -63,6 +69,7 @@ public class CsvReader implements RecordReader {
    * @param escapeChar the escape character
    * @param headerLines the number of header lines
    * @param nullString the string that is translated to null
+   * @param timestampFormat the timestamp format string
    */
   public CsvReader(java.io.Reader reader,
                    FSDataInputStream input,
@@ -75,8 +82,15 @@ public class CsvReader implements RecordReader {
                    String nullString,
                    String timestampFormat) {
     this.underlying = input;
-    this.reader = new CSVReader(reader, separatorChar, quoteChar, escapeChar,
-        headerLines);
+    CSVParser parser = new CSVParserBuilder()
+        .withSeparator(separatorChar)
+        .withQuoteChar(quoteChar)
+        .withEscapeChar(escapeChar)
+        .build();
+    this.reader = new CSVReaderBuilder(reader)
+        .withSkipLines(headerLines)
+        .withCSVParser(parser)
+        .build();
     this.nullString = nullString;
     this.totalSize = size;
     IntWritable nextColumn = new IntWritable(0);
@@ -96,18 +110,22 @@ public class CsvReader implements RecordReader {
     final int BATCH_SIZE = batch.getMaxSize();
     String[] nextLine;
     // Read the CSV rows and place them into the column vectors.
-    while ((nextLine = reader.readNext()) != null) {
-      rowNumber++;
-      if (nextLine.length != columns &&
-          !(nextLine.length == columns + 1 && "".equals(nextLine[columns]))) {
-        throw new IllegalArgumentException("Too many columns on line " +
-            rowNumber + ". Expected " + columns + ", but got " +
-            nextLine.length + ".");
+    try {
+      while ((nextLine = reader.readNext()) != null) {
+        rowNumber++;
+        if (nextLine.length != columns &&
+            !(nextLine.length == columns + 1 && "".equals(nextLine[columns]))) {
+          throw new IllegalArgumentException("Too many columns on line " +
+              rowNumber + ". Expected " + columns + ", but got " +
+              nextLine.length + ".");
+        }
+        converter.convert(nextLine, batch, batch.size++);
+        if (batch.size == BATCH_SIZE) {
+          break;
+        }
       }
-      converter.convert(nextLine, batch, batch.size++);
-      if (batch.size == BATCH_SIZE) {
-        break;
-      }
+    } catch (CsvValidationException e) {
+      throw new IOException(e);
     }
     return batch.size != 0;
   }
@@ -237,6 +255,29 @@ public class CsvReader implements RecordReader {
     }
   }
 
+  class DateColumnConverter extends ConverterImpl {
+    DateColumnConverter(IntWritable offset) { super(offset); }
+
+    @Override
+    public void convert(String[] values, ColumnVector column, int row) {
+      if (values[offset] == null || nullString.equals(values[offset])) {
+        column.noNulls = false;
+        column.isNull[row] = true;
+      } else {
+        DateColumnVector vector = (DateColumnVector) column;
+
+        final LocalDate dt = LocalDate.parse(values[offset]);
+
+        if (dt != null) {
+          vector.vector[row] = dt.toEpochDay();
+        } else {
+          column.noNulls = false;
+          column.isNull[row] = true;
+        }
+      }
+    }
+  }
+
   class TimestampConverter extends ConverterImpl {
     TimestampConverter(IntWritable offset) {
       super(offset);
@@ -251,13 +292,18 @@ public class CsvReader implements RecordReader {
         TimestampColumnVector vector = (TimestampColumnVector) column;
         TemporalAccessor temporalAccessor =
             dateTimeFormatter.parseBest(values[offset],
-                ZonedDateTime.FROM, LocalDateTime.FROM);
+                ZonedDateTime::from, OffsetDateTime::from, LocalDateTime::from);
         if (temporalAccessor instanceof ZonedDateTime) {
-          vector.set(row, new Timestamp(
-              ((ZonedDateTime) temporalAccessor).toEpochSecond() * 1000L));
+          ZonedDateTime zonedDateTime = ((ZonedDateTime) temporalAccessor);
+          Timestamp timestamp = Timestamp.from(zonedDateTime.toInstant());
+          vector.set(row, timestamp);
+        } else if (temporalAccessor instanceof OffsetDateTime) {
+          OffsetDateTime offsetDateTime = (OffsetDateTime) temporalAccessor;
+          Timestamp timestamp = Timestamp.from(offsetDateTime.toInstant());
+          vector.set(row, timestamp);
         } else if (temporalAccessor instanceof LocalDateTime) {
-          vector.set(row, new Timestamp(((LocalDateTime) temporalAccessor)
-              .atZone(ZoneId.systemDefault()).toEpochSecond() * 1000L));
+          Timestamp timestamp = Timestamp.valueOf((LocalDateTime) temporalAccessor);
+          vector.set(row, timestamp);
         } else {
           column.noNulls = false;
           column.isNull[row] = true;
@@ -313,6 +359,8 @@ public class CsvReader implements RecordReader {
       case CHAR:
       case VARCHAR:
         return new BytesConverter(startOffset);
+      case DATE:
+        return new DateColumnConverter(startOffset);
       case TIMESTAMP:
       case TIMESTAMP_INSTANT:
         return new TimestampConverter(startOffset);

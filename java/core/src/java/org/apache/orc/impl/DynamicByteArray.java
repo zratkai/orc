@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,12 +17,12 @@
  */
 package org.apache.orc.impl;
 
+import org.apache.hadoop.io.Text;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-
-import org.apache.hadoop.io.Text;
 
 /**
  * A class that is a growable array of bytes. Growth is managed in terms of
@@ -133,7 +133,7 @@ public final class DynamicByteArray {
     int currentOffset = length % chunkSize;
     grow(currentChunk);
     int currentLength = in.read(data[currentChunk], currentOffset,
-      chunkSize - currentOffset);
+        chunkSize - currentOffset);
     while (currentLength > 0) {
       length += currentLength;
       currentOffset = length % chunkSize;
@@ -292,6 +292,18 @@ public final class DynamicByteArray {
       }
     }
     return result;
+  }
+
+  public ByteBuffer get(int offset, int length) {
+    final int currentChunk = offset / chunkSize;
+    final int currentOffset = offset % chunkSize;
+    final int currentLength = Math.min(length, chunkSize - currentOffset);
+    if (currentLength == length) {
+      return ByteBuffer.wrap(data[currentChunk], currentOffset, length);
+    }
+    ByteBuffer bb = ByteBuffer.allocate(length);
+    setByteBuffer(bb, offset, length);
+    return (ByteBuffer) bb.flip();
   }
 
   /**

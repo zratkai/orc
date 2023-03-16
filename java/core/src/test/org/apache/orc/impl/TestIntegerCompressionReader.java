@@ -17,14 +17,14 @@
  */
 package org.apache.orc.impl;
 
+import org.apache.orc.CompressionCodec;
+import org.apache.orc.impl.writer.StreamOptions;
+import org.junit.jupiter.api.Test;
+
 import java.nio.ByteBuffer;
 import java.util.Random;
 
-import org.apache.orc.CompressionCodec;
-import org.apache.orc.impl.writer.StreamOptions;
-import org.junit.Test;
-
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestIntegerCompressionReader {
 
@@ -67,10 +67,8 @@ public class TestIntegerCompressionReader {
       int x = (int) in.next();
       if (i < 1024) {
         assertEquals(i/4, x);
-      } else if (i < 2048) {
-        assertEquals(2*i, x);
       } else {
-        assertEquals(junk[i-2048], x);
+        assertEquals(2*i, x);
       }
     }
     for(int i=2047; i >= 0; --i) {
@@ -78,10 +76,8 @@ public class TestIntegerCompressionReader {
       int x = (int) in.next();
       if (i < 1024) {
         assertEquals(i/4, x);
-      } else if (i < 2048) {
-        assertEquals(2*i, x);
       } else {
-        assertEquals(junk[i-2048], x);
+        assertEquals(2*i, x);
       }
     }
   }

@@ -18,14 +18,6 @@
 
 package org.apache.orc;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -41,6 +33,14 @@ import org.apache.orc.impl.WriterInternal;
 import org.apache.orc.impl.writer.WriterImplV2;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 
 /**
  * Contains factory methods to read or write ORC files.
@@ -131,6 +131,7 @@ public class OrcFile {
     ORC_CPP(1),  // ORC C++ writer
     PRESTO(2),   // Presto writer
     SCRITCHLEY_GO(3), // Go writer from https://github.com/scritchley/orc
+    TRINO(4),   // Trino writer
     UNKNOWN(Integer.MAX_VALUE);
 
     private final int id;
@@ -163,11 +164,11 @@ public class OrcFile {
   public enum WriterVersion {
     // Java ORC Writer
     ORIGINAL(WriterImplementation.ORC_JAVA, 0),
-    HIVE_8732(WriterImplementation.ORC_JAVA, 1), // fixed stripe/file maximum
-                                                 // statistics & string statistics
-                                                 // use utf8 for min/max
-    HIVE_4243(WriterImplementation.ORC_JAVA, 2), // use real column names from
-                                                 // Hive tables
+    HIVE_8732(WriterImplementation.ORC_JAVA, 1), /**
+                                                  * fixed stripe/file maximum statistics and
+                                                  * string statistics to use utf8 for min/max
+                                                  */
+    HIVE_4243(WriterImplementation.ORC_JAVA, 2), // use real column names from Hive tables
     HIVE_12055(WriterImplementation.ORC_JAVA, 3), // vectorized writer
     HIVE_13083(WriterImplementation.ORC_JAVA, 4), // decimals write present stream correctly
     ORC_101(WriterImplementation.ORC_JAVA, 5),   // bloom filters use utf8
@@ -184,6 +185,9 @@ public class OrcFile {
 
     // Scritchley Go Writer
     SCRITCHLEY_GO_ORIGINAL(WriterImplementation.SCRITCHLEY_GO, 6),
+
+    // Trino Writer
+    TRINO_ORIGINAL(WriterImplementation.TRINO, 6),
 
     // Don't use any magic numbers here except for the below:
     FUTURE(WriterImplementation.UNKNOWN, Integer.MAX_VALUE); // a version from a future writer
@@ -234,11 +238,11 @@ public class OrcFile {
         return FUTURE;
       }
       if (writer != WriterImplementation.ORC_JAVA && val < 6) {
-        throw new IllegalArgumentException("ORC File with illegval version " +
+        throw new IllegalArgumentException("ORC File with illegal version " +
             val + " for writer " + writer);
       }
       WriterVersion[] versions = values[writer.id];
-      if (val < 0 || versions.length < val) {
+      if (val < 0 || versions.length <= val) {
         return FUTURE;
       }
       WriterVersion result = versions[val];
@@ -277,7 +281,7 @@ public class OrcFile {
     private long maxLength = Long.MAX_VALUE;
     private OrcTail orcTail;
     private KeyProvider keyProvider;
-    // TODO: We can generalize FileMetada interface. Make OrcTail implement FileMetadata interface
+    // TODO: We can generalize FileMetadata interface. Make OrcTail implement FileMetadata interface
     // and remove this class altogether. Both footer caching and llap caching just needs OrcTail.
     // For now keeping this around to avoid complex surgery
     private FileMetadata fileMetadata;
@@ -305,6 +309,16 @@ public class OrcFile {
     }
 
     /**
+     * Set the KeyProvider to override the default for getting keys.
+     * @param provider
+     * @return
+     */
+    public ReaderOptions setKeyProvider(KeyProvider provider) {
+      this.keyProvider = provider;
+      return this;
+    }
+
+    /**
      * Should the reader convert dates and times to the proleptic Gregorian
      * calendar?
      * @param newValue should it use the proleptic Gregorian calendar?
@@ -315,15 +329,6 @@ public class OrcFile {
       return this;
     }
 
-    /**
-     * Set the KeyProvider to override the default for getting keys.
-     * @param provider
-     * @return
-     */
-    public ReaderOptions setKeyProvider(KeyProvider provider) {
-      this.keyProvider = provider;
-      return this;
-    }
 
     public Configuration getConfiguration() {
       return conf;
@@ -402,6 +407,7 @@ public class OrcFile {
       this.id = id;
     }
 
+    @Override
     public String toString() {
       return id;
     }
@@ -424,7 +430,9 @@ public class OrcFile {
     private FileSystem fileSystemValue = null;
     private TypeDescription schema = null;
     private long stripeSizeValue;
+    private long stripeRowCountValue;
     private long blockSizeValue;
+    private boolean buildIndex;
     private int rowIndexStrideValue;
     private int bufferSizeValue;
     private boolean enforceBufferSize = false;
@@ -446,10 +454,10 @@ public class OrcFile {
     private boolean writeVariableLengthBlocks;
     private HadoopShims shims;
     private String directEncodingColumns;
-    private boolean useProlepticGregorian;
     private String encryption;
     private String masks;
     private KeyProvider provider;
+    private boolean useProlepticGregorian;
     private Map<String, HadoopShims.KeyMetadata> keyOverrides = new HashMap<>();
 
     protected WriterOptions(Properties tableProperties, Configuration conf) {
@@ -457,7 +465,9 @@ public class OrcFile {
       memoryManagerValue = getStaticMemoryManager(conf);
       overwrite = OrcConf.OVERWRITE_OUTPUT_FILE.getBoolean(tableProperties, conf);
       stripeSizeValue = OrcConf.STRIPE_SIZE.getLong(tableProperties, conf);
+      stripeRowCountValue = OrcConf.STRIPE_ROW_COUNT.getLong(tableProperties, conf);
       blockSizeValue = OrcConf.BLOCK_SIZE.getLong(tableProperties, conf);
+      buildIndex = OrcConf.ENABLE_INDEXES.getBoolean(tableProperties, conf);
       rowIndexStrideValue =
           (int) OrcConf.ROW_INDEX_STRIDE.getLong(tableProperties, conf);
       bufferSizeValue = (int) OrcConf.BUFFER_SIZE.getLong(tableProperties,
@@ -501,6 +511,7 @@ public class OrcFile {
     /**
      * @return a SHALLOW clone
      */
+    @Override
     public WriterOptions clone() {
       try {
         return (WriterOptions) super.clone();
@@ -684,7 +695,7 @@ public class OrcFile {
     }
 
     /**
-     * A package local option to set the memory manager.
+     * A public option to set the memory manager.
      */
     public WriterOptions memory(MemoryManager value) {
       memoryManagerValue = value;
@@ -748,18 +759,6 @@ public class OrcFile {
     }
 
     /**
-     * Should the writer use the proleptic Gregorian calendar for
-     * times and dates.
-     * @param newValue true if we should use the proleptic calendar
-     * @return this
-     */
-    public WriterOptions setProlepticGregorian(boolean newValue) {
-      this.useProlepticGregorian = newValue;
-      return this;
-    }
-
-    /*
-    /**
      * Encrypt a set of columns with a key.
      *
      * Format of the string is a key-list.
@@ -801,7 +800,7 @@ public class OrcFile {
 
     /**
      * For users that need to override the current version of a key, this
-     * method allows them to define the version & algorithm for a given key.
+     * method allows them to define the version and algorithm for a given key.
      *
      * This will mostly be used for ORC file merging where the writer has to
      * use the same version of the key that the original files used.
@@ -826,6 +825,17 @@ public class OrcFile {
      */
     public WriterOptions setKeyProvider(KeyProvider provider) {
       this.provider = provider;
+      return this;
+    }
+
+    /**
+     * Should the writer use the proleptic Gregorian calendar for
+     * times and dates.
+     * @param newValue true if we should use the proleptic calendar
+     * @return this
+     */
+    public WriterOptions setProlepticGregorian(boolean newValue) {
+      this.useProlepticGregorian = newValue;
       return this;
     }
 
@@ -865,6 +875,10 @@ public class OrcFile {
       return stripeSizeValue;
     }
 
+    public long getStripeRowCountValue() {
+      return stripeRowCountValue;
+    }
+
     public CompressionKind getCompress() {
       return compressValue;
     }
@@ -891,6 +905,10 @@ public class OrcFile {
 
     public int getRowIndexStride() {
       return rowIndexStrideValue;
+    }
+
+    public boolean isBuildIndex() {
+      return buildIndex;
     }
 
     public CompressionStrategy getCompressionStrategy() {
@@ -937,10 +955,6 @@ public class OrcFile {
       return directEncodingColumns;
     }
 
-    public boolean getProlepticGregorian() {
-      return useProlepticGregorian;
-    }
-
     public String getEncryption() {
       return encryption;
     }
@@ -951,6 +965,10 @@ public class OrcFile {
 
     public Map<String, HadoopShims.KeyMetadata> getKeyOverrides() {
       return keyOverrides;
+    }
+
+    public boolean getProlepticGregorian() {
+      return useProlepticGregorian;
     }
   }
 
@@ -977,8 +995,7 @@ public class OrcFile {
 
   private static MemoryManager memoryManager = null;
 
-  private static synchronized
-  MemoryManager getStaticMemoryManager(Configuration conf) {
+  private static synchronized MemoryManager getStaticMemoryManager(Configuration conf) {
     if (memoryManager == null) {
       memoryManager = new MemoryManagerImpl(conf);
     }
@@ -1033,7 +1050,7 @@ public class OrcFile {
     if (first.length != next.length) {
       return false;
     }
-    for(int k = 0; k < first.length && k < next.length; ++k) {
+    for(int k = 0; k < first.length; ++k) {
       if (!first[k].getKeyName().equals(next[k].getKeyName()) ||
           first[k].getKeyVersion() != next[k].getKeyVersion() ||
           first[k].getAlgorithm() != next[k].getAlgorithm()) {
@@ -1048,7 +1065,7 @@ public class OrcFile {
     if (first.length != next.length) {
       return false;
     }
-    for(int k = 0; k < first.length && k < next.length; ++k) {
+    for(int k = 0; k < first.length; ++k) {
       if (!first[k].getName().equals(next[k].getName())) {
         return false;
       }
@@ -1057,7 +1074,7 @@ public class OrcFile {
       if (firstParam.length != nextParam.length) {
         return false;
       }
-      for(int p=0; p < firstParam.length && p < nextParam.length; ++p) {
+      for(int p=0; p < firstParam.length; ++p) {
         if (!firstParam[p].equals(nextParam[p])) {
           return false;
         }
@@ -1067,7 +1084,7 @@ public class OrcFile {
       if (firstRoots.length != nextRoots.length) {
         return false;
       }
-      for(int r=0; r < firstRoots.length && r < nextRoots.length; ++r) {
+      for(int r=0; r < firstRoots.length; ++r) {
         if (firstRoots[r].getId() != nextRoots[r].getId()) {
           return false;
         }
@@ -1081,7 +1098,7 @@ public class OrcFile {
     if (first.length != next.length) {
       return false;
     }
-    for(int k = 0; k < first.length && k < next.length; ++k) {
+    for(int k = 0; k < first.length; ++k) {
       if ((first[k].getKeyDescription() == null) !=
               (next[k].getKeyDescription() == null) ||
           !first[k].getKeyDescription().getKeyName().equals(
@@ -1139,8 +1156,8 @@ public class OrcFile {
       return false;
     }
     for(String key: reader.getMetadataKeys()) {
-      if (userMetadata.containsKey(key)) {
-        ByteBuffer currentValue = userMetadata.get(key);
+      ByteBuffer currentValue = userMetadata.get(key);
+      if (currentValue != null) {
         ByteBuffer newValue = reader.getMetadataValue(key);
         if (!newValue.equals(currentValue)) {
           LOG.info("Can't merge {} because of different user metadata {}", path,
@@ -1149,8 +1166,18 @@ public class OrcFile {
         }
       }
     }
-    if (writerUsedProlepticGregorian != reader.writerUsedProlepticGregorian()) {
-      LOG.info("Can't merge {} because it uses a different calendar", path);
+    if (!sameKeys(firstReader.getColumnEncryptionKeys(),
+                  reader.getColumnEncryptionKeys())) {
+      LOG.info("Can't merge {} because it has different encryption keys", path);
+      return false;
+    }
+    if (!sameMasks(firstReader.getDataMasks(), reader.getDataMasks())) {
+      LOG.info("Can't merge {} because it has different encryption masks", path);
+      return false;
+    }
+    if (!sameVariants(firstReader.getEncryptionVariants(),
+                      reader.getEncryptionVariants())) {
+      LOG.info("Can't merge {} because it has different encryption variants", path);
       return false;
     }
     if (!sameKeys(firstReader.getColumnEncryptionKeys(),
@@ -1165,6 +1192,11 @@ public class OrcFile {
     if (!sameVariants(firstReader.getEncryptionVariants(),
                       reader.getEncryptionVariants())) {
       LOG.info("Can't merge {} because it has different encryption variants", path);
+      return false;
+    }
+    if (firstReader.writerUsedProlepticGregorian() !=
+            reader.writerUsedProlepticGregorian()) {
+      LOG.info("Can't merge {} because it uses a different calendar", path);
       return false;
     }
     return true;
@@ -1205,7 +1237,6 @@ public class OrcFile {
       List<Path> result = new ArrayList<>(inputFiles.size());
       Map<String, ByteBuffer> userMetadata = new HashMap<>();
       int bufferSize = 0;
-      boolean writerUsedProlepticGregorian = false;
 
       for (Path input : inputFiles) {
         FileSystem fs = input.getFileSystem(conf);
@@ -1221,7 +1252,6 @@ public class OrcFile {
           firstFile = reader;
           bufferSize = reader.getCompressionSize();
           CompressionKind compression = reader.getCompressionKind();
-          writerUsedProlepticGregorian = reader.writerUsedProlepticGregorian();
           options.bufferSize(bufferSize)
               .version(reader.getFileVersion())
               .writerVersion(reader.getWriterVersion())
@@ -1238,7 +1268,7 @@ public class OrcFile {
                 key.getAlgorithm());
           }
           output = createWriter(outputPath, options);
-        } else if (!readerIsCompatible(firstFile, userMetadata, writerUsedProlepticGregorian, input, reader)) {
+        } else if (!readerIsCompatible(firstFile, userMetadata, true, input, reader)) {
           continue;
         } else {
           mergeMetadata(userMetadata, reader);

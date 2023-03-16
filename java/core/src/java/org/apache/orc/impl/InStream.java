@@ -17,6 +17,16 @@
  */
 package org.apache.orc.impl;
 
+import com.google.protobuf.CodedInputStream;
+import org.apache.hadoop.hive.common.io.DiskRangeList;
+import org.apache.orc.CompressionCodec;
+import org.apache.orc.EncryptionAlgorithm;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.crypto.Cipher;
+import javax.crypto.ShortBufferException;
+import javax.crypto.spec.IvParameterSpec;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -24,14 +34,6 @@ import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.Key;
 import java.util.function.Consumer;
-
-import org.apache.hadoop.hive.common.io.DiskRangeList;
-import org.apache.orc.CompressionCodec;
-import org.apache.orc.EncryptionAlgorithm;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.google.protobuf.CodedInputStream;
 
 import javax.crypto.Cipher;
 import javax.crypto.ShortBufferException;
@@ -44,7 +46,10 @@ public abstract class InStream extends InputStream {
 
   protected final Object name;
   protected final long offset;
-  protected final long length;
+  protected long length;
+  protected DiskRangeList bytes;
+  // position in the stream (0..length)
+  protected long position;
 
   public InStream(Object name, long offset, long length) {
     this.name = name;
@@ -52,12 +57,59 @@ public abstract class InStream extends InputStream {
     this.length = length;
   }
 
+  @Override
   public String toString() {
     return name.toString();
   }
 
   @Override
   public abstract void close();
+
+  /**
+   * Set the current range
+   * @param newRange the block that is current
+   * @param isJump if this was a seek instead of a natural read
+   */
+  protected abstract void setCurrent(DiskRangeList newRange,
+                                     boolean isJump);
+  /**
+   * Reset the input to a new set of data.
+   * @param input the input data
+   */
+  protected void reset(DiskRangeList input) {
+    bytes = input;
+    while (input != null &&
+               (input.getEnd() <= offset ||
+                    input.getOffset() > offset + length)) {
+      input = input.next;
+    }
+    if (input == null || input.getOffset() <= offset) {
+      position = 0;
+    } else {
+      position = input.getOffset() - offset;
+    }
+    setCurrent(input, true);
+  }
+
+  /**
+   * Reset the input to a new set of data with a different length.
+   *
+   * in some cases, after resetting an UncompressedStream, its actual length is longer than its initial length.
+   * Prior to ORC-516, InStream.UncompressedStream class had the 'length' field and the length was modifiable in
+   * the reset() method. It was used in SettableUncompressedStream class in setBuffers() method.
+   * SettableUncompressedStream was passing 'diskRangeInfo.getTotalLength()' as the length to the reset() method.
+   * SettableUncompressedStream had been removed from ORC code base, but it is required for Apache Hive and
+   * Apache Hive manages its own copy of SettableUncompressedStream since upgrading its Apache ORC version to 1.6.7.
+   * ORC-516 was the root cause of the regression reported in HIVE-27128 - EOFException when reading DATA stream.
+   * This wrapper method allows to resolve HIVE-27128.
+   *
+   * @param input the input data
+   * @param length new length of the stream
+   */
+  protected void reset(DiskRangeList input, long length) {
+    this.length = length;
+    reset(input);
+  }
 
   public abstract void changeIv(Consumer<byte[]> modifier);
 
@@ -75,10 +127,6 @@ public abstract class InStream extends InputStream {
    * Implements a stream over an uncompressed stream.
    */
   public static class UncompressedStream extends InStream {
-    private DiskRangeList bytes;
-    // position in the stream (0..length)
-    protected long position;
-    protected long length;
     protected ByteBuffer decrypted;
     protected DiskRangeList currentRange;
     protected long currentOffset;
@@ -101,21 +149,6 @@ public abstract class InStream extends InputStream {
       reset(input, length);
     }
 
-    protected void reset(DiskRangeList input) {
-      this.bytes = input;
-      if (input == null || input.getOffset() <= offset) {
-        position = 0;
-      } else {
-        position = input.getOffset() - offset;
-      }
-      setCurrent(input, true);
-    }
-    
-    protected void reset(DiskRangeList input, long length) {
-      this.length = length;
-      reset(input);
-    }
-
     @Override
     public int read() {
       if (decrypted == null || decrypted.remaining() == 0) {
@@ -128,6 +161,7 @@ public abstract class InStream extends InputStream {
       return 0xff & decrypted.get();
     }
 
+    @Override
     protected void setCurrent(DiskRangeList newRange, boolean isJump) {
       currentRange = newRange;
       if (newRange != null) {
@@ -236,7 +270,6 @@ public abstract class InStream extends InputStream {
    */
   static class EncryptionState {
     private final Object name;
-    private final EncryptionAlgorithm algorithm;
     private final Key key;
     private final byte[] iv;
     private final Cipher cipher;
@@ -246,7 +279,7 @@ public abstract class InStream extends InputStream {
     EncryptionState(Object name, long offset, StreamOptions options) {
       this.name = name;
       this.offset = offset;
-      algorithm = options.getAlgorithm();
+      EncryptionAlgorithm algorithm = options.getAlgorithm();
       key = options.getKey();
       iv = options.getIv();
       cipher = algorithm.createCipher();
@@ -343,7 +376,7 @@ public abstract class InStream extends InputStream {
                            StreamOptions options) {
       super(name, offset, length);
       encrypt = new EncryptionState(name, offset, options);
-      reset(input, length);
+      reset(input);
     }
 
     @Override
@@ -353,9 +386,8 @@ public abstract class InStream extends InputStream {
         // what is the position of the start of the newRange?
         currentOffset = newRange.getOffset();
         ByteBuffer encrypted = newRange.getData().slice();
-        int ignoreBytes = 0;
         if (currentOffset < offset) {
-          ignoreBytes = (int) (offset - currentOffset);
+          int ignoreBytes = (int) (offset - currentOffset);
           encrypted.position(ignoreBytes);
           currentOffset = offset;
         }
@@ -387,15 +419,14 @@ public abstract class InStream extends InputStream {
     }
   }
 
-  private static class CompressedStream extends InStream {
-    private DiskRangeList bytes;
+  public static class CompressedStream extends InStream {
     private final int bufferSize;
     private ByteBuffer uncompressed;
     private final CompressionCodec codec;
     protected ByteBuffer compressed;
-    protected long position;
     protected DiskRangeList currentRange;
     private boolean isUncompressedOriginal;
+    protected long currentCompressedStart = -1;
 
     /**
      * Create the stream without resetting the input stream.
@@ -432,24 +463,11 @@ public abstract class InStream extends InputStream {
       reset(input);
     }
 
-    /**
-     * Reset the input to a new set of data.
-     * @param input the input data
-     */
-    void reset(DiskRangeList input) {
-      bytes = input;
-      if (input == null || input.getOffset() <= offset) {
-        position = 0;
-      } else {
-        position = input.getOffset() - offset;
-      }
-      setCurrent(input, true);
-    }
-
     private void allocateForUncompressed(int size, boolean isDirect) {
       uncompressed = allocateBuffer(size, isDirect);
     }
 
+    @Override
     protected void setCurrent(DiskRangeList newRange,
                               boolean isJump) {
       currentRange = newRange;
@@ -462,43 +480,49 @@ public abstract class InStream extends InputStream {
       }
     }
 
-    private void readHeader() throws IOException {
-      if (compressed == null || compressed.remaining() <= 0) {
+    private int readHeaderByte() {
+      while (currentRange != null &&
+                 (compressed == null || compressed.remaining() <= 0)) {
         setCurrent(currentRange.next, false);
       }
-      if (compressed.remaining() > OutStream.HEADER_SIZE) {
-        int b0 = compressed.get() & 0xff;
-        int b1 = compressed.get() & 0xff;
-        int b2 = compressed.get() & 0xff;
-        boolean isOriginal = (b0 & 0x01) == 1;
-        int chunkLength = (b2 << 15) | (b1 << 7) | (b0 >> 1);
-
-        if (chunkLength > bufferSize) {
-          throw new IllegalArgumentException("Buffer size too small. size = " +
-              bufferSize + " needed = " + chunkLength + " in " + name);
-        }
-        // read 3 bytes, which should be equal to OutStream.HEADER_SIZE always
-        assert OutStream.HEADER_SIZE == 3 : "The Orc HEADER_SIZE must be the same in OutStream and InStream";
-        position += OutStream.HEADER_SIZE;
-
-        ByteBuffer slice = this.slice(chunkLength);
-
-        if (isOriginal) {
-          uncompressed = slice;
-          isUncompressedOriginal = true;
-        } else {
-          if (isUncompressedOriginal) {
-            allocateForUncompressed(bufferSize, slice.isDirect());
-            isUncompressedOriginal = false;
-          } else if (uncompressed == null) {
-            allocateForUncompressed(bufferSize, slice.isDirect());
-          } else {
-            uncompressed.clear();
-          }
-          codec.decompress(slice, uncompressed);
-         }
+      if (compressed != null && compressed.remaining() > 0) {
+        position += 1;
+        return compressed.get() & 0xff;
       } else {
         throw new IllegalStateException("Can't read header at " + this);
+      }
+    }
+
+    private void readHeader() throws IOException {
+      currentCompressedStart = this.position;
+      int b0 = readHeaderByte();
+      int b1 = readHeaderByte();
+      int b2 = readHeaderByte();
+      boolean isOriginal = (b0 & 0x01) == 1;
+      int chunkLength = (b2 << 15) | (b1 << 7) | (b0 >> 1);
+
+      if (chunkLength > bufferSize) {
+        throw new IllegalArgumentException("Buffer size too small. size = " +
+            bufferSize + " needed = " + chunkLength + " in " + name);
+      }
+      ByteBuffer slice = this.slice(chunkLength);
+
+      if (isOriginal) {
+        uncompressed = slice;
+        isUncompressedOriginal = true;
+      } else {
+        if (isUncompressedOriginal) {
+          // Since the previous chunk was uncompressed, allocate the buffer and set original false
+          allocateForUncompressed(bufferSize, slice.isDirect());
+          isUncompressedOriginal = false;
+        } else if (uncompressed == null) {
+          // If the buffer was not allocated then allocate the same
+          allocateForUncompressed(bufferSize, slice.isDirect());
+        } else {
+          // Since the buffer is already allocated just clear the same
+          uncompressed.clear();
+        }
+        codec.decompress(slice, uncompressed);
       }
     }
 
@@ -554,15 +578,25 @@ public abstract class InStream extends InputStream {
 
     @Override
     public void seek(PositionProvider index) throws IOException {
-      seek(index.getNext());
+      boolean seeked = seek(index.getNext());
       long uncompressedBytes = index.getNext();
-      if (uncompressedBytes != 0) {
-        readHeader();
-        uncompressed.position(uncompressed.position() +
-                              (int) uncompressedBytes);
-      } else if (uncompressed != null) {
-        // mark the uncompressed buffer as done
-        uncompressed.position(uncompressed.limit());
+      if (!seeked) {
+        if (uncompressed != null) {
+          // Only reposition uncompressed
+          uncompressed.position((int) uncompressedBytes);
+        }
+        // uncompressed == null should not happen as !seeked would mean that a previous
+        // readHeader has taken place
+      } else {
+        if (uncompressedBytes != 0) {
+          // Decompress compressed as a seek has taken place and position uncompressed
+          readHeader();
+          uncompressed.position(uncompressed.position() +
+                                (int) uncompressedBytes);
+        } else if (uncompressed != null) {
+          // mark the uncompressed buffer as done
+          uncompressed.position(uncompressed.limit());
+        }
       }
     }
 
@@ -600,9 +634,7 @@ public abstract class InStream extends InputStream {
 
       while (currentRange.next != null) {
         setCurrent(currentRange.next, false);
-        if (LOG.isDebugEnabled()) {
-          LOG.debug(String.format("Read slow-path, >1 cross block reads with %s", this.toString()));
-        }
+        LOG.debug("Read slow-path, >1 cross block reads with {}", this);
         if (compressed.remaining() >= len) {
           slice = compressed.slice();
           slice.limit(len);
@@ -624,9 +656,20 @@ public abstract class InStream extends InputStream {
           chunkLength + " bytes");
     }
 
-    void seek(long desired) throws IOException {
+    /**
+     * Seek to the desired chunk based on the input position.
+     *
+     * @param desired position in the compressed stream
+     * @return Indicates whether a seek was performed or not
+     * @throws IOException when seeking outside the stream bounds
+     */
+    boolean seek(long desired) throws IOException {
       if (desired == 0 && bytes == null) {
-        return;
+        return false;
+      }
+      if (desired == currentCompressedStart) {
+        // Header already at the required position
+        return false;
       }
       long posn = desired + offset;
       for (DiskRangeList range = bytes; range != null; range = range.next) {
@@ -635,7 +678,7 @@ public abstract class InStream extends InputStream {
               posn < range.getEnd())) {
           position = desired;
           setCurrent(range, true);
-          return;
+          return true;
         }
       }
       throw new IOException("Seek outside of data in " + this + " to " + desired);
@@ -675,7 +718,7 @@ public abstract class InStream extends InputStream {
   private static class EncryptedCompressedStream extends CompressedStream {
     private final EncryptionState encrypt;
 
-    public EncryptedCompressedStream(Object name,
+    EncryptedCompressedStream(Object name,
                                      DiskRangeList input,
                                      long offset,
                                      long length,

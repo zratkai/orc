@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,20 +17,12 @@
  */
 package org.apache.orc.tools;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.text.DecimalFormat;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-
 import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.GnuParser;
+import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -39,22 +31,30 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
-import org.apache.orc.impl.ReaderImpl;
-import org.apache.orc.util.BloomFilter;
-import org.apache.orc.util.BloomFilterIO;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.CompressionKind;
 import org.apache.orc.OrcFile;
+import org.apache.orc.OrcProto;
 import org.apache.orc.Reader;
+import org.apache.orc.StripeInformation;
+import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
 import org.apache.orc.impl.ColumnStatisticsImpl;
 import org.apache.orc.impl.OrcAcidUtils;
 import org.apache.orc.impl.OrcIndex;
-import org.apache.orc.OrcProto;
-import org.apache.orc.StripeInformation;
-import org.apache.orc.StripeStatistics;
+import org.apache.orc.impl.ReaderImpl;
 import org.apache.orc.impl.RecordReaderImpl;
+import org.apache.orc.util.BloomFilter;
+import org.apache.orc.util.BloomFilterIO;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * A tool for printing out the file structure of ORC files.
@@ -62,9 +62,11 @@ import org.apache.orc.impl.RecordReaderImpl;
 public final class FileDump {
   public static final String UNKNOWN = "UNKNOWN";
   public static final String SEPARATOR = StringUtils.repeat("_", 120) + "\n";
+  public static final String RECOVER_READ_SIZE = "orc.recover.read.size"; // only for testing
   public static final int DEFAULT_BLOCK_SIZE = 256 * 1024 * 1024;
   public static final String DEFAULT_BACKUP_PATH = System.getProperty("java.io.tmpdir");
   public static final PathFilter HIDDEN_AND_SIDE_FILE_FILTER = new PathFilter() {
+    @Override
     public boolean accept(Path p) {
       String name = p.getName();
       return !name.startsWith("_") && !name.startsWith(".") && !name.endsWith(
@@ -79,7 +81,7 @@ public final class FileDump {
   public static void main(Configuration conf, String[] args) throws Exception {
     List<Integer> rowIndexCols = new ArrayList<Integer>(0);
     Options opts = createOptions();
-    CommandLine cli = new GnuParser().parse(opts, args);
+    CommandLine cli = new DefaultParser().parse(opts, args);
 
     if (cli.hasOption('h')) {
       HelpFormatter formatter = new HelpFormatter();
@@ -249,10 +251,10 @@ public final class FileDump {
     List<String> filesInPath = new ArrayList<>();
     FileSystem fs = path.getFileSystem(conf);
     FileStatus fileStatus = fs.getFileStatus(path);
-    if (fileStatus.isDir()) {
+    if (fileStatus.isDirectory()) {
       FileStatus[] fileStatuses = fs.listStatus(path, HIDDEN_AND_SIDE_FILE_FILTER);
       for (FileStatus fileInPath : fileStatuses) {
-        if (fileInPath.isDir()) {
+        if (fileInPath.isDirectory()) {
           filesInPath.addAll(getAllFilesInPath(fileInPath.getPath(), conf));
         } else {
           filesInPath.add(fileInPath.getPath().toString());
@@ -338,7 +340,8 @@ public final class FileDump {
     TypeDescription schema = reader.getSchema();
     System.out.println("Structure for " + filename);
     System.out.println("File Version: " + reader.getFileVersion().getName() +
-        " with " + reader.getWriterVersion());
+        " with " + reader.getWriterVersion() + " by " +
+        reader.getSoftwareVersion());
     RecordReaderImpl rows = (RecordReaderImpl) reader.rows();
     System.out.println("Rows: " + reader.getNumberOfRows());
     System.out.println("Compression: " + reader.getCompressionKind());
@@ -436,8 +439,7 @@ public final class FileDump {
     FileSystem fs = file.getFileSystem(conf);
     long fileLen = fs.getFileStatus(file).getLen();
     long paddedBytes = getTotalPaddingSize(reader);
-    // empty ORC file is ~45 bytes. Assumption here is file length always >0
-    double percentPadding = ((double) paddedBytes / (double) fileLen) * 100;
+    double percentPadding = (fileLen == 0) ? 0.0d : 100.0d * paddedBytes / fileLen;
     DecimalFormat format = new DecimalFormat("##.##");
     System.out.println("\nFile length: " + fileLen + " bytes");
     System.out.println("Padding length: " + paddedBytes + " bytes");
@@ -450,7 +452,7 @@ public final class FileDump {
       }
       ByteBuffer byteBuffer = reader.getMetadataValue(keys.get(i));
       System.out.println("  " + keys.get(i) + "="
-        + StandardCharsets.UTF_8.decode(byteBuffer));
+          + StandardCharsets.UTF_8.decode(byteBuffer));
     }
     rows.close();
   }
@@ -458,6 +460,11 @@ public final class FileDump {
   private static void recoverFiles(final List<String> corruptFiles, final Configuration conf,
       final String backup)
       throws IOException {
+
+    byte[] magicBytes = OrcFile.MAGIC.getBytes(StandardCharsets.UTF_8);
+    int magicLength = magicBytes.length;
+    int readSize = conf.getInt(RECOVER_READ_SIZE, DEFAULT_BLOCK_SIZE);
+
     for (String corruptFile : corruptFiles) {
       System.err.println("Recovering file " + corruptFile);
       Path corruptPath = new Path(corruptFile);
@@ -469,17 +476,30 @@ public final class FileDump {
         List<Long> footerOffsets = new ArrayList<>();
 
         // start reading the data file form top to bottom and record the valid footers
-        while (remaining > 0) {
-          int toRead = (int) Math.min(DEFAULT_BLOCK_SIZE, remaining);
-          byte[] data = new byte[toRead];
+        while (remaining > 0 && corruptFileLen > (2L * magicLength)) {
+          int toRead = (int) Math.min(readSize, remaining);
           long startPos = corruptFileLen - remaining;
-          fdis.readFully(startPos, data, 0, toRead);
+          byte[] data;
+          if (startPos == 0) {
+            data = new byte[toRead];
+            fdis.readFully(startPos, data, 0, toRead);
+          }
+          else {
+            // For non-first reads, we let startPos move back magicLength bytes
+            // which prevents two adjacent reads from separating OrcFile.MAGIC
+            startPos = startPos - magicLength;
+            data = new byte[toRead + magicLength];
+            fdis.readFully(startPos, data, 0, toRead + magicLength);
+          }
 
           // find all MAGIC string and see if the file is readable from there
           int index = 0;
           long nextFooterOffset;
-          byte[] magicBytes = OrcFile.MAGIC.getBytes(StandardCharsets.UTF_8);
           while (index != -1) {
+            // There are two reasons for searching from index + 1
+            // 1. to skip the OrcFile.MAGIC in the file header when the first match is made
+            // 2. When the match is successful, the index is moved backwards to search for
+            // the subsequent OrcFile.MAGIC
             index = indexOf(data, magicBytes, index + 1);
             if (index != -1) {
               nextFooterOffset = startPos + index + magicBytes.length + 1;
@@ -566,24 +586,35 @@ public final class FileDump {
     // validate the recovered file once again and start moving corrupt files to backup folder
     if (isReadable(recoveredPath, conf, Long.MAX_VALUE)) {
       Path backupDataPath;
+      Path backupDirPath;
+      Path relativeCorruptPath;
       String scheme = corruptPath.toUri().getScheme();
       String authority = corruptPath.toUri().getAuthority();
-      String filePath = corruptPath.toUri().getPath();
 
       // use the same filesystem as corrupt file if backup-path is not explicitly specified
       if (backup.equals(DEFAULT_BACKUP_PATH)) {
-        backupDataPath = new Path(scheme, authority, DEFAULT_BACKUP_PATH + filePath);
+        backupDirPath = new Path(scheme, authority, DEFAULT_BACKUP_PATH);
       } else {
-        backupDataPath = Path.mergePaths(new Path(backup), corruptPath);
+        backupDirPath = new Path(backup);
       }
+
+      if (corruptPath.isUriPathAbsolute()) {
+        relativeCorruptPath = corruptPath;
+      } else {
+        relativeCorruptPath = Path.mergePaths(new Path(Path.SEPARATOR), corruptPath);
+      }
+
+      backupDataPath = Path.mergePaths(backupDirPath, relativeCorruptPath);
 
       // Move data file to backup path
       moveFiles(fs, corruptPath, backupDataPath);
 
       // Move side file to backup path
       Path sideFilePath = OrcAcidUtils.getSideFile(corruptPath);
-      Path backupSideFilePath = new Path(backupDataPath.getParent(), sideFilePath.getName());
-      moveFiles(fs, sideFilePath, backupSideFilePath);
+      if (fs.exists(sideFilePath)) {
+        Path backupSideFilePath = new Path(backupDataPath.getParent(), sideFilePath.getName());
+        moveFiles(fs, sideFilePath, backupSideFilePath);
+      }
 
       // finally move recovered file to actual file
       moveFiles(fs, recoveredPath, corruptPath);
@@ -631,25 +662,22 @@ public final class FileDump {
   }
 
   // search for byte pattern in another byte array
-  private static int indexOf(final byte[] data, final byte[] pattern, final int index) {
+  public static int indexOf(final byte[] data, final byte[] pattern, final int index) {
     if (data == null || data.length == 0 || pattern == null || pattern.length == 0 ||
         index > data.length || index < 0) {
       return -1;
     }
 
-    int j = 0;
-    for (int i = index; i < data.length; i++) {
-      if (pattern[j] == data[i]) {
-        j++;
-      } else {
-        j = 0;
+    for (int i = index; i < data.length - pattern.length + 1; i++) {
+      boolean found = true;
+      for (int j = 0; j < pattern.length; j++) {
+        if (data[i + j] != pattern[j]) {
+          found = false;
+          break;
+        }
       }
-
-      if (j == pattern.length) {
-        return i - pattern.length + 1;
-      }
+      if (found) return i;
     }
-
     return -1;
   }
 
@@ -719,12 +747,14 @@ public final class FileDump {
         buf.append("unknown\n");
         continue;
       }
-      OrcProto.ColumnStatistics colStats = entry.getStatistics();
-      if (colStats == null) {
+      if (!entry.hasStatistics()) {
         buf.append("no stats at ");
       } else {
+        OrcProto.ColumnStatistics colStats = entry.getStatistics();
         ColumnStatistics cs =
-            ColumnStatisticsImpl.deserialize(colSchema, colStats, reader);
+            ColumnStatisticsImpl.deserialize(colSchema, colStats,
+                reader.writerUsedProlepticGregorian(),
+                reader.getConvertToProlepticGregorian());
         buf.append(cs.toString());
       }
       buf.append(" positions: ");
@@ -754,55 +784,55 @@ public final class FileDump {
     Options result = new Options();
 
     // add -d and --data to print the rows
-    result.addOption(OptionBuilder
-        .withLongOpt("data")
-        .withDescription("Should the data be printed")
-        .create('d'));
+    result.addOption(Option.builder("d")
+        .longOpt("data")
+        .desc("Should the data be printed")
+        .build());
 
     // to avoid breaking unit tests (when run in different time zones) for file dump, printing
     // of timezone is made optional
-    result.addOption(OptionBuilder
-        .withLongOpt("timezone")
-        .withDescription("Print writer's time zone")
-        .create('t'));
+    result.addOption(Option.builder("t")
+        .longOpt("timezone")
+        .desc("Print writer's time zone")
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("help")
-        .withDescription("print help message")
-        .create('h'));
+    result.addOption(Option.builder("h")
+        .longOpt("help")
+        .desc("Print help message")
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("rowindex")
-        .withArgName("comma separated list of column ids for which row index should be printed")
-        .withDescription("Dump stats for column number(s)")
+    result.addOption(Option.builder("r")
+        .longOpt("rowindex")
+        .argName("comma separated list of column ids for which row index should be printed")
+        .desc("Dump stats for column number(s)")
         .hasArg()
-        .create('r'));
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("json")
-        .withDescription("Print metadata in JSON format")
-        .create('j'));
+    result.addOption(Option.builder("j")
+        .longOpt("json")
+        .desc("Print metadata in JSON format")
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("pretty")
-        .withDescription("Pretty print json metadata output")
-        .create('p'));
+    result.addOption(Option.builder("p")
+        .longOpt("pretty")
+        .desc("Pretty print json metadata output")
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("recover")
-        .withDescription("recover corrupted orc files generated by streaming")
-        .create());
+    result.addOption(Option.builder()
+        .longOpt("recover")
+        .desc("recover corrupted orc files generated by streaming")
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("skip-dump")
-        .withDescription("used along with --recover to directly recover files without dumping")
-        .create());
+    result.addOption(Option.builder()
+        .longOpt("skip-dump")
+        .desc("used along with --recover to directly recover files without dumping")
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("backup-path")
-        .withDescription("specify a backup path to store the corrupted files (default: /tmp)")
+    result.addOption(Option.builder()
+        .longOpt("backup-path")
+        .desc("specify a backup path to store the corrupted files (default: /tmp)")
         .hasArg()
-        .create());
+        .build());
     return result;
   }
 

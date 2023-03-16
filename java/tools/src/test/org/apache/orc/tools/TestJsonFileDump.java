@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,17 +18,6 @@
 
 package org.apache.orc.tools;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileReader;
-import java.io.PrintStream;
-import java.net.URL;
-import java.util.Random;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -40,8 +29,21 @@ import org.apache.orc.OrcConf;
 import org.apache.orc.OrcFile;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.PrintStream;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Random;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class TestJsonFileDump {
 
@@ -58,29 +60,13 @@ public class TestJsonFileDump {
   FileSystem fs;
   Path testFilePath;
 
-  @Before
+  @BeforeEach
   public void openFileSystem () throws Exception {
     conf = new Configuration();
     fs = FileSystem.getLocal(conf);
     fs.setWorkingDirectory(workDir);
     testFilePath = new Path("TestFileDump.testDump.orc");
     fs.delete(testFilePath, false);
-  }
-
-  static void checkOutput(String expected,
-                                  String actual) throws Exception {
-    BufferedReader eStream =
-        new BufferedReader(new FileReader(getFileFromClasspath(expected)));
-    BufferedReader aStream =
-        new BufferedReader(new FileReader(actual));
-    String expectedLine = eStream.readLine();
-    while (expectedLine != null) {
-      String actualLine = aStream.readLine();
-      assertEquals(expectedLine, actualLine);
-      expectedLine = eStream.readLine();
-    }
-    assertNull(eStream.readLine());
-    assertNull(aStream.readLine());
   }
 
   @Test
@@ -91,6 +77,7 @@ public class TestJsonFileDump {
         .setAttribute("test1", "value1")
         .setAttribute("test2","value2");
     conf.set(OrcConf.ENCODING_STRATEGY.getAttribute(), "COMPRESSION");
+    conf.set(OrcConf.DICTIONARY_IMPL.getAttribute(), "rbtree");
     OrcFile.WriterOptions options = OrcFile.writerOptions(conf)
         .fileSystem(fs)
         .setSchema(schema)
@@ -121,7 +108,7 @@ public class TestJsonFileDump {
         batch.cols[2].isNull[batch.size] = true;
       } else {
         ((BytesColumnVector) batch.cols[2]).setVal(batch.size,
-            words[r1.nextInt(words.length)].getBytes());
+            words[r1.nextInt(words.length)].getBytes(StandardCharsets.UTF_8));
       }
       batch.size += 1;
       if (batch.size == batch.getMaxSize()) {
@@ -139,12 +126,12 @@ public class TestJsonFileDump {
     FileOutputStream myOut = new FileOutputStream(workDir + File.separator + outputFilename);
 
     // replace stdout and run command
-    System.setOut(new PrintStream(myOut));
+    System.setOut(new PrintStream(myOut, true, StandardCharsets.UTF_8.toString()));
     FileDump.main(new String[]{testFilePath.toString(), "-j", "-p", "--rowindex=3"});
     System.out.flush();
     System.setOut(origOut);
 
 
-    checkOutput(outputFilename, workDir + File.separator + outputFilename);
+    TestFileDump.checkOutput(outputFilename, workDir + File.separator + outputFilename);
   }
 }

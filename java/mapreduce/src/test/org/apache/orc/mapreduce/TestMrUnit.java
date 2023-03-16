@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,47 +18,114 @@
 
 package org.apache.orc.mapreduce;
 
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.io.serializer.Deserializer;
-import org.apache.hadoop.io.serializer.Serialization;
-import org.apache.hadoop.io.serializer.Serializer;
-import org.apache.hadoop.io.serializer.WritableSerialization;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.JobConfigurable;
+import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
-import org.apache.hadoop.mrunit.mapreduce.MapReduceDriver;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.orc.OrcConf;
+import org.apache.orc.OrcFile;
+import org.apache.orc.Reader;
 import org.apache.orc.TypeDescription;
+import org.apache.orc.Writer;
 import org.apache.orc.mapred.OrcKey;
 import org.apache.orc.mapred.OrcStruct;
 import org.apache.orc.mapred.OrcValue;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
+import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.util.Iterator;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestMrUnit {
-  JobConf conf = new JobConf();
+
+  private static final File TEST_DIR = new File(
+      System.getProperty("test.build.data",
+          System.getProperty("java.io.tmpdir")), "TestMapReduce-mapreduce");
+  private static FileSystem FS;
+
+  private static final JobConf CONF = new JobConf();
+
+  private static final TypeDescription INPUT_SCHEMA = TypeDescription
+      .fromString("struct<one:struct<x:int,y:int>,two:struct<z:string>>");
+
+  private static final TypeDescription OUT_SCHEMA = TypeDescription
+      .fromString("struct<first:struct<x:int,y:int>,second:struct<z:string>>");
+
+  static {
+    OrcConf.MAPRED_SHUFFLE_KEY_SCHEMA.setString(CONF, "struct<x:int,y:int>");
+    OrcConf.MAPRED_SHUFFLE_VALUE_SCHEMA.setString(CONF, "struct<z:string>");
+    OrcConf.MAPRED_OUTPUT_SCHEMA.setString(CONF, OUT_SCHEMA.toString());
+    // This is required due to ORC-964
+    CONF.set("mapreduce.job.output.key.comparator.class", OrcKeyComparator.class.getName());
+    try {
+      FS = FileSystem.getLocal(CONF);
+    } catch (IOException ioe) {
+      FS = null;
+    }
+  }
+
+  public static class OrcKeyComparator implements RawComparator<OrcKey>, JobConfigurable {
+
+    private JobConf jobConf;
+
+    @Override
+    public int compare(byte[] b1, int s1, int l1, byte[] b2, int s2, int l2) {
+      DataInputBuffer buffer1 = new DataInputBuffer();
+      DataInputBuffer buffer2 = new DataInputBuffer();
+
+      try {
+        buffer1.reset(b1, s1, l1);
+        buffer2.reset(b2, s2, l2);
+        OrcKey orcKey1 = new OrcKey();
+        orcKey1.configure(this.jobConf);
+        orcKey1.readFields(buffer1);
+        OrcKey orcKey2 = new OrcKey();
+        orcKey2.configure(this.jobConf);
+        orcKey2.readFields(buffer2);
+        return orcKey1.compareTo(orcKey2);
+      } catch (IOException e) {
+        throw new RuntimeException("compare orcKey fail", e);
+      }
+    }
+
+    @Override
+    public int compare(OrcKey o1, OrcKey o2) {
+      return o1.compareTo(o2);
+    }
+
+    @Override
+    public void configure(JobConf jobConf) {
+      this.jobConf = jobConf;
+    }
+  }
+
 
   /**
    * Split the input struct into its two parts.
    */
   public static class MyMapper
       extends Mapper<NullWritable, OrcStruct, OrcKey, OrcValue> {
-    private OrcKey keyWrapper = new OrcKey();
-    private OrcValue valueWrapper = new OrcValue();
+    private final OrcKey keyWrapper = new OrcKey();
+    private final OrcValue valueWrapper = new OrcValue();
 
     @Override
     protected void map(NullWritable key,
                        OrcStruct value,
                        Context context
-                       ) throws IOException, InterruptedException {
+    ) throws IOException, InterruptedException {
       keyWrapper.key = value.getFieldValue(0);
       valueWrapper.value = value.getFieldValue(1);
       context.write(keyWrapper, valueWrapper);
@@ -70,15 +137,14 @@ public class TestMrUnit {
    */
   public static class MyReducer
       extends Reducer<OrcKey, OrcValue, NullWritable, OrcStruct> {
-    private OrcStruct output = new OrcStruct(TypeDescription.fromString
-        ("struct<first:struct<x:int,y:int>,second:struct<z:string>>"));
+    private final OrcStruct output = new OrcStruct(OUT_SCHEMA);
     private final NullWritable nada = NullWritable.get();
 
     @Override
     protected void reduce(OrcKey key,
                           Iterable<OrcValue> values,
                           Context context
-                          ) throws IOException, InterruptedException {
+    ) throws IOException, InterruptedException {
       output.setFieldValue(0, key.key);
       for(OrcValue value: values) {
         output.setFieldValue(1, value.value);
@@ -87,117 +153,93 @@ public class TestMrUnit {
     }
   }
 
-  /**
-   * This class is intended to support MRUnit's object copying for input and
-   * output objects.
-   *
-   * Real mapreduce contexts should NEVER use this class.
-   *
-   * The type string is serialized before each value.
-   */
-  public static class OrcStructSerialization
-      implements Serialization<OrcStruct> {
-
-    @Override
-    public boolean accept(Class<?> cls) {
-      return OrcStruct.class.isAssignableFrom(cls);
-    }
-
-    @Override
-    public Serializer<OrcStruct> getSerializer(Class<OrcStruct> aClass) {
-      return new Serializer<OrcStruct>() {
-        DataOutputStream dataOut;
-
-        public void open(OutputStream out) {
-          if(out instanceof DataOutputStream) {
-            dataOut = (DataOutputStream)out;
-          } else {
-            dataOut = new DataOutputStream(out);
-          }
-        }
-
-        public void serialize(OrcStruct w) throws IOException {
-          Text.writeString(dataOut, w.getSchema().toString());
-          w.write(dataOut);
-        }
-
-        public void close() throws IOException {
-          dataOut.close();
-        }
-      };
-    }
-
-    @Override
-    public Deserializer<OrcStruct> getDeserializer(Class<OrcStruct> aClass) {
-      return new Deserializer<OrcStruct>() {
-        DataInputStream input;
-
-        @Override
-        public void open(InputStream inputStream) throws IOException {
-          if(inputStream instanceof DataInputStream) {
-            input = (DataInputStream)inputStream;
-          } else {
-            input = new DataInputStream(inputStream);
-          }
-        }
-
-        @Override
-        public OrcStruct deserialize(OrcStruct orcStruct) throws IOException {
-          String typeStr = Text.readString(input);
-          OrcStruct result = new OrcStruct(TypeDescription.fromString(typeStr));
-          result.readFields(input);
-          return result;
-        }
-
-        @Override
-        public void close() throws IOException {
-          // PASS
-        }
-      };
-    }
-  }
-
-  @Test
-  public void testMapred() throws IOException {
-    conf.set("io.serializations",
-        OrcStructSerialization.class.getName() + "," +
-            WritableSerialization.class.getName());
-    OrcConf.MAPRED_SHUFFLE_KEY_SCHEMA.setString(conf, "struct<x:int,y:int>");
-    OrcConf.MAPRED_SHUFFLE_VALUE_SCHEMA.setString(conf, "struct<z:string>");
-    MyMapper mapper = new MyMapper();
-    MyReducer reducer = new MyReducer();
-    MapReduceDriver<NullWritable, OrcStruct,
-                    OrcKey, OrcValue,
-                    NullWritable, OrcStruct> driver =
-        new MapReduceDriver<>(mapper, reducer);
-    driver.setConfiguration(conf);
+  public void writeInputFile(Path inputPath) throws IOException {
+    Writer writer = OrcFile.createWriter(inputPath,
+        OrcFile.writerOptions(CONF).setSchema(INPUT_SCHEMA).overwrite(true));
+    OrcMapreduceRecordWriter<OrcStruct> recordWriter = new OrcMapreduceRecordWriter<>(writer);
     NullWritable nada = NullWritable.get();
-    OrcStruct input = (OrcStruct) OrcStruct.createValue(
-        TypeDescription.fromString("struct<one:struct<x:int,y:int>,two:struct<z:string>>"));
+
+    OrcStruct input = (OrcStruct) OrcStruct.createValue(INPUT_SCHEMA);
     IntWritable x =
         (IntWritable) ((OrcStruct) input.getFieldValue(0)).getFieldValue(0);
     IntWritable y =
         (IntWritable) ((OrcStruct) input.getFieldValue(0)).getFieldValue(1);
     Text z = (Text) ((OrcStruct) input.getFieldValue(1)).getFieldValue(0);
 
-    // generate the input stream
-    for(int r=0; r < 20; ++r) {
+    for(int r = 0; r < 20; ++r) {
       x.set(100 -  (r / 4));
-      y.set(r*2);
+      y.set(r * 2);
       z.set(Integer.toHexString(r));
-      driver.withInput(nada, input);
+      recordWriter.write(nada, input);
     }
+    recordWriter.close(null);
+  }
 
-    // generate the expected outputs
-    for(int g=4; g >= 0; --g) {
-      x.set(100 - g);
-      for(int i=0; i < 4; ++i) {
+  private void readOutputFile(Path output) throws IOException, InterruptedException {
+    Reader reader = OrcFile.createReader(output, OrcFile.readerOptions(CONF));
+    OrcMapreduceRecordReader<OrcStruct> recordReader = new OrcMapreduceRecordReader<>(reader,
+            org.apache.orc.mapred.OrcInputFormat.buildOptions(CONF, reader, 0, 20));
+
+    int[] expectedX = new int[20];
+    int[] expectedY = new int[20];
+    String[] expectedZ = new String[20];
+    int count = 0;
+    for(int g = 4; g >= 0; --g) {
+      for(int i = 0; i < 4; ++i) {
+        expectedX[count] = 100 - g;
         int r = g * 4 + i;
-        y.set(r * 2);
-        z.set(Integer.toHexString(r));
-        driver.withOutput(nada, input);
+        expectedY[count] = r * 2;
+        expectedZ[count ++] = Integer.toHexString(r);
       }
     }
-    driver.runTest();
+
+    int row = 0;
+    while (recordReader.nextKeyValue()) {
+      OrcStruct value = recordReader.getCurrentValue();
+      IntWritable x =
+          (IntWritable) ((OrcStruct) value.getFieldValue(0)).getFieldValue(0);
+      IntWritable y =
+          (IntWritable) ((OrcStruct) value.getFieldValue(0)).getFieldValue(1);
+      Text z = (Text) ((OrcStruct) value.getFieldValue(1)).getFieldValue(0);
+      assertEquals(expectedX[row], x.get());
+      assertEquals(expectedY[row], y.get());
+      assertEquals(expectedZ[row], z.toString());
+      row ++;
+    }
+    recordReader.close();
   }
+
+  @Test
+  public void testMapReduce() throws IOException, InterruptedException, ClassNotFoundException {
+    Path testDir = new Path(TEST_DIR.getAbsolutePath());
+    Path input = new Path(testDir, "input");
+    Path output = new Path(testDir, "output");
+    FS.delete(input, true);
+    FS.delete(output, true);
+
+    writeInputFile(new Path(input, "input.orc"));
+
+    Job job = Job.getInstance(CONF);
+
+    job.setMapperClass(MyMapper.class);
+    job.setInputFormatClass(OrcInputFormat.class);
+    FileInputFormat.setInputPaths(job, input);
+    FileOutputFormat.setOutputPath(job, output);
+    job.setOutputKeyClass(OrcKey.class);
+    job.setOutputValueClass(OrcValue.class);
+    job.setOutputFormatClass(OrcOutputFormat.class);
+    job.setReducerClass(MyReducer.class);
+    job.setNumReduceTasks(1);
+
+    job.waitForCompletion(true);
+
+    FileStatus[] fileStatuses = output.getFileSystem(CONF)
+        .listStatus(output, path -> path.getName().endsWith(".orc"));
+
+    assertEquals(fileStatuses.length, 1);
+
+    Path path = fileStatuses[0].getPath();
+    readOutputFile(path);
+  }
+
 }

@@ -16,16 +16,21 @@
 
 package org.apache.orc.impl;
 
+import org.apache.orc.CompressionKind;
+import org.apache.orc.OrcFile;
+import org.apache.orc.OrcProto;
+import org.apache.orc.OrcUtils;
+import org.apache.orc.Reader;
+import org.apache.orc.StripeInformation;
+import org.apache.orc.StripeStatistics;
+import org.apache.orc.TypeDescription;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
-
-import org.apache.orc.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import static org.apache.orc.impl.ReaderImpl.extractMetadata;
 
 // TODO: Make OrcTail implement FileMetadata or Reader interface
 public final class OrcTail {
@@ -130,7 +135,8 @@ public final class OrcTail {
   }
 
   public int getCompressionBufferSize() {
-    return (int) fileTail.getPostscript().getCompressionBlockSize();
+    OrcProto.PostScript postScript = fileTail.getPostscript();
+    return ReaderImpl.getCompressionBlockSize(postScript);
   }
 
   public int getMetadataSize() {
@@ -196,33 +202,18 @@ public final class OrcTail {
   }
 
   /**
-   * Get statistics, assuming the dates aren't and shouldn't be proleptic gregorian.
-   * @return
-   * @throws IOException
-   * @deprecated Use {@link #getStripeStatistics(boolean, boolean)} instead
+   * Get the stripe statistics from the file tail.
+   * This code is for compatibility with ORC 1.5.
+   * @return the stripe statistics
+   * @deprecated the user should use Reader.getStripeStatistics instead.
    */
-  @Deprecated
-  public List<StripeStatistics> getStripeStatistics()
-          throws IOException {
-    OrcProto.Footer footer = fileTail.getFooter();
-    boolean writerUsedProlepticGregorian =
-            footer.hasCalendar() ?
-                    footer.getCalendar() == OrcProto.CalendarKind.PROLEPTIC_GREGORIAN :
-                    false;
-    return getStripeStatistics(writerUsedProlepticGregorian, false);
-  }
-
-  public List<StripeStatistics> getStripeStatistics(
-          boolean writerUsedProlepticGregorian, boolean convertToProlepticGregorian)
-          throws IOException {
-    List<StripeStatistics> result = new ArrayList<>();
-    List<OrcProto.StripeStatistics> ssProto = reader.getOrcProtoStripeStatistics();
-    if (ssProto != null) {
-      for (OrcProto.StripeStatistics ss : ssProto) {
-        result.add(new StripeStatistics(null, ss.getColStatsList(), writerUsedProlepticGregorian, convertToProlepticGregorian));
-      }
+  public List<StripeStatistics> getStripeStatistics() throws IOException {
+    if (reader == null) {
+      LOG.warn("Please use Reader.getStripeStatistics or give `Reader` to OrcTail constructor.");
+      return new ArrayList<>();
+    } else {
+      return reader.getStripeStatistics();
     }
-    return result;
   }
 
   public List<OrcProto.StripeStatistics> getStripeStatisticsProto() throws IOException {

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,29 +21,28 @@ package org.apache.orc.mapred;
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
-import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgumentImpl;
+import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.FileSplit;
-import org.apache.hadoop.mapred.RecordReader;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-
-import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.orc.OrcConf;
 import org.apache.orc.OrcFile;
 import org.apache.orc.Reader;
 import org.apache.orc.TypeDescription;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
 
 /**
  * A MapReduce/Hive input format for ORC files.
@@ -51,7 +50,7 @@ import org.apache.orc.TypeDescription;
 public class OrcInputFormat<V extends WritableComparable>
     extends FileInputFormat<NullWritable, V> {
 
-  private final static int KRYO_SARG_MAX_BUFFER = 16777216;
+  private static final int KRYO_SARG_MAX_BUFFER = 16777216;
 
   /**
    * Convert a string with a comma separated list of column ids into the
@@ -95,7 +94,7 @@ public class OrcInputFormat<V extends WritableComparable>
     int bufferSize = (int)OrcConf.KRYO_SARG_BUFFER.getLong(conf);
     Output out = new Output(bufferSize, KRYO_SARG_MAX_BUFFER);
     new Kryo().writeObject(out, sarg);
-    OrcConf.KRYO_SARG.setString(conf, Base64.encodeBase64String(out.toBytes()));
+    OrcConf.KRYO_SARG.setString(conf, Base64.getMimeEncoder().encodeToString(out.toBytes()));
     StringBuilder buffer = new StringBuilder();
     for (int i = 0; i < columnNames.length; ++i) {
       if (i != 0) {
@@ -136,7 +135,7 @@ public class OrcInputFormat<V extends WritableComparable>
     String kryoSarg = OrcConf.KRYO_SARG.getString(conf);
     String sargColumns = OrcConf.SARG_COLUMNS.getString(conf);
     if (kryoSarg != null && sargColumns != null) {
-      byte[] sargBytes = Base64.decodeBase64(kryoSarg);
+      byte[] sargBytes = Base64.getMimeDecoder().decode(kryoSarg);
       SearchArgument sarg =
           new Kryo().readObject(new Input(sargBytes), SearchArgumentImpl.class);
       options.searchArgument(sarg, sargColumns.split(","));
@@ -145,16 +144,17 @@ public class OrcInputFormat<V extends WritableComparable>
   }
 
   @Override
-  public RecordReader<NullWritable, V>
-  getRecordReader(InputSplit inputSplit,
-                  JobConf conf,
-                  Reporter reporter) throws IOException {
+  public RecordReader<NullWritable, V> getRecordReader(InputSplit inputSplit,
+                                                       JobConf conf,
+                                                       Reporter reporter) throws IOException {
     FileSplit split = (FileSplit) inputSplit;
     Reader file = OrcFile.createReader(split.getPath(),
         OrcFile.readerOptions(conf)
             .maxLength(OrcConf.MAX_FILE_LENGTH.getLong(conf)));
-    return new OrcMapredRecordReader<>(file, buildOptions(conf,
-        file, split.getStart(), split.getLength()));
+    //Mapreduce supports selected vector
+    Reader.Options options =  buildOptions(conf, file, split.getStart(), split.getLength())
+        .useSelected(true);
+    return new OrcMapredRecordReader<>(file, options);
   }
 
   /**
@@ -164,6 +164,7 @@ public class OrcInputFormat<V extends WritableComparable>
    * @return a list of files that need to be read
    * @throws IOException
    */
+  @Override
   protected FileStatus[] listStatus(JobConf job) throws IOException {
     FileStatus[] result = super.listStatus(job);
     List<FileStatus> ok = new ArrayList<>(result.length);
@@ -175,7 +176,7 @@ public class OrcInputFormat<V extends WritableComparable>
     if (ok.size() == result.length) {
       return result;
     } else {
-      return ok.toArray(new FileStatus[ok.size()]);
+      return ok.toArray(new FileStatus[0]);
     }
   }
 }

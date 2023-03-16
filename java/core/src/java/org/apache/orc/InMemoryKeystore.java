@@ -42,15 +42,15 @@ import java.util.TreeMap;
 
 /**
  * This is an in-memory implementation of {@link KeyProvider}.
- *
+ * <p>
  * The primary use of this class is for when the user doesn't have a
  * Hadoop KMS running and wishes to use encryption. It is also useful for
  * testing.
- *
+ * <p>
  * The local keys for this class are encrypted/decrypted using the cipher
  * in CBC/NoPadding mode and a constant IV. Since the key is random, the
  * constant IV is not a problem.
- *
+ * <p>
  * This class is not thread safe.
  */
 public class InMemoryKeystore implements KeyProvider {
@@ -128,11 +128,11 @@ public class InMemoryKeystore implements KeyProvider {
   @Override
   public HadoopShims.KeyMetadata getCurrentKeyVersion(final String keyName) {
     String versionName = buildVersionName(keyName, currentVersion.get(keyName));
-    if (keys.containsKey(versionName)) {
-      return keys.get(versionName);
-    } else {
+    KeyVersion keyVersion = keys.get(versionName);
+    if (keyVersion == null) {
       throw new IllegalArgumentException("Unknown key " + keyName);
     }
+    return keys.get(versionName);
   }
 
   /**
@@ -144,10 +144,10 @@ public class InMemoryKeystore implements KeyProvider {
   @Override
   public LocalKey createLocalKey(final HadoopShims.KeyMetadata key) {
     final String keyVersion = buildVersionName(key.getKeyName(), key.getVersion());
-    if (!keys.containsKey(keyVersion)) {
+    final KeyVersion secret = keys.get(keyVersion);
+    if (secret == null) {
       throw new IllegalArgumentException("Unknown key " + key);
     }
-    final KeyVersion secret = keys.get(keyVersion);
     final EncryptionAlgorithm algorithm = secret.getAlgorithm();
     byte[] encryptedKey = new byte[algorithm.keyLength()];
     random.nextBytes(encryptedKey);
@@ -197,10 +197,12 @@ public class InMemoryKeystore implements KeyProvider {
   public Key decryptLocalKey(HadoopShims.KeyMetadata key,
                              byte[] encryptedKey) {
     final String keyVersion = buildVersionName(key.getKeyName(), key.getVersion());
-    if (!keys.containsKey(keyVersion)) {
+    final KeyVersion secret = keys.get(keyVersion);
+
+    if (secret == null) {
       return null;
     }
-    final KeyVersion secret = keys.get(keyVersion);
+
     final EncryptionAlgorithm algorithm = secret.getAlgorithm();
     byte[] iv = new byte[algorithm.getIvLength()];
     System.arraycopy(encryptedKey, 0, iv, 0, iv.length);
@@ -254,21 +256,21 @@ public class InMemoryKeystore implements KeyProvider {
     return addKey(keyName, 0, algorithm, masterKey);
   }
 
-    /**
-     * Function that takes care of adding a new key.<br>
-     * A new key can be added only if:
-     * <ul>
-     * <li>This is a new key and no prior key version exist.</li>
-     * <li>If the key exists (has versions), then the new version to be added should be greater than
-     * the version that already exists.</li>
-     * </ul>
-     *
-     * @param keyName   Name of the key to be added
-     * @param version   Key Version
-     * @param algorithm Algorithm used
-     * @param masterKey Master key
-     * @return this
-     */
+  /**
+   * Function that takes care of adding a new key.<br>
+   * A new key can be added only if:
+   * <ul>
+   * <li>This is a new key and no prior key version exist.</li>
+   * <li>If the key exists (has versions), then the new version to be added should be greater than
+   * the version that already exists.</li>
+   * </ul>
+   *
+   * @param keyName   Name of the key to be added
+   * @param version   Key Version
+   * @param algorithm Algorithm used
+   * @param masterKey Master key
+   * @return this
+   */
   public InMemoryKeystore addKey(String keyName, int version,
                                  EncryptionAlgorithm algorithm,
                                  byte[] masterKey) throws IOException {
@@ -293,8 +295,8 @@ public class InMemoryKeystore implements KeyProvider {
         buffer);
 
     /* Check whether the key is already present and has a smaller version */
-    if (currentVersion.get(keyName) != null &&
-        currentVersion.get(keyName) >= version) {
+    Integer currentKeyVersion = currentVersion.get(keyName);
+    if (currentKeyVersion != null && currentKeyVersion >= version) {
       throw new IOException(String
           .format("Key %s with equal or higher version %d already exists",
               keyName, version));
@@ -312,7 +314,7 @@ public class InMemoryKeystore implements KeyProvider {
 
     private final byte[] material;
 
-    public KeyVersion(final String keyName, final int version,
+    KeyVersion(final String keyName, final int version,
         final EncryptionAlgorithm algorithm, final byte[] material) {
       super(keyName, version, algorithm);
       this.material = material;

@@ -106,6 +106,14 @@ namespace orc {
     EXPECT_EQ(std::numeric_limits<int64_t>::min() + 500, other->getSum());
     intStats->merge(*other);
     EXPECT_FALSE(intStats->hasSum());
+
+    std::unique_ptr<IntegerColumnStatisticsImpl> intStats2(
+      new IntegerColumnStatisticsImpl());
+
+    intStats2->update(1, 1);
+    EXPECT_TRUE(intStats2->hasSum());
+    intStats2->update(std::numeric_limits<int64_t>::max(), 3);
+    EXPECT_FALSE(intStats2->hasSum());
   }
 
   TEST(ColumnStatistics, doubleColumnStatistics) {
@@ -257,10 +265,14 @@ namespace orc {
     tsStats->update(100);
     EXPECT_EQ(100, tsStats->getMaximum());
     EXPECT_EQ(100, tsStats->getMinimum());
+    EXPECT_EQ(0, tsStats->getMinimumNanos());
+    EXPECT_EQ(999999, tsStats->getMaximumNanos());
 
     tsStats->update(150);
     EXPECT_EQ(150, tsStats->getMaximum());
     EXPECT_EQ(100, tsStats->getMinimum());
+    EXPECT_EQ(0, tsStats->getMinimumNanos());
+    EXPECT_EQ(999999, tsStats->getMaximumNanos());
 
     // test merge
     std::unique_ptr<TimestampColumnStatisticsImpl> other(
@@ -270,8 +282,10 @@ namespace orc {
     other->setMinimum(90);
 
     tsStats->merge(*other);
-    EXPECT_EQ(160, other->getMaximum());
-    EXPECT_EQ(90, other->getMinimum());
+    EXPECT_EQ(160, tsStats->getMaximum());
+    EXPECT_EQ(90, tsStats->getMinimum());
+    EXPECT_EQ(0, tsStats->getMinimumNanos());
+    EXPECT_EQ(999999, tsStats->getMaximumNanos());
   }
 
   TEST(ColumnStatistics, dateColumnStatistics) {
@@ -382,5 +396,160 @@ namespace orc {
     // test sum overflow
     decStats->update(Decimal(Int128("123456789012345678901234567890"), 10));
     EXPECT_FALSE(decStats->hasSum());
+  }
+
+  TEST(ColumnStatistics, timestampColumnStatisticsWithNanos) {
+    std::unique_ptr<TimestampColumnStatisticsImpl> tsStats(
+      new TimestampColumnStatisticsImpl());
+
+    // normal operations
+    for (int32_t i = 1; i <= 1024; ++i) {
+      tsStats->update(i * 100, i * 1000);
+      tsStats->increase(1);
+    }
+    EXPECT_EQ(102400, tsStats->getMaximum());
+    EXPECT_EQ(1024000, tsStats->getMaximumNanos());
+    EXPECT_EQ(100, tsStats->getMinimum());
+    EXPECT_EQ(1000, tsStats->getMinimumNanos());
+
+    // update with same milli but different nanos
+    tsStats->update(102400, 1024001);
+    tsStats->update(102400, 1023999);
+    tsStats->update(100, 1001);
+    tsStats->update(100, 999);
+    EXPECT_EQ(102400, tsStats->getMaximum());
+    EXPECT_EQ(1024001, tsStats->getMaximumNanos());
+    EXPECT_EQ(100, tsStats->getMinimum());
+    EXPECT_EQ(999, tsStats->getMinimumNanos());
+
+    // test merge with no change
+    std::unique_ptr<TimestampColumnStatisticsImpl> other1(
+      new TimestampColumnStatisticsImpl());
+    for (int32_t i = 1; i <= 1024; ++i) {
+      other1->update(i * 100, i * 1000);
+      other1->increase(1);
+    }
+    tsStats->merge(*other1);
+    EXPECT_EQ(102400, tsStats->getMaximum());
+    EXPECT_EQ(1024001, tsStats->getMaximumNanos());
+    EXPECT_EQ(100, tsStats->getMinimum());
+    EXPECT_EQ(999, tsStats->getMinimumNanos());
+
+    // test merge with min/max change only in nano
+    std::unique_ptr<TimestampColumnStatisticsImpl> other2(
+      new TimestampColumnStatisticsImpl());
+    other2->update(102400, 1024002);
+    other2->update(100, 998);
+    tsStats->merge(*other2);
+    EXPECT_EQ(102400, tsStats->getMaximum());
+    EXPECT_EQ(1024002, tsStats->getMaximumNanos());
+    EXPECT_EQ(100, tsStats->getMinimum());
+    EXPECT_EQ(998, tsStats->getMinimumNanos());
+
+    // test merge with min/max change in milli
+    std::unique_ptr<TimestampColumnStatisticsImpl> other3(
+      new TimestampColumnStatisticsImpl());
+    other3->update(102401, 1);
+    other3->update(99, 1);
+    tsStats->merge(*other3);
+    EXPECT_EQ(102401, tsStats->getMaximum());
+    EXPECT_EQ(1, tsStats->getMaximumNanos());
+    EXPECT_EQ(99, tsStats->getMinimum());
+    EXPECT_EQ(1, tsStats->getMinimumNanos());
+  }
+
+  TEST(ColumnStatistics, timestampColumnStatisticsProbubuf) {
+    std::unique_ptr<TimestampColumnStatisticsImpl> tsStats(
+      new TimestampColumnStatisticsImpl());
+    tsStats->increase(2);
+    tsStats->update(100);
+    tsStats->update(200);
+
+    proto::ColumnStatistics pbStats;
+    tsStats->toProtoBuf(pbStats);
+    EXPECT_EQ(100, pbStats.timestampstatistics().minimumutc());
+    EXPECT_EQ(200, pbStats.timestampstatistics().maximumutc());
+    EXPECT_FALSE(pbStats.timestampstatistics().has_minimumnanos());
+    EXPECT_FALSE(pbStats.timestampstatistics().has_maximumnanos());
+
+    StatContext ctx(true, nullptr);
+    std::unique_ptr<TimestampColumnStatisticsImpl> tsStatsFromPb(
+      new TimestampColumnStatisticsImpl(pbStats, ctx));
+    EXPECT_EQ(100, tsStatsFromPb->getMinimum());
+    EXPECT_EQ(200, tsStatsFromPb->getMaximum());
+    EXPECT_EQ(0, tsStatsFromPb->getMinimumNanos());
+    EXPECT_EQ(999999, tsStatsFromPb->getMaximumNanos());
+
+    tsStats->update(50, 5555);
+    tsStats->update(500, 9999);
+    pbStats.Clear();
+    tsStats->toProtoBuf(pbStats);
+    EXPECT_EQ(50, pbStats.timestampstatistics().minimumutc());
+    EXPECT_EQ(500, pbStats.timestampstatistics().maximumutc());
+    EXPECT_TRUE(pbStats.timestampstatistics().has_minimumnanos());
+    EXPECT_TRUE(pbStats.timestampstatistics().has_maximumnanos());
+    EXPECT_EQ(5555 + 1, pbStats.timestampstatistics().minimumnanos());
+    EXPECT_EQ(9999 + 1, pbStats.timestampstatistics().maximumnanos());
+
+    tsStatsFromPb.reset(new TimestampColumnStatisticsImpl(pbStats, ctx));
+    EXPECT_EQ(50, tsStatsFromPb->getMinimum());
+    EXPECT_EQ(500, tsStatsFromPb->getMaximum());
+    EXPECT_EQ(5555, tsStatsFromPb->getMinimumNanos());
+    EXPECT_EQ(9999, tsStatsFromPb->getMaximumNanos());
+  }
+
+  TEST(ColumnStatistics, collectionColumnStatistics) {
+    std::unique_ptr<CollectionColumnStatisticsImpl> collectionStats(
+      new CollectionColumnStatisticsImpl());
+
+    // initial state
+    EXPECT_EQ(0, collectionStats->getNumberOfValues());
+    EXPECT_FALSE(collectionStats->hasNull());
+    EXPECT_FALSE(collectionStats->hasMinimumChildren());
+    EXPECT_FALSE(collectionStats->hasMaximumChildren());
+    EXPECT_TRUE(collectionStats->hasTotalChildren());
+    EXPECT_EQ(0, collectionStats->getTotalChildren());
+
+    // normal operations
+    collectionStats->increase(1);
+    EXPECT_EQ(1, collectionStats->getNumberOfValues());
+
+    collectionStats->increase(0);
+    EXPECT_EQ(1, collectionStats->getNumberOfValues());
+
+    collectionStats->increase(9999999999999999l);
+    EXPECT_EQ(10000000000000000l, collectionStats->getNumberOfValues());
+
+    collectionStats->update(10);
+    EXPECT_EQ(10, collectionStats->getMaximumChildren());
+    EXPECT_EQ(10, collectionStats->getMinimumChildren());
+
+    collectionStats->update(20);
+    EXPECT_EQ(20, collectionStats->getMaximumChildren());
+    EXPECT_EQ(10, collectionStats->getMinimumChildren());
+
+    EXPECT_EQ(30, collectionStats->getTotalChildren());
+    // test merge
+    std::unique_ptr<CollectionColumnStatisticsImpl> other(
+      new CollectionColumnStatisticsImpl());
+
+    other->update(40);
+    other->update(30);
+
+    collectionStats->merge(*other);
+    EXPECT_EQ(40, other->getMaximumChildren());
+    EXPECT_EQ(30, other->getMinimumChildren());
+    EXPECT_EQ(40, collectionStats->getMaximumChildren());
+    EXPECT_EQ(10, collectionStats->getMinimumChildren());
+    EXPECT_EQ(100, collectionStats->getTotalChildren());
+
+    // test overflow
+    other->update(std::numeric_limits<uint64_t>::max());
+    EXPECT_FALSE(other->hasTotalChildren());
+    // test merge overflow
+    other->setTotalChildren(std::numeric_limits<uint64_t>::max() - 50);
+    EXPECT_EQ(std::numeric_limits<uint64_t>::max() - 50, other->getTotalChildren());
+    collectionStats->merge(*other);
+    EXPECT_FALSE(collectionStats->hasTotalChildren());
   }
 }

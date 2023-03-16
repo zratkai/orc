@@ -16,9 +16,10 @@ Chinna Rao Lalam        | chinnaraol   | Committer
 Chaoyu Tang             | ctang        | Committer
 Carl Steinbach          | cws          | Committer
 Daniel Dai              | daijy        | Committer
+Dongjoon Hyun           | dongjoon     | PMC Chair
 Deepak Majeti           | mdeepak      | PMC
 Eugene Koifman          | ekoifman     | PMC
-Gang Wu                 | gangwu       | Committer
+Gang Wu                 | gangwu       | PMC
 Alan Gates              | gates        | PMC
 Gopal Vijayaraghavan    | gopalv       | PMC
 Gunther Hagleitner      | gunther      | Committer
@@ -32,31 +33,43 @@ Lefty Leverenz          | leftyl       | PMC
 Rui Li                  | lirui        | Committer
 Mithun Radhakrishnan    | mithun       | Committer
 Matthew McCline         | mmccline     | Committer
+Sandeep More            | moresandeep  | Committer
 Naveen Gangam           | ngangam      | Committer
 Owen O'Malley           | omalley      | PMC
+Panagiotis Garefalakis  | pgaref       | PMC
 Prasanth Jayachandran   | prasanthj    | PMC
 Pengcheng Xiong         | pxiong       | Committer
 Rajesh Balamohan        | rbalamohan   | Committer
+Renat Valiullin         | reval        | Committer
 Sergey Shelukhin        | sershe       | Committer
 Sergio Pena             | spena        | Committer
 Siddharth Seth          | sseth        | Committer
+Quanlong Huang          | stigahuang   | Committer
 Stephen Walkauskas      | swalkaus     | Committer
 Vaibhav Gumashta        | vgumashta    | Committer
 Wei Zheng               | weiz         | Committer
+William Hyun            | william      | PMC
 Xiening Dai             | xndai        | Committer
 Xuefu Zhang             | xuefu        | Committer
 Ferdinand Xu            | xuf          | Committer
 Yongzhi Chen            | ychena       | Committer
+Yiqun Zhang             | yqzhang      | Committer
 Aihua Xu                | zihuaxu      | Committer
 
 Companies with employees that are committers:
 
 * Alibaba
+* Amazon
+* Apple
 * Cloudera
+* Confluent
 * Facebook
 * Hortonworks
+* Huya
 * Intel
 * LinkedIn
 * Microsoft
+* Uber
 * Vertica
+* Workday
 * Yahoo

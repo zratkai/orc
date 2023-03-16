@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,18 +20,25 @@ package org.apache.orc.impl;
 
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.OrcConf;
 import org.apache.orc.OrcFile;
+import org.apache.orc.Reader;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.orc.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class TestWriterImpl {
 
@@ -41,7 +48,7 @@ public class TestWriterImpl {
   Path testFilePath;
   TypeDescription schema;
 
-  @Before
+  @BeforeEach
   public void openFileSystem() throws Exception {
     conf = new Configuration();
     fs = FileSystem.getLocal(conf);
@@ -51,16 +58,18 @@ public class TestWriterImpl {
     schema = TypeDescription.fromString("struct<x:int,y:int>");
   }
 
-  @After
+  @AfterEach
   public void deleteTestFile() throws Exception {
     fs.delete(testFilePath, false);
   }
 
-  @Test(expected = IOException.class)
+  @Test
   public void testDefaultOverwriteFlagForWriter() throws Exception {
-    // default value of the overwrite flag is false, so this should fail
-    Writer w = OrcFile.createWriter(testFilePath, OrcFile.writerOptions(conf).setSchema(schema));
-    w.close();
+    assertThrows(IOException.class, () -> {
+      // default value of the overwrite flag is false, so this should fail
+      Writer w = OrcFile.createWriter(testFilePath, OrcFile.writerOptions(conf).setSchema(schema));
+      w.close();
+    });
   }
 
   @Test
@@ -68,6 +77,93 @@ public class TestWriterImpl {
     // overriding the flag should result in a successful write (no exception)
     conf.set(OrcConf.OVERWRITE_OUTPUT_FILE.getAttribute(), "true");
     Writer w = OrcFile.createWriter(testFilePath, OrcFile.writerOptions(conf).setSchema(schema));
+    w.close();
+
+    // We should have no stripes available
+    assertEquals(0, w.getStripes().size());
+  }
+
+  @Disabled("ORC-1343: Disable ENABLE_INDEXES tests until reader supports it properly")
+  @Test
+  public void testNoIndexIfEnableIndexIsFalse() throws Exception {
+    conf.set(OrcConf.OVERWRITE_OUTPUT_FILE.getAttribute(), "true");
+    conf.set(OrcConf.ROW_INDEX_STRIDE.getAttribute(), "1000");
+    conf.setBoolean(OrcConf.ENABLE_INDEXES.getAttribute(), false);
+    VectorizedRowBatch b = schema.createRowBatch();
+    LongColumnVector f1 = (LongColumnVector) b.cols[0];
+    LongColumnVector f2 = (LongColumnVector) b.cols[1];
+    Writer w = OrcFile.createWriter(testFilePath, OrcFile.writerOptions(conf).setSchema(schema));
+    long rowCount = 1000;
+    for (int i = 0; i < rowCount; i++) {
+      f1.vector[b.size] = 1 ;
+      f2.vector[b.size] = 2 ;
+      b.size += 1;
+      if (b.size == 10) {
+        w.addRowBatch(b);
+        b.reset();
+      }
+    }
+    w.close();
+
+    for (StripeInformation information: w.getStripes()) {
+      assertEquals(0, information.getIndexLength());
+    }
+  }
+
+  @Test
+  public void testStripes() throws Exception {
+    conf.set(OrcConf.OVERWRITE_OUTPUT_FILE.getAttribute(), "true");
+    VectorizedRowBatch b = schema.createRowBatch();
+    LongColumnVector f1 = (LongColumnVector) b.cols[0];
+    LongColumnVector f2 = (LongColumnVector) b.cols[1];
+    Writer w = OrcFile.createWriter(testFilePath, OrcFile.writerOptions(conf).setSchema(schema));
+    long value = 0;
+    long rowCount = 1024;
+    while (value < rowCount) {
+      f1.vector[b.size] = Long.MIN_VALUE + value;
+      f2.vector[b.size] = Long.MAX_VALUE - value;
+      value += 1;
+      b.size += 1;
+      if (b.size == b.getMaxSize()) {
+        w.addRowBatch(b);
+        b.reset();
+      }
+    }
+    assertEquals(0, w.getStripes().size());
+    w.close();
+    assertEquals(1, w.getStripes().size());
+    assertEquals(rowCount, w.getNumberOfRows());
+    Reader r = OrcFile.createReader(testFilePath, OrcFile.readerOptions(conf));
+    assertEquals(r.getStripes(), w.getStripes());
+  }
+
+  @Test
+  public void testStripeRowCountLimit() throws Exception {
+    conf.set(OrcConf.OVERWRITE_OUTPUT_FILE.getAttribute(), "true");
+    conf.set(OrcConf.STRIPE_ROW_COUNT.getAttribute(),"100");
+    VectorizedRowBatch b = schema.createRowBatch();
+    LongColumnVector f1 = (LongColumnVector) b.cols[0];
+    LongColumnVector f2 = (LongColumnVector) b.cols[1];
+    Writer w = OrcFile.createWriter(testFilePath, OrcFile.writerOptions(conf).setSchema(schema));
+    long rowCount = 1000;
+    for (int i = 0; i < rowCount; i++) {
+      f1.vector[b.size] = Long.MIN_VALUE ;
+      f2.vector[b.size] = Long.MAX_VALUE ;
+      b.size += 1;
+      if (b.size == 10) {
+        w.addRowBatch(b);
+        b.reset();
+      }
+    }
+    w.close();
+    assertEquals(10, w.getStripes().size());
+  }
+
+  @Test
+  public void testCloseIsIdempotent() throws IOException {
+    conf.set(OrcConf.OVERWRITE_OUTPUT_FILE.getAttribute(), "true");
+    Writer w = OrcFile.createWriter(testFilePath, OrcFile.writerOptions(conf).setSchema(schema));
+    w.close();
     w.close();
   }
 

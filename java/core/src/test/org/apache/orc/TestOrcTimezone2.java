@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,86 +17,70 @@
  */
 package org.apache.orc;
 
-import static junit.framework.Assert.assertEquals;
-
-import java.io.File;
-import java.sql.Timestamp;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-import java.util.Random;
-import java.util.TimeZone;
-
+import com.google.common.collect.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
-import com.google.common.collect.Lists;
+import java.io.File;
+import java.sql.Timestamp;
+import java.util.List;
+import java.util.Random;
+import java.util.TimeZone;
+import java.util.stream.Stream;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  *
  */
-@RunWith(Parameterized.class)
 public class TestOrcTimezone2 {
   Path workDir = new Path(System.getProperty("test.tmp.dir",
       "target" + File.separator + "test" + File.separator + "tmp"));
   Configuration conf;
   FileSystem fs;
   Path testFilePath;
-  String writerTimeZone;
-  String readerTimeZone;
   static TimeZone defaultTimeZone = TimeZone.getDefault();
 
-  public TestOrcTimezone2(String writerTZ, String readerTZ) {
-    this.writerTimeZone = writerTZ;
-    this.readerTimeZone = readerTZ;
-  }
-
-  @Parameterized.Parameters
-  public static Collection<Object[]> data() {
+  private static Stream<Arguments> data() {
     String[] allTimeZones = TimeZone.getAvailableIDs();
     Random rand = new Random(123);
     int len = allTimeZones.length;
     int n = 500;
-    Object[][] data = new Object[n][];
+    Arguments[] data = new Arguments[n];
     for (int i = 0; i < n; i++) {
       int wIdx = rand.nextInt(len);
       int rIdx = rand.nextInt(len);
-      data[i] = new Object[2];
-      data[i][0] = allTimeZones[wIdx];
-      data[i][1] = allTimeZones[rIdx];
+      data[i] = Arguments.of(allTimeZones[wIdx], allTimeZones[rIdx]);
     }
-    return Arrays.asList(data);
+    return Stream.of(data);
   }
 
-  @Rule
-  public TestName testCaseName = new TestName();
-
-  @Before
-  public void openFileSystem() throws Exception {
+  @BeforeEach
+  public void openFileSystem(TestInfo testInfo) throws Exception {
     conf = new Configuration();
     fs = FileSystem.getLocal(conf);
     testFilePath = new Path(workDir, "TestOrcFile." +
-        testCaseName.getMethodName() + ".orc");
+        testInfo.getTestMethod().get().getName() + ".orc");
     fs.delete(testFilePath, false);
   }
 
-  @After
+  @AfterEach
   public void restoreTimeZone() {
     TimeZone.setDefault(defaultTimeZone);
   }
 
-  @Test
-  public void testTimestampWriter() throws Exception {
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testTimestampWriter(String writerTimeZone, String readerTimeZone) throws Exception {
     TypeDescription schema = TypeDescription.createTimestamp();
 
     TimeZone.setDefault(TimeZone.getTimeZone(writerTimeZone));

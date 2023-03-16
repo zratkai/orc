@@ -78,11 +78,11 @@ public class BufferChunk extends DiskRangeList {
       sliceBuf.position(newPos);
       sliceBuf.limit(newLimit);
     } catch (Throwable t) {
-      LOG.error("Failed to slice buffer chunk with range" + " [" + this.offset + ", " + this.end
-          + "), position: " + chunk.position() + " limit: " + chunk.limit() + ", "
-          + (chunk.isDirect() ? "direct" : "array") + "; to [" + offset + ", " + end + ") "
-          + t.getClass());
-      throw new RuntimeException(t);
+      throw new RuntimeException(
+              "Failed to slice buffer chunk with range" + " [" + this.offset + ", " + this.end
+              + "), position: " + chunk.position() + " limit: " + chunk.limit() + ", "
+              + (chunk.isDirect() ? "direct" : "array") + "; to [" + offset + ", " + end + ") "
+              + t.getClass(), t);
     }
     return new BufferChunk(sliceBuf, offset + shiftBy);
   }

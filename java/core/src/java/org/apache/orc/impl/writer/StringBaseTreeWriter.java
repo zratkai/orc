@@ -20,18 +20,19 @@ package org.apache.orc.impl.writer;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
-import org.apache.hadoop.io.Text;
 import org.apache.orc.OrcConf;
 import org.apache.orc.OrcProto;
 import org.apache.orc.StringColumnStatistics;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.impl.CryptoUtils;
+import org.apache.orc.impl.Dictionary;
 import org.apache.orc.impl.DynamicIntArray;
 import org.apache.orc.impl.IntegerWriter;
 import org.apache.orc.impl.OutStream;
 import org.apache.orc.impl.PositionRecorder;
 import org.apache.orc.impl.PositionedOutputStream;
 import org.apache.orc.impl.StreamName;
+import org.apache.orc.impl.StringHashTableDictionary;
 import org.apache.orc.impl.StringRedBlackTree;
 
 import java.io.IOException;
@@ -39,13 +40,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
+import static org.apache.orc.OrcConf.DICTIONARY_IMPL;
+import static org.apache.orc.impl.Dictionary.INITIAL_DICTIONARY_SIZE;
+
+
 public abstract class StringBaseTreeWriter extends TreeWriterBase {
-  private static final int INITIAL_DICTIONARY_SIZE = 4096;
+  // Stream for dictionary's key
   private final OutStream stringOutput;
   protected final IntegerWriter lengthOutput;
+  // Stream for dictionary-encoded value
   private final IntegerWriter rowOutput;
-  protected final StringRedBlackTree dictionary =
-      new StringRedBlackTree(INITIAL_DICTIONARY_SIZE);
   protected final DynamicIntArray rows = new DynamicIntArray();
   protected final PositionedOutputStream directStreamOutput;
   private final List<OrcProto.RowIndexEntry> savedRowIndex =
@@ -55,32 +59,48 @@ public abstract class StringBaseTreeWriter extends TreeWriterBase {
   // If the number of keys in a dictionary is greater than this fraction of
   //the total number of non-null rows, turn off dictionary encoding
   private final double dictionaryKeySizeThreshold;
+  protected Dictionary dictionary;
   protected boolean useDictionaryEncoding = true;
   private boolean isDirectV2 = true;
   private boolean doneDictionaryCheck;
   private final boolean strideDictionaryCheck;
 
+  private static Dictionary createDict(Configuration conf) {
+    String dictImpl = conf.get(DICTIONARY_IMPL.getAttribute(),
+        DICTIONARY_IMPL.getDefaultValue().toString()).toUpperCase();
+    switch (Dictionary.IMPL.valueOf(dictImpl)) {
+      case RBTREE:
+        return new StringRedBlackTree(INITIAL_DICTIONARY_SIZE);
+      case HASH:
+        return new StringHashTableDictionary(INITIAL_DICTIONARY_SIZE);
+      default:
+        throw new UnsupportedOperationException("Unknown implementation:" + dictImpl);
+    }
+  }
+
   StringBaseTreeWriter(TypeDescription schema,
                        WriterEncryptionVariant encryption,
-                       WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
-    this.isDirectV2 = isNewWriteFormat(writer);
-    directStreamOutput = writer.createStream(
+                       WriterContext context) throws IOException {
+    super(schema, encryption, context);
+    Configuration conf = context.getConfiguration();
+
+    this.dictionary = createDict(conf);
+    this.isDirectV2 = isNewWriteFormat(context);
+    directStreamOutput = context.createStream(
         new StreamName(id, OrcProto.Stream.Kind.DATA, encryption));
-    stringOutput = writer.createStream(
+    stringOutput = context.createStream(
         new StreamName(id, OrcProto.Stream.Kind.DICTIONARY_DATA, encryption));
-    lengthOutput = createIntegerWriter(writer.createStream(
+    lengthOutput = createIntegerWriter(context.createStream(
         new StreamName(id, OrcProto.Stream.Kind.LENGTH, encryption)),
-        false, isDirectV2, writer);
+        false, isDirectV2, context);
     rowOutput = createIntegerWriter(directStreamOutput, false, isDirectV2,
-        writer);
+        context);
     if (rowIndexPosition != null) {
       recordPosition(rowIndexPosition);
     }
     rowIndexValueCount.add(0L);
-    buildIndex = writer.buildIndex();
-    Configuration conf = writer.getConfiguration();
-    dictionaryKeySizeThreshold = writer.getDictionaryKeySizeThreshold(id);
+    buildIndex = context.buildIndex();
+    dictionaryKeySizeThreshold = context.getDictionaryKeySizeThreshold(id);
     strideDictionaryCheck =
         OrcConf.ROW_INDEX_STRIDE_DICTIONARY_CHECK.getBoolean(conf);
     if (dictionaryKeySizeThreshold <= 0.0) {
@@ -109,7 +129,6 @@ public abstract class StringBaseTreeWriter extends TreeWriterBase {
     // checking would not have happened. So do it again here.
     checkDictionaryEncoding();
 
-    checkDictionaryEncoding();
     if (!useDictionaryEncoding) {
       stringOutput.suppress();
     }
@@ -137,15 +156,14 @@ public abstract class StringBaseTreeWriter extends TreeWriterBase {
     final int[] dumpOrder = new int[dictionary.size()];
 
     if (useDictionaryEncoding) {
-      // Write the dictionary by traversing the red-black tree writing out
+      // Write the dictionary by traversing the dictionary writing out
       // the bytes and lengths; and creating the map from the original order
       // to the final sorted order.
-
-      dictionary.visit(new StringRedBlackTree.Visitor() {
+      dictionary.visit(new Dictionary.Visitor() {
         private int currentId = 0;
 
         @Override
-        public void visit(StringRedBlackTree.VisitorContext context
+        public void visit(Dictionary.VisitorContext context
         ) throws IOException {
           context.writeBytes(stringOutput);
           lengthOutput.write(context.getLength());
@@ -159,7 +177,6 @@ public abstract class StringBaseTreeWriter extends TreeWriterBase {
     int length = rows.size();
     int rowIndexEntry = 0;
     OrcProto.RowIndex.Builder rowIndex = getRowIndex();
-    Text text = new Text();
     // write the values translated into the dump order.
     for (int i = 0; i <= length; ++i) {
       // now that we are writing out the row values, we can finalize the
@@ -183,9 +200,8 @@ public abstract class StringBaseTreeWriter extends TreeWriterBase {
         if (useDictionaryEncoding) {
           rowOutput.write(dumpOrder[rows.get(i)]);
         } else {
-          dictionary.getText(text, rows.get(i));
-          directStreamOutput.write(text.getBytes(), 0, text.getLength());
-          lengthOutput.write(text.getLength());
+          final int writeLen = dictionary.writeTo(directStreamOutput, rows.get(i));
+          lengthOutput.write(writeLen);
         }
       }
     }

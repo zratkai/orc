@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,16 +17,17 @@
  */
 package org.apache.orc.impl;
 
+import org.apache.hadoop.io.Text;
+
 import java.io.IOException;
 import java.io.OutputStream;
-
-import org.apache.hadoop.io.Text;
+import java.nio.ByteBuffer;
 
 /**
  * A red-black tree that stores strings. The strings are stored as UTF-8 bytes
  * and an offset for each entry.
  */
-public class StringRedBlackTree extends RedBlackTree {
+public class StringRedBlackTree extends RedBlackTree implements Dictionary {
   private final DynamicByteArray byteArray = new DynamicByteArray();
   private final DynamicIntArray keyOffsets;
   private final Text newKey = new Text();
@@ -55,6 +56,7 @@ public class StringRedBlackTree extends RedBlackTree {
     return addNewKey();
   }
 
+  @Override
   public int add(byte[] bytes, int offset, int length) {
     newKey.set(bytes, offset, length);
     return addNewKey();
@@ -73,84 +75,10 @@ public class StringRedBlackTree extends RedBlackTree {
                              start, end - start);
   }
 
-  /**
-   * The information about each node.
-   */
-  public interface VisitorContext {
-    /**
-     * Get the position where the key was originally added.
-     * @return the number returned by add.
-     */
-    int getOriginalPosition();
 
-    /**
-     * Write the bytes for the string to the given output stream.
-     * @param out the stream to write to.
-     * @throws IOException
-     */
-    void writeBytes(OutputStream out) throws IOException;
 
-    /**
-     * Get the original string.
-     * @return the string
-     */
-    Text getText();
-
-    /**
-     * Get the number of bytes.
-     * @return the string's length in bytes
-     */
-    int getLength();
-  }
-
-  /**
-   * The interface for visitors.
-   */
-  public interface Visitor {
-    /**
-     * Called once for each node of the tree in sort order.
-     * @param context the information about each node
-     * @throws IOException
-     */
-    void visit(VisitorContext context) throws IOException;
-  }
-
-  private class VisitorContextImpl implements VisitorContext {
-    private int originalPosition;
-    private int start;
-    private int end;
-    private final Text text = new Text();
-
-    public int getOriginalPosition() {
-      return originalPosition;
-    }
-
-    public Text getText() {
-      byteArray.setText(text, start, end - start);
-      return text;
-    }
-
-    public void writeBytes(OutputStream out) throws IOException {
-      byteArray.write(out, start, end - start);
-    }
-
-    public int getLength() {
-      return end - start;
-    }
-
-    void setPosition(int position) {
-      originalPosition = position;
-      start = keyOffsets.get(originalPosition);
-      if (position + 1 == keyOffsets.size()) {
-        end = byteArray.size();
-      } else {
-        end = keyOffsets.get(originalPosition + 1);
-      }
-    }
-  }
-
-  private void recurse(int node, Visitor visitor, VisitorContextImpl context
-                      ) throws IOException {
+  private void recurse(int node, Dictionary.Visitor visitor,
+      VisitorContextImpl context) throws IOException {
     if (node != NULL) {
       recurse(getLeft(node), visitor, context);
       context.setPosition(node);
@@ -164,28 +92,36 @@ public class StringRedBlackTree extends RedBlackTree {
    * @param visitor the action to be applied to each node
    * @throws IOException
    */
-  public void visit(Visitor visitor) throws IOException {
-    recurse(root, visitor, new VisitorContextImpl());
+  @Override
+  public void visit(Dictionary.Visitor visitor) throws IOException {
+    recurse(root, visitor,
+        new VisitorContextImpl(this.byteArray, this.keyOffsets));
   }
 
   /**
    * Reset the table to empty.
    */
+  @Override
   public void clear() {
     super.clear();
     byteArray.clear();
     keyOffsets.clear();
   }
 
+  @Override
   public void getText(Text result, int originalPosition) {
-    int offset = keyOffsets.get(originalPosition);
-    int length;
-    if (originalPosition + 1 == keyOffsets.size()) {
-      length = byteArray.size() - offset;
-    } else {
-      length = keyOffsets.get(originalPosition + 1) - offset;
-    }
-    byteArray.setText(result, offset, length);
+    DictionaryUtils.getTextInternal(result, originalPosition, this.keyOffsets, this.byteArray);
+  }
+
+  @Override
+  public ByteBuffer getText(int positionInKeyOffset) {
+    return DictionaryUtils.getTextInternal(positionInKeyOffset, this.keyOffsets, this.byteArray);
+  }
+
+  @Override
+  public int writeTo(OutputStream out, int position) throws IOException {
+    return DictionaryUtils.writeToTextInternal(out, position, this.keyOffsets,
+        this.byteArray);
   }
 
   /**
@@ -200,6 +136,7 @@ public class StringRedBlackTree extends RedBlackTree {
    * Calculate the approximate size in memory.
    * @return the number of bytes used in storing the tree.
    */
+  @Override
   public long getSizeInBytes() {
     return byteArray.getSizeInBytes() + keyOffsets.getSizeInBytes() +
       super.getSizeInBytes();

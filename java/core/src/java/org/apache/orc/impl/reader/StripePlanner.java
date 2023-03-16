@@ -30,23 +30,29 @@ import org.apache.orc.impl.BufferChunkList;
 import org.apache.orc.impl.CryptoUtils;
 import org.apache.orc.impl.InStream;
 import org.apache.orc.impl.OrcIndex;
+import org.apache.orc.impl.PhysicalFsWriter;
 import org.apache.orc.impl.RecordReaderUtils;
 import org.apache.orc.impl.StreamName;
+import org.apache.orc.impl.reader.tree.TypeReader;
 import org.jetbrains.annotations.NotNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.Key;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * This class handles parsing the stripe information and handling the necessary
  * filtering and selection.
- *
+ * <p>
  * It supports:
  * <ul>
  *   <li>column projection</li>
@@ -55,6 +61,7 @@ import java.util.Map;
  * </ul>
  */
 public class StripePlanner {
+  private static final Logger LOG = LoggerFactory.getLogger(StripePlanner.class);
   // global information
   private final TypeDescription schema;
   private final OrcFile.WriterVersion version;
@@ -68,7 +75,7 @@ public class StripePlanner {
   private String writerTimezone;
   private long currentStripeId;
   private long originalStripeId;
-  private Map<StreamName, StreamInformation> streams = new HashMap<>();
+  private final Map<StreamName, StreamInformation> streams = new HashMap<>();
   // the index streams sorted by offset
   private final List<StreamInformation> indexStreams = new ArrayList<>();
   // the data streams sorted by offset
@@ -76,6 +83,8 @@ public class StripePlanner {
   private final OrcProto.Stream.Kind[] bloomFilterKinds;
   // does each column have a null stream?
   private final boolean[] hasNull;
+  // identifies the filter column ids whose streams should always be read
+  private final Set<Integer> filterColIds;
 
   /**
    * Create a stripe parser.
@@ -85,13 +94,15 @@ public class StripePlanner {
    * @param version the file writer version
    * @param ignoreNonUtf8BloomFilter ignore old non-utf8 bloom filters
    * @param maxBufferSize the largest single buffer to use
+   * @param filterColIds Column Ids that identify the filter columns
    */
   public StripePlanner(TypeDescription schema,
                        ReaderEncryption encryption,
                        DataReader dataReader,
                        OrcFile.WriterVersion version,
                        boolean ignoreNonUtf8BloomFilter,
-                       long maxBufferSize) {
+                       long maxBufferSize,
+                       Set<Integer> filterColIds) {
     this.schema = schema;
     this.version = version;
     encodings = new OrcProto.ColumnEncoding[schema.getMaximumId()+1];
@@ -101,11 +112,22 @@ public class StripePlanner {
     bloomFilterKinds = new OrcProto.Stream.Kind[schema.getMaximumId() + 1];
     hasNull = new boolean[schema.getMaximumId() + 1];
     this.maxBufferSize = maxBufferSize;
+    this.filterColIds = filterColIds;
+  }
+
+  public StripePlanner(TypeDescription schema,
+                       ReaderEncryption encryption,
+                       DataReader dataReader,
+                       OrcFile.WriterVersion version,
+                       boolean ignoreNonUtf8BloomFilter,
+                       long maxBufferSize) {
+    this(schema, encryption, dataReader, version, ignoreNonUtf8BloomFilter, maxBufferSize,
+         Collections.emptySet());
   }
 
   public StripePlanner(StripePlanner old) {
     this(old.schema, old.encryption, old.dataReader, old.version,
-        old.ignoreNonUtf8BloomFilter, old.maxBufferSize);
+         old.ignoreNonUtf8BloomFilter, old.maxBufferSize, old.filterColIds);
   }
 
   /**
@@ -141,13 +163,29 @@ public class StripePlanner {
    * @param rowGroupInclude null for all of the rows or an array with boolean
    *                       for each row group in the current stripe.
    * @param forceDirect should direct buffers be created?
+   * @param readPhase influences the columns that are read e.g. if readPhase = LEADERS then only
+   *                  the data required for FILTER columns is read
    * @return the buffers that were read
    */
   public BufferChunkList readData(OrcIndex index,
-                                boolean[] rowGroupInclude,
-                                boolean forceDirect) throws IOException {
+                                  boolean[] rowGroupInclude,
+                                  boolean forceDirect,
+                                  TypeReader.ReadPhase readPhase) throws IOException {
     BufferChunkList chunks = (index == null || rowGroupInclude == null)
-        ? planDataReading() : planPartialDataReading(index, rowGroupInclude);
+        ? planDataReading(readPhase) : planPartialDataReading(index, rowGroupInclude,
+                                                                   readPhase);
+    dataReader.readFileData(chunks, forceDirect);
+    return chunks;
+  }
+
+  public BufferChunkList readFollowData(OrcIndex index,
+                                        boolean[] rowGroupInclude,
+                                        int rgIdx,
+                                        boolean forceDirect)
+    throws IOException {
+    BufferChunkList chunks = (index == null || rowGroupInclude == null)
+        ? planDataReading(TypeReader.ReadPhase.FOLLOWERS)
+        : planPartialDataReading(index, rowGroupInclude, rgIdx, TypeReader.ReadPhase.FOLLOWERS);
     dataReader.readFileData(chunks, forceDirect);
     return chunks;
   }
@@ -236,18 +274,20 @@ public class StripePlanner {
    * @param offset the position in the file for this stream
    * @param columnInclude which columns are being read
    * @param stream the stream to consider
+   * @param area only the area will be included
    * @param variant the variant being read
    * @return the offset for the next stream
    */
   private long handleStream(long offset,
                             boolean[] columnInclude,
                             OrcProto.Stream stream,
+                            StreamName.Area area,
                             ReaderEncryptionVariant variant) {
     int column = stream.getColumn();
     if (stream.hasKind()) {
       OrcProto.Stream.Kind kind = stream.getKind();
 
-      if (kind == OrcProto.Stream.Kind.ENCRYPTED_INDEX ||
+      if (StreamName.getArea(kind) != area || kind == OrcProto.Stream.Kind.ENCRYPTED_INDEX ||
               kind == OrcProto.Stream.Kind.ENCRYPTED_DATA) {
         // Ignore the placeholders that shouldn't count toward moving the
         // offsets.
@@ -269,13 +309,13 @@ public class StripePlanner {
           StreamInformation info =
               new StreamInformation(kind, column, offset, stream.getLength());
           switch (StreamName.getArea(kind)) {
-          case DATA:
-            dataStreams.add(info);
-            break;
-          case INDEX:
-            indexStreams.add(info);
-            break;
-          default:
+            case DATA:
+              dataStreams.add(info);
+              break;
+            case INDEX:
+              indexStreams.add(info);
+              break;
+            default:
           }
           streams.put(new StreamName(column, kind), info);
         }
@@ -286,6 +326,8 @@ public class StripePlanner {
 
   /**
    * Find the complete list of streams.
+   * CurrentOffset total order must be consistent with write
+   * {@link PhysicalFsWriter#finalizeStripe}
    * @param streamStart the starting offset of streams in the file
    * @param footer the footer for the stripe
    * @param columnInclude which columns are being read
@@ -295,19 +337,40 @@ public class StripePlanner {
                            boolean[] columnInclude) throws IOException {
     long currentOffset = streamStart;
     Arrays.fill(bloomFilterKinds, null);
+    // +-----------------+---------------+-----------------+---------------+
+    // |                 |               |                 |               |
+    // |   unencrypted   |   encrypted   |   unencrypted   |   encrypted   |
+    // |      index      |     index     |      data       |     data      |
+    // |                 |               |                 |               |
+    // +-----------------+---------------+-----------------+---------------+
+    // Storage layout of index and data, So we need to find the streams in this order
+    //
+    // find index streams, encrypted first and then unencrypted
+    currentOffset = findStreamsByArea(currentOffset, footer, StreamName.Area.INDEX, columnInclude);
+
+    // find data streams, encrypted first and then unencrypted
+    findStreamsByArea(currentOffset, footer, StreamName.Area.DATA, columnInclude);
+  }
+
+  private long findStreamsByArea(long currentOffset,
+                                OrcProto.StripeFooter footer,
+                                StreamName.Area area,
+                                boolean[] columnInclude) {
+    // find unencrypted streams
     for(OrcProto.Stream stream: footer.getStreamsList()) {
-      currentOffset += handleStream(currentOffset, columnInclude, stream, null);
+      currentOffset += handleStream(currentOffset, columnInclude, stream, area, null);
     }
 
-    // Add the encrypted streams that we are using
+    // find encrypted streams
     for(ReaderEncryptionVariant variant: encryption.getVariants()) {
       int variantId = variant.getVariantId();
       OrcProto.StripeEncryptionVariant stripeVariant =
           footer.getEncryption(variantId);
       for(OrcProto.Stream stream: stripeVariant.getStreamsList()) {
-        currentOffset += handleStream(currentOffset, columnInclude, stream, variant);
+        currentOffset += handleStream(currentOffset, columnInclude, stream, area, variant);
       }
     }
+    return currentOffset;
   }
 
   /**
@@ -337,17 +400,17 @@ public class StripePlanner {
             "index", stream.firstChunk, stream.offset,
             stream.length, getStreamOptions(column, stream.kind)));
         switch (stream.kind) {
-        case ROW_INDEX:
-          indexes[column] = OrcProto.RowIndex.parseFrom(data);
-          break;
-        case BLOOM_FILTER:
-        case BLOOM_FILTER_UTF8:
-          if (sargColumns != null && sargColumns[column]) {
-            blooms[column] = OrcProto.BloomFilterIndex.parseFrom(data);
-          }
-          break;
-        default:
-          break;
+          case ROW_INDEX:
+            indexes[column] = OrcProto.RowIndex.parseFrom(data);
+            break;
+          case BLOOM_FILTER:
+          case BLOOM_FILTER_UTF8:
+            if (sargColumns != null && sargColumns[column]) {
+              blooms[column] = OrcProto.BloomFilterIndex.parseFrom(data);
+            }
+            break;
+          default:
+            break;
         }
       }
     }
@@ -379,19 +442,19 @@ public class StripePlanner {
     BufferChunkList result = new BufferChunkList();
     for(StreamInformation stream: indexStreams) {
       switch (stream.kind) {
-      case ROW_INDEX:
-        addChunk(result, stream, stream.offset, stream.length);
-        break;
-      case BLOOM_FILTER:
-      case BLOOM_FILTER_UTF8:
-        if (bloomFilterColumns[stream.column] &&
-                bloomFilterKinds[stream.column] == stream.kind) {
+        case ROW_INDEX:
           addChunk(result, stream, stream.offset, stream.length);
-        }
-        break;
-      default:
-        // PASS
-        break;
+          break;
+        case BLOOM_FILTER:
+        case BLOOM_FILTER_UTF8:
+          if (bloomFilterColumns[stream.column] &&
+                  bloomFilterKinds[stream.column] == stream.kind) {
+            addChunk(result, stream, stream.offset, stream.length);
+          }
+          break;
+        default:
+          // PASS
+          break;
       }
     }
     return result;
@@ -400,12 +463,24 @@ public class StripePlanner {
   /**
    * Plans the list of disk ranges that the given stripe needs to read the
    * data.
+   *
+   * @param readPhase Determines the columns that will be planned.
    * @return a list of merged disk ranges to read
    */
-  private BufferChunkList planDataReading() {
+  private BufferChunkList planDataReading(TypeReader.ReadPhase readPhase) {
     BufferChunkList result = new BufferChunkList();
     for(StreamInformation stream: dataStreams) {
-      addChunk(result, stream, stream.offset, stream.length);
+      if (readPhase == TypeReader.ReadPhase.ALL
+          ||(readPhase == TypeReader.ReadPhase.LEADERS
+             && filterColIds.contains(stream.column))
+          || (readPhase == TypeReader.ReadPhase.FOLLOWERS
+              && !filterColIds.contains(stream.column))) {
+        addChunk(result, stream, stream.offset, stream.length);
+      } else {
+        // In case a filter is present, then don't plan the lazy columns, they will be planned only
+        // as needed.
+        LOG.debug("Skipping planning for lazy column stream {}", stream);
+      }
     }
     return result;
   }
@@ -413,17 +488,17 @@ public class StripePlanner {
   static boolean hadBadBloomFilters(TypeDescription.Category category,
                                     OrcFile.WriterVersion version) {
     switch(category) {
-    case STRING:
-    case CHAR:
-    case VARCHAR:
-      return !version.includes(OrcFile.WriterVersion.HIVE_12055);
-    case DECIMAL:
-      // fixed by ORC-101, but ORC-101 changed stream kind to BLOOM_FILTER_UTF8
-      return true;
-    case TIMESTAMP:
-      return !version.includes(OrcFile.WriterVersion.ORC_135);
-    default:
-      return false;
+      case STRING:
+      case CHAR:
+      case VARCHAR:
+        return !version.includes(OrcFile.WriterVersion.HIVE_12055);
+      case DECIMAL:
+        // fixed by ORC-101, but ORC-101 changed stream kind to BLOOM_FILTER_UTF8
+        return true;
+      case TIMESTAMP:
+        return !version.includes(OrcFile.WriterVersion.ORC_135);
+      default:
+        return false;
     }
   }
 
@@ -442,10 +517,27 @@ public class StripePlanner {
    *
    * @param index              the index to use for offsets
    * @param includedRowGroups  which row groups are needed
+   * @param readPhase          Determines the columns that will be planned.
    * @return the list of disk  ranges that will be loaded
    */
   private BufferChunkList planPartialDataReading(OrcIndex index,
-                                                 @NotNull boolean[] includedRowGroups) {
+                                                 @NotNull boolean[] includedRowGroups,
+                                                 TypeReader.ReadPhase readPhase) {
+    return planPartialDataReading(index, includedRowGroups, 0, readPhase);
+  }
+
+  /**
+   * Plan the ranges of the file that we need to read given the list of
+   * columns and row groups.
+   *
+   * @param index              the index to use for offsets
+   * @param includedRowGroups  which row groups are needed
+   * @return the list of disk  ranges that will be loaded
+   */
+  private BufferChunkList planPartialDataReading(OrcIndex index,
+                                                 @NotNull boolean[] includedRowGroups,
+                                                 int startGroup,
+                                                 TypeReader.ReadPhase readPhase) {
     BufferChunkList result = new BufferChunkList();
     if (hasSomeRowGroups(includedRowGroups)) {
       InStream.StreamOptions compression = dataReader.getCompressionOptions();
@@ -453,56 +545,76 @@ public class StripePlanner {
       int bufferSize = compression.getBufferSize();
       OrcProto.RowIndex[] rowIndex = index.getRowGroupIndex();
       for (StreamInformation stream : dataStreams) {
-        if (RecordReaderUtils.isDictionary(stream.kind, encodings[stream.column])) {
-          addChunk(result, stream, stream.offset, stream.length);
+        if (readPhase == TypeReader.ReadPhase.ALL
+            || (readPhase == TypeReader.ReadPhase.LEADERS && filterColIds.contains(stream.column))
+            || (readPhase == TypeReader.ReadPhase.FOLLOWERS &&
+                !filterColIds.contains(stream.column))) {
+          processStream(stream, result, rowIndex, startGroup,
+                        includedRowGroups, isCompressed, bufferSize);
         } else {
-          int column = stream.column;
-          OrcProto.RowIndex ri = rowIndex[column];
-          TypeDescription.Category kind = schema.findSubtype(column).getCategory();
-          long alreadyRead = 0;
-          for (int group = 0; group < includedRowGroups.length; ++group) {
-            if (includedRowGroups[group]) {
-              // find the last group that is selected
-              int endGroup = group;
-              while (endGroup < includedRowGroups.length - 1 &&
-                         includedRowGroups[endGroup + 1]) {
-                endGroup += 1;
-              }
-              int posn = RecordReaderUtils.getIndexPosition(
-                  encodings[stream.column].getKind(), kind, stream.kind,
-                  isCompressed, hasNull[column]);
-              long start = Math.max(alreadyRead,
-                  stream.offset + (group == 0 ? 0 : ri.getEntry(group).getPositions(posn)));
-              long end = stream.offset;
-              if (endGroup == includedRowGroups.length - 1) {
-                end += stream.length;
-              } else {
-                long nextGroupOffset = ri.getEntry(endGroup + 1).getPositions(posn);
-                end += RecordReaderUtils.estimateRgEndOffset(isCompressed,
-                    bufferSize, false, nextGroupOffset, stream.length);
-              }
-              if (alreadyRead < end) {
-                addChunk(result, stream, start, end - start);
-                alreadyRead = end;
-              }
-              group = endGroup;
-            }
-          }
+          // In case a filter is present, then don't plan the lazy columns, they will be planned only
+          // as needed.
+          LOG.debug("Skipping planning for column stream {} at level {}", stream, readPhase);
         }
       }
     }
     return result;
   }
 
-  private static class StreamInformation {
-    final OrcProto.Stream.Kind kind;
-    final int column;
-    final long offset;
-    final long length;
-    BufferChunk firstChunk;
+  private void processStream(StreamInformation stream,
+                             BufferChunkList result,
+                             OrcProto.RowIndex[] rowIndex,
+                             int startGroup,
+                             boolean[] includedRowGroups,
+                             boolean isCompressed,
+                             int bufferSize) {
+    if (RecordReaderUtils.isDictionary(stream.kind, encodings[stream.column])) {
+      addChunk(result, stream, stream.offset, stream.length);
+    } else {
+      int column = stream.column;
+      OrcProto.RowIndex ri = rowIndex[column];
+      TypeDescription.Category kind = schema.findSubtype(column).getCategory();
+      long alreadyRead = 0;
+      for (int group = startGroup; group < includedRowGroups.length; ++group) {
+        if (includedRowGroups[group]) {
+          // find the last group that is selected
+          int endGroup = group;
+          while (endGroup < includedRowGroups.length - 1 &&
+                 includedRowGroups[endGroup + 1]) {
+            endGroup += 1;
+          }
+          int posn = RecordReaderUtils.getIndexPosition(
+              encodings[stream.column].getKind(), kind, stream.kind,
+              isCompressed, hasNull[column]);
+          long start = Math.max(alreadyRead,
+              stream.offset + (group == 0 ? 0 : ri.getEntry(group).getPositions(posn)));
+          long end = stream.offset;
+          if (endGroup == includedRowGroups.length - 1) {
+            end += stream.length;
+          } else {
+            long nextGroupOffset = ri.getEntry(endGroup + 1).getPositions(posn);
+            end += RecordReaderUtils.estimateRgEndOffset(isCompressed,
+                                                         bufferSize, false, nextGroupOffset,
+                                                         stream.length);
+          }
+          if (alreadyRead < end) {
+            addChunk(result, stream, start, end - start);
+            alreadyRead = end;
+          }
+          group = endGroup;
+        }
+      }
+    }
+  }
 
-    StreamInformation(OrcProto.Stream.Kind kind,
-                      int column, long offset, long length) {
+  public static class StreamInformation {
+    public final OrcProto.Stream.Kind kind;
+    public final int column;
+    public final long offset;
+    public final long length;
+    public BufferChunk firstChunk;
+
+    public StreamInformation(OrcProto.Stream.Kind kind, int column, long offset, long length) {
       this.kind = kind;
       this.column = column;
       this.offset = offset;

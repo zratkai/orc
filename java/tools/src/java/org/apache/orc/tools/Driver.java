@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,8 +19,8 @@
 package org.apache.orc.tools;
 
 import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.GnuParser;
-import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.conf.Configuration;
@@ -39,17 +39,17 @@ public class Driver {
   static Options createOptions() {
     Options result = new Options();
 
-    result.addOption(OptionBuilder
-         .withLongOpt("help")
-         .withDescription("Print help message")
-         .create('h'));
+    result.addOption(Option.builder("h")
+        .longOpt("help")
+        .desc("Print help message")
+        .build());
 
-    result.addOption(OptionBuilder
-        .withLongOpt("define")
-        .withDescription("Set a configuration property")
-        .hasArgs(2)
-        .withValueSeparator()
-        .create('D'));
+    result.addOption(Option.builder("D")
+        .longOpt("define")
+        .desc("Set a configuration property")
+        .numberOfArgs(2)
+        .valueSeparator()
+        .build());
     return result;
   }
 
@@ -59,7 +59,7 @@ public class Driver {
     final String[] commandArgs;
 
     DriverOptions(String[] args) throws ParseException {
-      genericOptions = new GnuParser().parse(createOptions(), args, true);
+      genericOptions = new DefaultParser().parse(createOptions(), args, true);
       String[] unprocessed = genericOptions.getArgs();
       if (unprocessed.length == 0) {
         command = null;
@@ -86,12 +86,15 @@ public class Driver {
           " [--define X=Y] <command> <args>");
       System.err.println();
       System.err.println("Commands:");
-      System.err.println("   meta - print the metadata about the ORC file");
-      System.err.println("   data - print the data from the ORC file");
-      System.err.println("   scan - scan the ORC file");
       System.err.println("   convert - convert CSV and JSON files to ORC");
+      System.err.println("   count - recursively find *.orc and print the number of rows");
+      System.err.println("   data - print the data from the ORC file");
       System.err.println("   json-schema - scan JSON files to determine their schema");
       System.err.println("   key - print information about the keys");
+      System.err.println("   meta - print the metadata about the ORC file");
+      System.err.println("   scan - scan the ORC file");
+      System.err.println("   sizes - list size on disk of each column");
+      System.err.println("   version - print the version of this ORC tool");
       System.err.println();
       System.err.println("To get more help, provide -h to the command");
       System.exit(1);
@@ -101,21 +104,37 @@ public class Driver {
     for(Map.Entry pair: confSettings.entrySet()) {
       conf.set(pair.getKey().toString(), pair.getValue().toString());
     }
-    if ("meta".equals(options.command)) {
-      FileDump.main(conf, options.commandArgs);
-    } else if ("data".equals(options.command)) {
-      PrintData.main(conf, options.commandArgs);
-    } else if ("scan".equals(options.command)) {
-      ScanData.main(conf, options.commandArgs);
-    } else if ("json-schema".equals(options.command)) {
-      JsonSchemaFinder.main(conf, options.commandArgs);
-    } else if ("convert".equals(options.command)) {
-      ConvertTool.main(conf, options.commandArgs);
-    } else if ("key".equals(options.command)) {
-      KeyTool.main(conf, options.commandArgs);
-    } else {
-      System.err.println("Unknown subcommand: " + options.command);
-      System.exit(1);
+    switch (options.command) {
+      case "convert":
+        ConvertTool.main(conf, options.commandArgs);
+        break;
+      case "count":
+        RowCount.main(conf, options.commandArgs);
+        break;
+      case "data":
+        PrintData.main(conf, options.commandArgs);
+        break;
+      case "json-schema":
+        JsonSchemaFinder.main(conf, options.commandArgs);
+        break;
+      case "key":
+        KeyTool.main(conf, options.commandArgs);
+        break;
+      case "meta":
+        FileDump.main(conf, options.commandArgs);
+        break;
+      case "scan":
+        ScanData.main(conf, options.commandArgs);
+        break;
+      case "sizes":
+        ColumnSizes.main(conf, options.commandArgs);
+        break;
+      case "version":
+        PrintVersion.main(conf, options.commandArgs);
+        break;
+      default:
+        System.err.println("Unknown subcommand: " + options.command);
+        System.exit(1);
     }
   }
 }

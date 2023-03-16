@@ -17,11 +17,10 @@
  */
 package org.apache.orc.impl;
 
+import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+
 import java.io.EOFException;
 import java.io.IOException;
-
-import org.apache.commons.io.IOUtils;
-import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 
 /**
  * A reader that reads a sequence of bytes. A control byte is read before
@@ -31,7 +30,7 @@ import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 public class RunLengthByteReader {
   private InStream input;
   private final byte[] literals =
-    new byte[RunLengthByteWriter.MAX_LITERAL_SIZE];
+      new byte[RunLengthByteWriter.MAX_LITERAL_SIZE];
   private int numLiterals = 0;
   private int used = 0;
   private boolean repeat = false;

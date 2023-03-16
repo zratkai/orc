@@ -31,13 +31,13 @@ import java.util.concurrent.TimeUnit;
 /**
  * Conversion utilities from the hybrid Julian/Gregorian calendar to/from the
  * proleptic Gregorian.
- *
+ * <p>
  * The semantics here are to hold the string representation constant and change
  * the epoch offset rather than holding the instant in time constant and change
  * the string representation.
- *
- * These utilities will be fast for the common case (> 1582 AD), but slow for
- * old dates.
+ * <p>
+ * These utilities will be fast for the common case (&gt; 1582 AD), but slow
+ * for old dates.
  */
 public class DateUtils {
   private static final ZoneId UTC = ZoneId.of("UTC");
@@ -175,7 +175,8 @@ public class DateUtils {
 
   public static Integer parseDate(String date, boolean fromProleptic) {
     try {
-      TemporalAccessor time = (fromProleptic ? PROLEPTIC_DATE_FORMAT : HYBRID_DATE_FORMAT).parse(date);
+      TemporalAccessor time =
+          (fromProleptic ? PROLEPTIC_DATE_FORMAT : HYBRID_DATE_FORMAT).parse(date);
       return (int) LocalDate.from(time).toEpochDay();
     } catch (DateTimeParseException e) {
       return null;

@@ -24,14 +24,16 @@ import org.apache.orc.EncryptionAlgorithm;
 import org.apache.orc.InMemoryKeystore;
 import org.apache.orc.OrcConf;
 import org.apache.orc.OrcProto;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.security.Key;
 import java.util.List;
 import java.util.Random;
 
-import static junit.framework.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestCryptoUtils {
 
@@ -70,8 +72,8 @@ public class TestCryptoUtils {
 
     List<String> keyNames = provider.getKeyNames();
     assertEquals(2, keyNames.size());
-    assertEquals(true, keyNames.contains("pii"));
-    assertEquals(true, keyNames.contains("secret"));
+    assertTrue(keyNames.contains("pii"));
+    assertTrue(keyNames.contains("secret"));
     HadoopShims.KeyMetadata meta = provider.getCurrentKeyVersion("pii");
     assertEquals(1, meta.getVersion());
     LocalKey localKey = provider.createLocalKey(meta);
@@ -85,5 +87,12 @@ public class TestCryptoUtils {
     Key key = provider.decryptLocalKey(meta, encrypted);
     assertEquals(new BytesWritable(localKey.getDecryptedKey().getEncoded()).toString(),
         new BytesWritable(key.getEncoded()).toString());
+  }
+
+  @Test
+  public void testInvalidKeyProvider() throws IOException {
+    Configuration conf = new Configuration();
+    OrcConf.KEY_PROVIDER.setString(conf, "");
+    assertNull(CryptoUtils.getKeyProvider(conf, new Random()));
   }
 }

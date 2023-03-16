@@ -12,7 +12,7 @@ to promote compatibility between implementations.
 ## Development community
 
 We have committers from many different companies. The full
-list of [ORC committers](committers.html) is available.
+list of [ORC committers](committers) is available.
 
 ## Mailing Lists
 
@@ -52,16 +52,18 @@ to fetch the pull requests also:
 
 Pull requests will be named "apache/pr/999" for pull request 999.
 
-If you are a committer, add the push url:
+If you are a committer, you need to register your Github id with Apache:
 
-~~~~
-% git remote set-url --push apache https://git-wip-us.apache.org/repos/asf/orc.git
-~~~~
+* Visit [id.apache.org](https://id.apache.org) and add your Github id.
+* Visit [Apache gitbox](https://gitbox.apache.org/setup/) and get authorization for the projects that use Apache gitbox, which includes ORC.
+
+Once this is done, your Github account will be placed in the ORC github team,
+so you'll be able to close PRs, etc.
 
 The important branches are:
 
-* [master](https://github.com/apache/orc/tree/master) -
-  The master branch for all development
+* [main](https://github.com/apache/orc/tree/main) -
+  The main branch for all development
 * branch-X.Y - The release branches
 * [asf-site](https://github.com/apache/orc/tree/asf-site) -
   The generated html pages that are deployed as https://orc.apache.org/
@@ -70,7 +72,7 @@ Releases are tagged as "rel/release-X.Y.Z". Apache's git repository
 guarantees that tags in the "rel/*" namespace are never deleted or
 changed.
 
-Please check our [coding guidelines](coding.html).
+Please check our [coding guidelines](coding).
 
 ## Website shortcuts
 
@@ -88,6 +90,39 @@ From our website, you can use:
 
 ORC uses Commit-Then-Review, so patches can be committed without a
 committer's review. However, most changes should be reviewed first.
+
+## Tests
+
+In principle, new pull requests had better provide test coverage for newly proposed code path.
+In addition, newly added test cases are supposed to fail without the proposed main code.
+In other words, reviewers need to check these two things during the review manually.
+The following is useful during Java code review and tests.
+
+### Running Individual Java Test File
+
+~~~~
+% cd java
+% ./mvnw test -pl core -Dtest=TestRecordReaderImpl
+~~~~
+
+### Running Multiple Java Test Files
+
+~~~~
+% cd java
+% ./mvnw test -pl core -Dtest='Test*Reader*'
+~~~~
+
+### Running Individual Java Test Case
+~~~~
+% cd java
+$ ./mvnw test -pl core -Dtest=TestRecordReaderImpl#testFindColumn
+~~~~
+
+### Running Multiple Java Test Cases
+~~~~
+% cd java
+% ./mvnw test -pl core -Dtest='TestRecordReaderImpl#testFind*'
+~~~~
 
 ## Approving a pull request
 
@@ -107,7 +142,7 @@ You'll want to rebase it and make it a single commit by squashing
 the commits into a single commit.
 
 ~~~~
-% git rebase -i apache/master
+% git rebase -i apache/main
 ~~~~
 
 Update the commit message to sign it using your GPG key and close the
@@ -126,7 +161,7 @@ claiming to have fixed the problem, the form "Closes #999" also works.
 Finally, push the result to Apache:
 
 ~~~~
-% git push apache HEAD:master
+% git push apache HEAD:main
 ~~~~
 
 ## Creating a GPG key
@@ -178,7 +213,7 @@ to dev@orc.apache.org asking for someone to sign it.
 
 The release process for ORC is driven by a Release Manager. They should
 discuss their intention to start the process on the dev list and then
-follow the steps of [how to release ORC](make-release.html).
+follow the steps of [how to release ORC](make-release).
 
 ## Dist Directory
 
@@ -186,7 +221,7 @@ Apache expects the projects to manage their current release artifact
 distribution using subversion. It should be limited to the latest
 release in each of the active release branches.
 
-The ORC dist directory is managed via
+The ORC dist directory is managed via svn in
 [https://dist.apache.org/repos/dist/release/orc](https://dist.apache.org/repos/dist/release/orc).
 The release artifacts are pushed to many mirrors. Files in the dist
 directory are available forever via the [Apache dist
@@ -194,5 +229,5 @@ archive](https://archive.apache.org/dist/orc/).
 
 ## Bylaws
 
-ORC has a set of [bylaws](bylaws.html) that describe the rules for the different
+ORC has a set of [bylaws](bylaws) that describe the rules for the different
 votes within our project.

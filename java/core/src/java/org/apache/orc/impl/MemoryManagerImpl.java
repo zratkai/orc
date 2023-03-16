@@ -18,10 +18,10 @@
 
 package org.apache.orc.impl;
 
-import org.apache.orc.MemoryManager;
-import org.apache.orc.OrcConf;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.orc.MemoryManager;
+import org.apache.orc.OrcConf;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * dynamic partitions, it is easy to end up with many writers in the same task.
  * By managing the size of each allocation, we try to cut down the size of each
  * allocation and keep the task from running out of memory.
- *
+ * <p>
  * This class is not thread safe, but is re-entrant - ensure creation and all
  * invocations are triggered from the same thread.
  */
@@ -76,6 +76,7 @@ public class MemoryManagerImpl implements MemoryManager {
    * @param path the file that is being written
    * @param requestedAllocation the requested buffer size
    */
+  @Override
   public synchronized void addWriter(Path path, long requestedAllocation,
                               Callback callback) throws IOException {
     WriterInfo oldVal = writerList.get(path);
@@ -97,10 +98,10 @@ public class MemoryManagerImpl implements MemoryManager {
    * Remove the given writer from the pool.
    * @param path the file that has been closed
    */
+  @Override
   public synchronized void removeWriter(Path path) throws IOException {
-    WriterInfo val = writerList.get(path);
+    WriterInfo val = writerList.remove(path);
     if (val != null) {
-      writerList.remove(path);
       totalAllocation.addAndGet(-val.allocation);
     }
   }

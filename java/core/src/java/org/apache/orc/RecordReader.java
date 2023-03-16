@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,22 +17,25 @@
  */
 package org.apache.orc;
 
-import java.io.IOException;
-
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+
+import java.io.Closeable;
+import java.io.IOException;
 
 /**
  * A row-by-row iterator for ORC files.
+ * @since 1.1.0
  */
-public interface RecordReader extends AutoCloseable {
+public interface RecordReader extends Closeable {
   /**
    * Read the next row batch. The size of the batch to read cannot be
    * controlled by the callers. Caller need to look at
-   * VectorizedRowBatch.size of the retunred object to know the batch
+   * VectorizedRowBatch.size of the returned object to know the batch
    * size read.
    * @param batch a row batch object to read into
    * @return were more rows available to read?
    * @throws java.io.IOException
+   * @since 1.1.0
    */
   boolean nextBatch(VectorizedRowBatch batch) throws IOException;
 
@@ -41,6 +44,7 @@ public interface RecordReader extends AutoCloseable {
    * call to next().
    * @return the row number from 0 to the number of rows in the file
    * @throws java.io.IOException
+   * @since 1.1.0
    */
   long getRowNumber() throws IOException;
 
@@ -48,17 +52,21 @@ public interface RecordReader extends AutoCloseable {
    * Get the progress of the reader through the rows.
    * @return a fraction between 0.0 and 1.0 of rows read
    * @throws java.io.IOException
+   * @since 1.1.0
    */
   float getProgress() throws IOException;
 
   /**
    * Release the resources associated with the given reader.
    * @throws java.io.IOException
+   * @since 1.1.0
    */
+  @Override
   void close() throws IOException;
 
   /**
    * Seek to a particular row number.
+   * @since 1.1.0
    */
   void seekToRow(long rowCount) throws IOException;
 }

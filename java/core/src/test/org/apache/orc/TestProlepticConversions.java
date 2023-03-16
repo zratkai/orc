@@ -17,9 +17,6 @@
  */
 package org.apache.orc;
 
-import java.time.chrono.Chronology;
-import java.time.chrono.IsoChronology;
-import java.time.format.DateTimeFormatter;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -31,51 +28,42 @@ import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.impl.DateUtils;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.threeten.extra.chrono.HybridChronology;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Collection;
+import java.time.chrono.Chronology;
+import java.time.chrono.IsoChronology;
+import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
-import org.threeten.extra.chrono.HybridChronology;
+import java.util.stream.Stream;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * This class tests all of the combinations of reading and writing the hybrid
  * and proleptic calendars.
  */
-@RunWith(Parameterized.class)
 public class TestProlepticConversions {
 
-  @Parameterized.Parameter
-  public boolean writerProlepticGregorian;
-
-  @Parameterized.Parameter(1)
-  public boolean readerProlepticGregorian;
-
-  @Parameterized.Parameters
-  public static Collection<Object[]> getParameters() {
-    List<Object[]> result = new ArrayList<>();
-    final boolean[] BOOLEANS = new boolean[]{false, true};
-    for(Boolean writer: BOOLEANS) {
-      for (Boolean reader: BOOLEANS) {
-        result.add(new Object[]{writer, reader});
-      }
-    }
-    return result;
+  private static Stream<Arguments> data() {
+    return Stream.of(
+        Arguments.of(false, false),
+        Arguments.of(false, true),
+        Arguments.of(true, false),
+        Arguments.of(true, true));
   }
 
   private Path workDir = new Path(System.getProperty("test.tmp.dir",
@@ -95,14 +83,11 @@ public class TestProlepticConversions {
   private FileSystem fs;
   private Path testFilePath;
 
-  @Rule
-  public TestName testCaseName = new TestName();
-
-  @Before
-  public void setupPath() throws Exception {
+  @BeforeEach
+  public void setupPath(TestInfo testInfo) throws Exception {
     fs = FileSystem.getLocal(conf);
     testFilePath = new Path(workDir, "TestProlepticConversion." +
-       testCaseName.getMethodName().replaceFirst("\\[[0-9]+]", "") + ".orc");
+       testInfo.getTestMethod().get().getName().replaceFirst("\\[[0-9]+]", "") + ".orc");
     fs.delete(testFilePath, false);
   }
 
@@ -112,10 +97,12 @@ public class TestProlepticConversions {
     return result;
   }
 
-  @Test
-  public void testReadWrite() throws Exception {
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testReadWrite(
+      boolean writerProlepticGregorian, boolean readerProlepticGregorian) throws Exception {
     TypeDescription schema = TypeDescription.fromString(
-        "struct<d:date,t:timestamp>");
+        "struct<d:date,t:timestamp,i:timestamp with local time zone>");
     try (Writer writer = OrcFile.createWriter(testFilePath,
         OrcFile.writerOptions(conf)
             .setSchema(schema)
@@ -125,8 +112,10 @@ public class TestProlepticConversions {
       batch.size = 1024;
       DateColumnVector d = (DateColumnVector) batch.cols[0];
       TimestampColumnVector t = (TimestampColumnVector) batch.cols[1];
+      TimestampColumnVector i = (TimestampColumnVector) batch.cols[2];
       d.changeCalendar(writerProlepticGregorian, false);
       t.changeCalendar(writerProlepticGregorian, false);
+      i.changeCalendar(writerProlepticGregorian, false);
       GregorianCalendar cal = writerProlepticGregorian ? PROLEPTIC : HYBRID;
       SimpleDateFormat timeFormat = createParser("yyyy-MM-dd HH:mm:ss", cal);
       Chronology writerChronology = writerProlepticGregorian
@@ -138,18 +127,21 @@ public class TestProlepticConversions {
             String.format("%04d-03-21 %02d:12:34", 2 * r + 1, r % 24));
         t.time[r] = val.getTime();
         t.nanos[r] = 0;
+        i.time[r] = val.getTime();
+        i.nanos[r] = 0;
       }
       writer.addRowBatch(batch);
     }
-    Reader reader = OrcFile.createReader(testFilePath,
+    try (Reader reader = OrcFile.createReader(testFilePath,
         OrcFile.readerOptions(conf)
             .filesystem(fs)
             .convertToProlepticGregorian(readerProlepticGregorian));
-    try (RecordReader rows = reader.rows(reader.options())) {
+         RecordReader rows = reader.rows(reader.options())) {
       assertEquals(writerProlepticGregorian, reader.writerUsedProlepticGregorian());
       VectorizedRowBatch batch = reader.getSchema().createRowBatchV2();
       DateColumnVector d = (DateColumnVector) batch.cols[0];
       TimestampColumnVector t = (TimestampColumnVector) batch.cols[1];
+      TimestampColumnVector i = (TimestampColumnVector) batch.cols[2];
       GregorianCalendar cal = readerProlepticGregorian ? PROLEPTIC : HYBRID;
       SimpleDateFormat timeFormat = createParser("yyyy-MM-dd HH:mm:ss", cal);
       Chronology readerChronology = readerProlepticGregorian
@@ -160,10 +152,13 @@ public class TestProlepticConversions {
       ColumnStatistics[] colStats = reader.getStatistics();
       DateColumnStatistics dStats = (DateColumnStatistics) colStats[1];
       TimestampColumnStatistics tStats = (TimestampColumnStatistics) colStats[2];
+      TimestampColumnStatistics iStats = (TimestampColumnStatistics) colStats[3];
       assertEquals("0001-01-23", dStats.getMinimumLocalDate().format(dateFormat));
       assertEquals("2047-01-23", dStats.getMaximumLocalDate().format(dateFormat));
       assertEquals("0001-03-21 00:12:34", timeFormat.format(tStats.getMinimum()));
       assertEquals("2047-03-21 15:12:34", timeFormat.format(tStats.getMaximum()));
+      assertEquals("0001-03-21 00:12:34", timeFormat.format(iStats.getMinimum()));
+      assertEquals("2047-03-21 15:12:34", timeFormat.format(iStats.getMaximum()));
 
       // Check the stripe stats
       List<StripeStatistics> stripeStats = reader.getStripeStatistics();
@@ -171,10 +166,13 @@ public class TestProlepticConversions {
       colStats = stripeStats.get(0).getColumnStatistics();
       dStats = (DateColumnStatistics) colStats[1];
       tStats = (TimestampColumnStatistics) colStats[2];
+      iStats = (TimestampColumnStatistics) colStats[3];
       assertEquals("0001-01-23", dStats.getMinimumLocalDate().format(dateFormat));
       assertEquals("2047-01-23", dStats.getMaximumLocalDate().format(dateFormat));
       assertEquals("0001-03-21 00:12:34", timeFormat.format(tStats.getMinimum()));
       assertEquals("2047-03-21 15:12:34", timeFormat.format(tStats.getMaximum()));
+      assertEquals("0001-03-21 00:12:34", timeFormat.format(iStats.getMinimum()));
+      assertEquals("2047-03-21 15:12:34", timeFormat.format(iStats.getMaximum()));
 
       // Check the data
       assertTrue(rows.nextBatch(batch));
@@ -182,12 +180,17 @@ public class TestProlepticConversions {
       // Ensure the column vectors are using the right calendar
       assertEquals(readerProlepticGregorian, d.isUsingProlepticCalendar());
       assertEquals(readerProlepticGregorian, t.usingProlepticCalendar());
+      assertEquals(readerProlepticGregorian, i.usingProlepticCalendar());
       for(int r=0; r < batch.size; ++r) {
         String expectedD = String.format("%04d-01-23", r * 2 + 1);
         String expectedT = String.format("%04d-03-21 %02d:12:34", 2 * r + 1, r % 24);
-        assertEquals("row " + r, expectedD, readerChronology.dateEpochDay(d.vector[r])
-            .format(dateFormat));
-        assertEquals("row " + r, expectedT, timeFormat.format(t.asScratchTimestamp(r)));
+        assertEquals(expectedD,
+            readerChronology.dateEpochDay(d.vector[r]).format(dateFormat),
+            "row " + r);
+        assertEquals(expectedT, timeFormat.format(t.asScratchTimestamp(r)),
+            "row " + r);
+        assertEquals(expectedT, timeFormat.format(i.asScratchTimestamp(r)),
+            "row " + r);
       }
     }
   }
@@ -195,8 +198,10 @@ public class TestProlepticConversions {
   /**
    * Test all of the type conversions from/to date.
    */
-  @Test
-  public void testSchemaEvolutionDate() throws Exception {
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testSchemaEvolutionDate(
+      boolean writerProlepticGregorian, boolean readerProlepticGregorian) throws Exception {
     TypeDescription schema = TypeDescription.fromString(
         "struct<d2s:date,d2t:date,s2d:string,t2d:timestamp>");
     try (Writer writer = OrcFile.createWriter(testFilePath,
@@ -230,13 +235,13 @@ public class TestProlepticConversions {
     }
     TypeDescription readerSchema = TypeDescription.fromString(
         "struct<d2s:string,d2t:timestamp,s2d:date,t2d:date>");
-    Reader reader = OrcFile.createReader(testFilePath,
-      OrcFile.readerOptions(conf)
-              .filesystem(fs)
-              .convertToProlepticGregorian(readerProlepticGregorian)
-              .useUTCTimestamp(true));
-    RecordReader rows = reader.rows(reader.options().schema(readerSchema));
-    {
+    try (Reader reader = OrcFile.createReader(testFilePath,
+           OrcFile.readerOptions(conf)
+                  .filesystem(fs)
+                  .convertToProlepticGregorian(readerProlepticGregorian)
+                  .useUTCTimestamp(true));
+         RecordReader rows = reader.rows(reader.options()
+                                               .schema(readerSchema))) {
       assertEquals(writerProlepticGregorian, reader.writerUsedProlepticGregorian());
       VectorizedRowBatch batch = readerSchema.createRowBatchV2();
       BytesColumnVector d2s = (BytesColumnVector) batch.cols[0];
@@ -258,14 +263,14 @@ public class TestProlepticConversions {
         String expectedD1 = String.format("%04d-01-23", 2 * r + 1);
         String expectedD2 = expectedD1 + " 00:00:00";
         String expectedT = String.format("%04d-03-21", 2 * r + 1);
-        assertEquals("row " + r, expectedD1, d2s.toString(r));
-        assertEquals("row " + r, expectedD2, timeFormat.format(d2t.asScratchTimestamp(r)));
-        assertEquals("row " + r, expectedD1, DateUtils.printDate((int) s2d.vector[r],
-            readerProlepticGregorian));
-        assertEquals("row " + r, expectedT, dateFormat.format(
-            new Date(TimeUnit.DAYS.toMillis(t2d.vector[r]))));
+        assertEquals(expectedD1, d2s.toString(r), "row " + r);
+        assertEquals(expectedD2, timeFormat.format(d2t.asScratchTimestamp(r)), "row " + r);
+        assertEquals(expectedD1, DateUtils.printDate((int) s2d.vector[r],
+            readerProlepticGregorian), "row " + r);
+        assertEquals(expectedT, dateFormat.format(
+            new Date(TimeUnit.DAYS.toMillis(t2d.vector[r]))), "row " + r);
       }
-      assertEquals(false, rows.nextBatch(batch));
+      assertFalse(rows.nextBatch(batch));
     }
   }
 
@@ -273,8 +278,10 @@ public class TestProlepticConversions {
    * Test all of the type conversions from/to timestamp, except for date,
    * which was handled above.
    */
-  @Test
-  public void testSchemaEvolutionTimestamp() throws Exception {
+  @ParameterizedTest
+  @MethodSource("data")
+  public void testSchemaEvolutionTimestamp(
+      boolean writerProlepticGregorian, boolean readerProlepticGregorian) throws Exception {
     TypeDescription schema = TypeDescription.fromString(
         "struct<t2i:timestamp,t2d:timestamp,t2D:timestamp,t2s:timestamp,"
         + "i2t:bigint,d2t:decimal(18,2),D2t:double,s2t:string>");
@@ -311,8 +318,9 @@ public class TestProlepticConversions {
         t2D.time[r] = millis;
         t2D.nanos[r] = nanos;
         t2s.time[r] = millis;
+        d2t.vector[r] = millis / 10;
         t2s.nanos[r] = nanos;
-        i2t.vector[r] = millis;
+        i2t.vector[r] = Math.floorDiv(millis, 1000);
         d2t.vector[r] = Math.floorDiv(millis, 10);
         D2t.vector[r] = millis / 1000.0;
         s2t.setVal(r, time.getBytes(StandardCharsets.UTF_8));
@@ -322,13 +330,13 @@ public class TestProlepticConversions {
     TypeDescription readerSchema = TypeDescription.fromString(
         "struct<i2t:timestamp,d2t:timestamp,D2t:timestamp,s2t:timestamp,"
             + "t2i:bigint,t2d:decimal(18,2),t2D:double,t2s:string>");
-    Reader reader = OrcFile.createReader(testFilePath,
+    try (Reader reader = OrcFile.createReader(testFilePath,
         OrcFile.readerOptions(conf)
             .filesystem(fs)
             .convertToProlepticGregorian(readerProlepticGregorian)
             .useUTCTimestamp(true));
-    RecordReader rows = reader.rows(reader.options().schema(readerSchema));
-    {
+         RecordReader rows = reader.rows(reader.options()
+                                             .schema(readerSchema))) {
       assertEquals(writerProlepticGregorian, reader.writerUsedProlepticGregorian());
       VectorizedRowBatch batch = readerSchema.createRowBatchV2();
       TimestampColumnVector i2t = (TimestampColumnVector) batch.cols[0];
@@ -351,20 +359,24 @@ public class TestProlepticConversions {
       for(int r=0; r < batch.size; ++r) {
         String time = String.format("%04d-03-21 %02d:12:34.12", 2 * r + 1, r % 24);
         long millis = DateUtils.parseTime(time, readerProlepticGregorian, true);
-        assertEquals("row " + r, time,
-            DateUtils.printTime(i2t.time[r], readerProlepticGregorian, true));
-        assertEquals("row " + r, time,
-            DateUtils.printTime(d2t.time[r], readerProlepticGregorian, true));
-        assertEquals("row " + r, time,
-            DateUtils.printTime(D2t.time[r], readerProlepticGregorian, true));
-        assertEquals("row " + r, time,
-            DateUtils.printTime(s2t.time[r], readerProlepticGregorian, true));
-        assertEquals("row " + r, Math.floorDiv(millis, 1000), t2i.vector[r]);
-        assertEquals("row " + r, millis/10, t2d.vector[r]);
-        assertEquals("row " + r, millis/1000.0, t2D.vector[r], 0.1);
-        assertEquals("row " + r, time, t2s.toString(r));
+        assertEquals(time.substring(0, time.length() - 3),
+            DateUtils.printTime(i2t.time[r], readerProlepticGregorian, true),
+            "row " + r);
+        assertEquals(time,
+            DateUtils.printTime(d2t.time[r], readerProlepticGregorian, true),
+            "row " + r);
+        assertEquals(time,
+            DateUtils.printTime(D2t.time[r], readerProlepticGregorian, true),
+            "row " + r);
+        assertEquals(time,
+            DateUtils.printTime(s2t.time[r], readerProlepticGregorian, true),
+            "row " + r);
+        assertEquals(Math.floorDiv(millis, 1000), t2i.vector[r], "row " + r);
+        assertEquals(Math.floorDiv(millis, 10), t2d.vector[r], "row " + r);
+        assertEquals(millis/1000.0, t2D.vector[r], 0.1, "row " + r);
+        assertEquals(time, t2s.toString(r), "row " + r);
       }
-      assertEquals(false, rows.nextBatch(batch));
+      assertFalse(rows.nextBatch(batch));
     }
   }
 }

@@ -19,13 +19,17 @@
 #ifndef ORC_READER_HH
 #define ORC_READER_HH
 
+#include "orc/BloomFilter.hh"
 #include "orc/Common.hh"
 #include "orc/orc-config.hh"
 #include "orc/Statistics.hh"
+#include "orc/sargs/SearchArgument.hh"
 #include "orc/Type.hh"
 #include "orc/Vector.hh"
 
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -55,7 +59,7 @@ namespace orc {
     ReaderOptions& setErrorStream(std::ostream& stream);
 
     /**
-     * Open the file used a serialized copy of the file tail.
+     * Set a serialized copy of the file tail to be used when opening the file.
      *
      * When one process opens the file and other processes need to read
      * the rows, we want to enable clients to just read the tail once.
@@ -146,6 +150,24 @@ namespace orc {
     RowReaderOptions& includeTypes(const std::list<uint64_t>& types);
 
     /**
+     * A map type of <typeId, ReadIntent>.
+     */
+    typedef std::map<uint64_t, ReadIntent> IdReadIntentMap;
+
+    /**
+     * Selects which type ids to read and specific ReadIntents for each
+     * type id. The ancestor types are automatically selected, but the children
+     * are not.
+     *
+     * This option clears any previous setting of the selected columns or
+     * types.
+     * @param idReadIntentMap a map of IdReadIntentMap.
+     * @return this
+     */
+    RowReaderOptions&
+    includeTypesWithIntents(const IdReadIntentMap& idReadIntentMap);
+
+    /**
      * Set the section of the file to process.
      * @param offset the starting byte offset
      * @param length the number of bytes to read
@@ -179,6 +201,24 @@ namespace orc {
      * @return returns *this
      */
     RowReaderOptions& forcedScaleOnHive11Decimal(int32_t forcedScale);
+
+    /**
+     * Set enable encoding block mode.
+     * By enable encoding block mode, Row Reader will not decode
+     * dictionary encoded string vector, but instead return an index array with
+     * reference to corresponding dictionary.
+     */
+    RowReaderOptions& setEnableLazyDecoding(bool enable);
+
+    /**
+     * Set search argument for predicate push down
+     */
+    RowReaderOptions& searchArgument(std::unique_ptr<SearchArgument> sargs);
+
+    /**
+     * Should enable encoding block mode
+     */
+    bool getEnableLazyDecoding() const;
 
     /**
      * Were the field ids set?
@@ -229,6 +269,26 @@ namespace orc {
      * What scale should all Hive 0.11 decimals be normalized to?
      */
     int32_t getForcedScaleOnHive11Decimal() const;
+
+    /**
+     * Get search argument for predicate push down
+     */
+    std::shared_ptr<SearchArgument> getSearchArgument() const;
+
+    /**
+     * Set desired timezone to return data of timestamp type
+     */
+    RowReaderOptions& setTimezoneName(const std::string& zoneName);
+
+    /**
+     * Get desired timezone to return data of timestamp type
+     */
+    const std::string& getTimezoneName() const;
+
+    /**
+     * Get the IdReadIntentMap map that was supplied by client.
+     */
+    const IdReadIntentMap getIdReadIntentMap() const;
   };
 
 
@@ -236,7 +296,7 @@ namespace orc {
 
   /**
    * The interface for reading ORC file meta-data and constructing RowReaders.
-   * This is an an abstract class that will subclassed as necessary.
+   * This is an an abstract class that will be subclassed as necessary.
    */
   class Reader {
   public:
@@ -256,8 +316,14 @@ namespace orc {
     virtual uint64_t getNumberOfRows() const = 0;
 
     /**
+     * Get the software instance and version that wrote this file.
+     * @return a user-facing string that specifies the software version
+     */
+    virtual std::string getSoftwareVersion() const = 0;
+
+    /**
      * Get the user metadata keys.
-     * @return the set of metadata keys
+     * @return the set of user metadata keys
      */
     virtual std::list<std::string> getMetadataKeys() const = 0;
 
@@ -306,7 +372,7 @@ namespace orc {
     virtual WriterVersion getWriterVersion() const = 0;
 
     /**
-     * Get the number of rows per a entry in the row index.
+     * Get the number of rows per an entry in the row index.
      * @return the number of rows per an entry in the row index or 0 if there
      * is no row index.
      */
@@ -320,7 +386,7 @@ namespace orc {
 
     /**
      * Get the information about a stripe.
-     * @param stripeIndex the stripe 0 to N-1 to get information about
+     * @param stripeIndex the index of the stripe (0 to N-1) to get information about
      * @return the information about that stripe
      */
     virtual ORC_UNIQUE_PTR<StripeInformation>
@@ -334,7 +400,7 @@ namespace orc {
 
     /**
      * Get the statistics about a stripe.
-     * @param stripeIndex the stripe 0 to N-1 to get statistics about
+     * @param stripeIndex the index of the stripe (0 to N-1) to get statistics about
      * @return the statistics about that stripe
      */
     virtual ORC_UNIQUE_PTR<StripeStatistics>
@@ -347,19 +413,19 @@ namespace orc {
     virtual uint64_t getContentLength() const = 0;
 
     /**
-     * Get the length of the file stripe statistics
+     * Get the length of the file stripe statistics.
      * @return the number of compressed bytes in the file stripe statistics
      */
     virtual uint64_t getStripeStatisticsLength() const = 0;
 
     /**
-     * Get the length of the file footer
+     * Get the length of the file footer.
      * @return the number of compressed bytes in the file footer
      */
     virtual uint64_t getFileFooterLength() const = 0;
 
     /**
-     * Get the length of the file postscript
+     * Get the length of the file postscript.
      * @return the number of bytes in the file postscript
      */
     virtual uint64_t getFilePostscriptLength() const = 0;
@@ -378,13 +444,14 @@ namespace orc {
 
     /**
      * Get the statistics about a single column in the file.
+     * @param columnId id of the column
      * @return the information about the column
      */
     virtual ORC_UNIQUE_PTR<ColumnStatistics>
     getColumnStatistics(uint32_t columnId) const = 0;
 
     /**
-     * check file has correct column statistics
+     * Check if the file has correct column statistics.
      */
     virtual bool hasCorrectStatistics() const = 0;
 
@@ -443,26 +510,35 @@ namespace orc {
     virtual uint64_t getMemoryUseByFieldId(const std::list<uint64_t>& include, int stripeIx=-1) = 0;
 
     /**
+     * @param names Column Names
      * @param stripeIx index of the stripe to be read (if not specified,
      *        all stripes are considered).
-     * @param names Column Names
      * @return upper bound on memory use by selected columns
      */
     virtual uint64_t getMemoryUseByName(const std::list<std::string>& names, int stripeIx=-1) = 0;
 
     /**
+     * @param include Column Type Ids
      * @param stripeIx index of the stripe to be read (if not specified,
      *        all stripes are considered).
-     * @param include Column Type Ids
      * @return upper bound on memory use by selected columns
      */
     virtual uint64_t getMemoryUseByTypeId(const std::list<uint64_t>& include, int stripeIx=-1) = 0;
 
+    /**
+     * Get BloomFiters of all selected columns in the specified stripe
+     * @param stripeIndex index of the stripe to be read for bloom filters.
+     * @param included index of selected columns to return (if not specified,
+     *        all columns that have bloom filters are considered).
+     * @return map of bloom filters with the key standing for the index of column.
+     */
+    virtual std::map<uint32_t, BloomFilterIndex>
+    getBloomFilters(uint32_t stripeIndex, const std::set<uint32_t>& included) const = 0;
   };
 
   /**
    * The interface for reading rows in ORC files.
-   * This is an an abstract class that will subclassed as necessary.
+   * This is an an abstract class that will be subclassed as necessary.
    */
   class RowReader {
   public:

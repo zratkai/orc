@@ -24,21 +24,23 @@ import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.impl.RecordReaderImpl;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
 import java.io.File;
 import java.sql.Timestamp;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Types that are not skipped at row-level include: Long, Short, Int, Date, Binary
  * As it turns out it is more expensive to skip non-selected rows rather that just decode all and propagate the
- * selected array. Skipping for these type breaks instruction pipelining and introduces more branch misspredictions.
+ * selected array. Skipping for these type breaks instruction pipelining and introduces more branch mispredictions.
  */
 public class TestRowFilteringNoSkip {
 
@@ -51,14 +53,13 @@ public class TestRowFilteringNoSkip {
 
   private static final int ColumnBatchRows = 1024;
 
-  @Rule
-  public TestName testCaseName = new TestName();
-
-  @Before
-  public void openFileSystem() throws Exception {
+  @BeforeEach
+  public void openFileSystem(TestInfo testInfo) throws Exception {
     conf = new Configuration();
+    OrcConf.READER_USE_SELECTED.setBoolean(conf, true);
     fs = FileSystem.getLocal(conf);
-    testFilePath = new Path(workDir, "TestRowFilteringNoSkip." + testCaseName.getMethodName() + ".orc");
+    testFilePath = new Path(workDir, "TestRowFilteringNoSkip." +
+        testInfo.getTestMethod().get().getName() + ".orc");
     fs.delete(testFilePath, false);
   }
 
@@ -109,25 +110,25 @@ public class TestRowFilteringNoSkip {
       int noNullCnt = 0;
       while (rows.nextBatch(batch)) {
         // We applied the given filter so selected is true
-        Assert.assertTrue(batch.selectedInUse);
-        Assert.assertTrue(batch.selected != null);
+        assertTrue(batch.selectedInUse);
+        assertNotNull(batch.selected);
         // Selected Arrays is propagated -- so size is never 1024
-        Assert.assertTrue(batch.size != ColumnBatchRows);
+        assertTrue(batch.size != ColumnBatchRows);
         // But since this Column type is not actually filtered there will be no nulls!
-        assertEquals( true, col1.noNulls);
+        assertTrue(col1.noNulls);
         for (int r = 0; r < ColumnBatchRows; ++r) {
           if (col2.vector[r] != 0)
             noNullCnt ++;
         }
       }
       // For Int type ColumnVector filtering does not remove any data!
-      Assert.assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
-      Assert.assertEquals(0, batch.selected[0]);
-      Assert.assertEquals(2, batch.selected[1]);
-      Assert.assertEquals(col2.vector[0], 100);
-      Assert.assertEquals(col2.vector[511], 999);
-      Assert.assertEquals(col2.vector[1020],  100);
-      Assert.assertEquals(col2.vector[1021], 999);
+      assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
+      assertEquals(0, batch.selected[0]);
+      assertEquals(2, batch.selected[1]);
+      assertEquals(col2.vector[0], 100);
+      assertEquals(col2.vector[511], 999);
+      assertEquals(col2.vector[1020],  100);
+      assertEquals(col2.vector[1021], 999);
     }
   }
 
@@ -178,12 +179,12 @@ public class TestRowFilteringNoSkip {
       int noNullCount = 0;
       while (rows.nextBatch(batch)) {
         // We applied the given filter so selected is true
-        Assert.assertTrue(batch.selectedInUse);
-        Assert.assertTrue(batch.selected != null);
+        assertTrue(batch.selectedInUse);
+        assertNotNull(batch.selected);
         // Selected Arrays is propagated -- so size is never 1024
-        Assert.assertTrue(batch.size != ColumnBatchRows);
+        assertTrue(batch.size != ColumnBatchRows);
         // But since this Column type is not actually filtered there will be no nulls!
-        assertEquals( true, col1.noNulls);
+        assertTrue(col1.noNulls);
         for (int r = 0; r < ColumnBatchRows; ++r) {
           if (col2.vector[r] != 0)
             noNullCount++;
@@ -192,11 +193,11 @@ public class TestRowFilteringNoSkip {
         }
       }
       // For Int type ColumnVector filtering does not remove any data!
-      Assert.assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCount);
+      assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCount);
       // check filter-selected output
-      Assert.assertEquals(0, batch.selected[0]);
-      Assert.assertEquals(0, batch.selected[1]);
-      Assert.assertEquals(0, batch.selected[1023]);
+      assertEquals(0, batch.selected[0]);
+      assertEquals(0, batch.selected[1]);
+      assertEquals(0, batch.selected[1023]);
     }
   }
 
@@ -248,26 +249,26 @@ public class TestRowFilteringNoSkip {
       int noNullCnt = 0;
       while (rows.nextBatch(batch)) {
         // We applied the given filter so selected is true
-        Assert.assertTrue(batch.selectedInUse);
-        Assert.assertTrue(batch.selected != null);
+        assertTrue(batch.selectedInUse);
+        assertNotNull(batch.selected);
         // Selected Arrays is propagated -- so size is never 1024
-        Assert.assertTrue(batch.size != ColumnBatchRows);
+        assertTrue(batch.size != ColumnBatchRows);
         // But since this Column type is not actually filtered there will be no nulls!
-        assertEquals( true, col1.noNulls);
+        assertTrue(col1.noNulls);
         for (int r = 0; r < ColumnBatchRows; ++r) {
           if (col2.vector[r] != 0)
             noNullCnt ++;
         }
       }
       // For Short type ColumnVector filtering does not remove any data!
-      Assert.assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
-      Assert.assertEquals(false, col2.isRepeating);
-      Assert.assertEquals(0, batch.selected[0]);
-      Assert.assertEquals(2, batch.selected[1]);
-      Assert.assertTrue(col2.vector[0] > 0);
-      Assert.assertTrue(col2.vector[511] < 0);
-      Assert.assertTrue(col2.vector[1020] > 0);
-      Assert.assertTrue(col2.vector[1021] < 0);
+      assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
+      assertFalse(col2.isRepeating);
+      assertEquals(0, batch.selected[0]);
+      assertEquals(2, batch.selected[1]);
+      assertTrue(col2.vector[0] > 0);
+      assertTrue(col2.vector[511] < 0);
+      assertTrue(col2.vector[1020] > 0);
+      assertTrue(col2.vector[1021] < 0);
     }
   }
 
@@ -318,26 +319,26 @@ public class TestRowFilteringNoSkip {
       int noNullCnt = 0;
       while (rows.nextBatch(batch)) {
         // We applied the given filter so selected is true
-        Assert.assertTrue(batch.selectedInUse);
-        Assert.assertTrue(batch.selected != null);
+        assertTrue(batch.selectedInUse);
+        assertNotNull(batch.selected);
         // Selected Arrays is propagated -- so size is never 1024
-        Assert.assertTrue(batch.size != ColumnBatchRows);
+        assertTrue(batch.size != ColumnBatchRows);
         // But since this Column type is not actually filtered there will be no nulls!
-        assertEquals( true, col1.noNulls);
+        assertTrue(col1.noNulls);
         for (int r = 0; r < ColumnBatchRows; ++r) {
           if (col2.vector[r] != 0)
             noNullCnt ++;
         }
       }
       // For Date type ColumnVector filtering does not remove any data!
-      Assert.assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
-      Assert.assertEquals(false, col2.isRepeating);
-      Assert.assertEquals(0, batch.selected[0]);
-      Assert.assertEquals(2, batch.selected[1]);
-      Assert.assertTrue(col2.vector[0] != 0);
-      Assert.assertTrue(col2.vector[511] != 0);
-      Assert.assertTrue(col2.vector[1020] != 0);
-      Assert.assertTrue(col2.vector[1021] != 0);
+      assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
+      assertFalse(col2.isRepeating);
+      assertEquals(0, batch.selected[0]);
+      assertEquals(2, batch.selected[1]);
+      assertTrue(col2.vector[0] != 0);
+      assertTrue(col2.vector[511] != 0);
+      assertTrue(col2.vector[1020] != 0);
+      assertTrue(col2.vector[1021] != 0);
     }
   }
 
@@ -390,25 +391,25 @@ public class TestRowFilteringNoSkip {
       int noNullCnt = 0;
       while (rows.nextBatch(batch)) {
         // We applied the given filter so selected is true
-        Assert.assertTrue(batch.selectedInUse);
-        Assert.assertTrue(batch.selected != null);
+        assertTrue(batch.selectedInUse);
+        assertNotNull(batch.selected);
         // Selected Arrays is propagated -- so size is never 1024
-        Assert.assertTrue(batch.size != ColumnBatchRows);
+        assertTrue(batch.size != ColumnBatchRows);
         // But since this Column type is not actually filtered there will be no nulls!
-        assertEquals( true, col1.noNulls);
+        assertTrue(col1.noNulls);
         for (int r = 0; r < ColumnBatchRows; ++r) {
           if (!TestVectorOrcFile.getBinary(col2, r).equals(TestVectorOrcFile.bytes()))
             noNullCnt ++;
         }
       }
       // For Binary type ColumnVector filtering does not remove any data!
-      Assert.assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
-      Assert.assertEquals(0, batch.selected[0]);
-      Assert.assertEquals(2, batch.selected[1]);
-      Assert.assertNotEquals(TestVectorOrcFile.getBinary(col2, 0), TestVectorOrcFile.bytes());
-      Assert.assertNotEquals(TestVectorOrcFile.getBinary(col2, 511), TestVectorOrcFile.bytes());
-      Assert.assertNotEquals(TestVectorOrcFile.getBinary(col2, 1020), TestVectorOrcFile.bytes());
-      Assert.assertNotEquals(TestVectorOrcFile.getBinary(col2, 1021), TestVectorOrcFile.bytes());
+      assertEquals(NUM_BATCHES * ColumnBatchRows, noNullCnt);
+      assertEquals(0, batch.selected[0]);
+      assertEquals(2, batch.selected[1]);
+      assertNotEquals(TestVectorOrcFile.getBinary(col2, 0), TestVectorOrcFile.bytes());
+      assertNotEquals(TestVectorOrcFile.getBinary(col2, 511), TestVectorOrcFile.bytes());
+      assertNotEquals(TestVectorOrcFile.getBinary(col2, 1020), TestVectorOrcFile.bytes());
+      assertNotEquals(TestVectorOrcFile.getBinary(col2, 1021), TestVectorOrcFile.bytes());
     }
   }
 }

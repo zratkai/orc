@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,11 +20,11 @@ package org.apache.orc.util;
 
 /**
  * Murmur3 is successor to Murmur2 fast non-crytographic hash algorithms.
- *
+ * <p>
  * Murmur3 32 and 128 bit variants.
  * 32-bit Java port of https://code.google.com/p/smhasher/source/browse/trunk/MurmurHash3.cpp#94
  * 128-bit Java port of https://code.google.com/p/smhasher/source/browse/trunk/MurmurHash3.cpp#255
- *
+ * <p>
  * This is a public domain code with no copyrights.
  * From homepage of MurmurHash (https://code.google.com/p/smhasher/),
  * "All MurmurHash versions are public domain software, and the author disclaims all copyright

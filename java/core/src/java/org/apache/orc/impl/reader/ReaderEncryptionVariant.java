@@ -26,7 +26,13 @@ import org.apache.orc.OrcProto;
 import org.apache.orc.StripeInformation;
 import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.impl.*;
+import org.apache.orc.impl.BufferChunk;
+import org.apache.orc.impl.CryptoUtils;
+import org.apache.orc.impl.InStream;
+import org.apache.orc.impl.KeyProvider;
+import org.apache.orc.impl.LocalKey;
+import org.apache.orc.impl.ReaderImpl;
+import org.apache.orc.impl.StripeStatisticsImpl;
 import org.jetbrains.annotations.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -139,30 +145,30 @@ public class ReaderEncryptionVariant implements EncryptionVariant {
     Key result = localKey.getDecryptedKey();
     if (result == null) {
       switch (this.key.getState()) {
-      case UNTRIED:
-        try {
+        case UNTRIED:
+          try {
+            result = provider.decryptLocalKey(key.getMetadata(),
+                localKey.getEncryptedKey());
+          } catch (IOException ioe) {
+            LOG.info("Can't decrypt using key {}", key);
+          }
+          if (result != null) {
+            localKey.setDecryptedKey(result);
+            key.setSuccess();
+          } else {
+            key.setFailure();
+          }
+          break;
+        case SUCCESS:
           result = provider.decryptLocalKey(key.getMetadata(),
               localKey.getEncryptedKey());
-        } catch (IOException ioe) {
-          LOG.info("Can't decrypt using key {}", key);
-        }
-        if (result != null) {
+          if (result == null) {
+            throw new IOException("Can't decrypt local key " + key);
+          }
           localKey.setDecryptedKey(result);
-          key.setSuccess();
-        } else {
-          key.setFailure();
-        }
-        break;
-      case SUCCESS:
-        result = provider.decryptLocalKey(key.getMetadata(),
-            localKey.getEncryptedKey());
-        if (result == null) {
-          throw new IOException("Can't decrypt local key " + key);
-        }
-        localKey.setDecryptedKey(result);
-        break;
-      case FAILURE:
-        return null;
+          break;
+        case FAILURE:
+          return null;
       }
     }
     return result;
@@ -170,12 +176,12 @@ public class ReaderEncryptionVariant implements EncryptionVariant {
 
   @Override
   public Key getFileFooterKey() throws IOException {
-    return key == null ? null : getDecryptedKey(footerKey);
+    return (key == null || provider == null) ? null : getDecryptedKey(footerKey);
   }
 
   @Override
   public Key getStripeKey(long stripe) throws IOException {
-    return key == null ? null : getDecryptedKey(localKeys[(int) stripe]);
+    return (key == null || provider == null) ? null : getDecryptedKey(localKeys[(int) stripe]);
   }
 
   @Override
@@ -231,7 +237,7 @@ public class ReaderEncryptionVariant implements EncryptionVariant {
     StripeStatisticsImpl[] result = new StripeStatisticsImpl[stripeCount];
     for(int s=0; s < result.length; ++s) {
       result[s] = new StripeStatisticsImpl(column, reader.writerUsedProlepticGregorian(),
-              reader.getConvertToProlepticGregorian());
+          reader.getConvertToProlepticGregorian());
     }
     // create the objects
     long offset = stripeStatsOffset;

@@ -18,18 +18,18 @@
 
 package org.apache.orc.impl;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.orc.Reader;
+import org.apache.orc.TypeDescription;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
-
-import org.apache.hadoop.conf.Configuration;
-import org.apache.orc.Reader;
-import org.apache.orc.TypeDescription;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Infer and track the evolution between the schema as stored in the file and
@@ -49,23 +49,23 @@ public class SchemaEvolution {
   private boolean hasConversion;
   private boolean isOnlyImplicitConversion;
   private final boolean isAcid;
-  private final boolean isSchemaEvolutionCaseAware;
+  final boolean isSchemaEvolutionCaseAware;
   /**
    * {@code true} if acid metadata columns should be decoded otherwise they will
    * be set to {@code null}.  {@link #acidEventFieldNames}.
    */
   private final boolean includeAcidColumns;
 
-  // indexed by reader column id
+  // indexed by file column id
   private final boolean[] ppdSafeConversion;
 
   // columns are indexed, not named between Reader & File schema
   private final boolean positionalColumns;
 
   private static final Logger LOG =
-    LoggerFactory.getLogger(SchemaEvolution.class);
+      LoggerFactory.getLogger(SchemaEvolution.class);
   private static final Pattern missingMetadataPattern =
-    Pattern.compile("_col\\d+");
+      Pattern.compile("_col\\d+");
 
 
   public static class IllegalEvolutionException extends RuntimeException {
@@ -85,58 +85,47 @@ public class SchemaEvolution {
     this.hasConversion = false;
     this.isOnlyImplicitConversion = true;
     this.fileSchema = fileSchema;
+    // Use file schema when reader schema not provided
+    readerSchema =  readerSchema == null ? this.fileSchema : readerSchema;
     this.isAcid = checkAcidSchema(fileSchema);
-    boolean readerSchemaIsAcid = readerSchema == null ? false : checkAcidSchema(readerSchema);
+    boolean readerSchemaIsAcid = checkAcidSchema(readerSchema);
     this.includeAcidColumns = options.getIncludeAcidColumns();
     this.readerColumnOffset = isAcid && !readerSchemaIsAcid ? acidEventFieldNames.size() : 0;
-    if (readerSchema != null) {
-      if (isAcid && !readerSchemaIsAcid) {
-        this.readerSchema = createEventSchema(readerSchema);
-      } else {
-        this.readerSchema = readerSchema;
-      }
-      if (readerIncluded != null &&
-          readerIncluded.length + readerColumnOffset !=
-            this.readerSchema.getMaximumId() + 1) {
-        throw new IllegalArgumentException("Include vector the wrong length: "
-            + this.readerSchema.toJson() + " with include length "
-            + readerIncluded.length);
-      }
-      this.readerFileTypes =
+    // Create type conversion using reader schema
+    if (isAcid && !readerSchemaIsAcid) {
+      this.readerSchema = createEventSchema(readerSchema);
+    } else {
+      this.readerSchema = readerSchema;
+    }
+    if (readerIncluded != null &&
+        readerIncluded.length + readerColumnOffset !=
+          this.readerSchema.getMaximumId() + 1) {
+      throw new IllegalArgumentException("Include vector the wrong length: "
+          + this.readerSchema.toJson() + " with include length "
+          + readerIncluded.length);
+    }
+    this.readerFileTypes =
         new TypeDescription[this.readerSchema.getMaximumId() + 1];
-      int positionalLevels = 0;
-      if (options.getForcePositionalEvolution()) {
-        positionalLevels = isAcid ? 2 : 1;
-      } else if (!hasColumnNames(isAcid? getBaseRow(fileSchema) : fileSchema)) {
-        if (!this.fileSchema.equals(this.readerSchema)) {
-          if (!allowMissingMetadata) {
-            throw new RuntimeException("Found that schema metadata is missing"
-                + " from file. This is likely caused by"
-                + " a writer earlier than HIVE-4243. Will"
-                + " not try to reconcile schemas");
-          } else {
-            LOG.warn("Column names are missing from this file. This is"
-                + " caused by a writer earlier than HIVE-4243. The reader will"
-                + " reconcile schemas based on index. File type: " +
-                this.fileSchema + ", reader type: " + this.readerSchema);
-            positionalLevels = isAcid ? 2 : 1;
-          }
+    int positionalLevels = 0;
+    if (options.getForcePositionalEvolution()) {
+      positionalLevels = isAcid ? 2 : options.getPositionalEvolutionLevel();
+    } else if (!hasColumnNames(isAcid? getBaseRow(fileSchema) : fileSchema)) {
+      if (!this.fileSchema.equals(this.readerSchema)) {
+        if (!allowMissingMetadata) {
+          throw new RuntimeException("Found that schema metadata is missing"
+              + " from file. This is likely caused by"
+              + " a writer earlier than HIVE-4243. Will"
+              + " not try to reconcile schemas");
+        } else {
+          LOG.warn("Column names are missing from this file. This is"
+              + " caused by a writer earlier than HIVE-4243. The reader will"
+              + " reconcile schemas based on index. File type: " +
+              this.fileSchema + ", reader type: " + this.readerSchema);
+          positionalLevels = isAcid ? 2 : options.getPositionalEvolutionLevel();
         }
       }
-      buildConversion(fileSchema, this.readerSchema, positionalLevels);
-    } else {
-      this.readerSchema = fileSchema;
-      this.readerFileTypes =
-        new TypeDescription[this.readerSchema.getMaximumId() + 1];
-      if (readerIncluded != null &&
-          readerIncluded.length + readerColumnOffset !=
-            this.readerSchema.getMaximumId() + 1) {
-        throw new IllegalArgumentException("Include vector the wrong length: "
-            + this.readerSchema.toJson() + " with include length "
-            + readerIncluded.length);
-      }
-      buildIdentityConversion(this.readerSchema);
     }
+    buildConversion(fileSchema, this.readerSchema, positionalLevels);
     this.positionalColumns = options.getForcePositionalEvolution();
     this.ppdSafeConversion = populatePpdSafeConversion();
   }
@@ -166,6 +155,10 @@ public class SchemaEvolution {
       }
     }
     return false;
+  }
+
+  public boolean isSchemaEvolutionCaseAware() {
+    return isSchemaEvolutionCaseAware;
   }
 
   public TypeDescription getReaderSchema() {
@@ -262,31 +255,31 @@ public class SchemaEvolution {
   private boolean typesAreImplicitConversion(final TypeDescription fileType,
       final TypeDescription readerType) {
     switch (fileType.getCategory()) {
-    case BYTE:
+      case BYTE:
         if (readerType.getCategory().equals(TypeDescription.Category.SHORT) ||
             readerType.getCategory().equals(TypeDescription.Category.INT) ||
             readerType.getCategory().equals(TypeDescription.Category.LONG)) {
           return true;
         }
         break;
-    case SHORT:
+      case SHORT:
         if (readerType.getCategory().equals(TypeDescription.Category.INT) ||
             readerType.getCategory().equals(TypeDescription.Category.LONG)) {
           return true;
         }
         break;
-    case INT:
+      case INT:
         if (readerType.getCategory().equals(TypeDescription.Category.LONG)) {
           return true;
         }
         break;
-    case FLOAT:
+      case FLOAT:
         if (readerType.getCategory().equals(TypeDescription.Category.DOUBLE)) {
           return true;
         }
         break;
-    case CHAR:
-    case VARCHAR:
+      case CHAR:
+      case VARCHAR:
         if (readerType.getCategory().equals(TypeDescription.Category.STRING)) {
           return true;
         }
@@ -295,7 +288,7 @@ public class SchemaEvolution {
           return (fileType.getMaxLength() <= readerType.getMaxLength());
         }
         break;
-    default:
+      default:
         break;
     }
     return false;
@@ -303,13 +296,13 @@ public class SchemaEvolution {
 
   /**
    * Check if column is safe for ppd evaluation
-   * @param colId reader column id
+   * @param fileColId file column id
    * @return true if the specified column is safe for ppd evaluation else false
    */
-  public boolean isPPDSafeConversion(final int colId) {
+  public boolean isPPDSafeConversion(final int fileColId) {
     if (hasConversion()) {
-      return !(colId < 0 || colId >= ppdSafeConversion.length) &&
-          ppdSafeConversion[colId];
+      return !(fileColId < 0 || fileColId >= ppdSafeConversion.length) &&
+          ppdSafeConversion[fileColId];
     }
 
     // when there is no schema evolution PPD is safe
@@ -321,10 +314,10 @@ public class SchemaEvolution {
       return null;
     }
 
-    boolean[] result = new boolean[readerSchema.getMaximumId() + 1];
+    boolean[] result = new boolean[fileSchema.getMaximumId() + 1];
     boolean safePpd = validatePPDConversion(fileSchema, readerSchema);
-    result[readerSchema.getId()] = safePpd;
-    return populatePpdSafeConversionForChildern(result,
+    result[fileSchema.getId()] = safePpd;
+    return populatePpdSafeConversionForChildren(result,
         readerSchema.getChildren());
   }
 
@@ -336,7 +329,7 @@ public class SchemaEvolution {
    *
    * @return boolean array to represent list of column safe or not.
    */
-  private boolean[] populatePpdSafeConversionForChildern(
+  private boolean[] populatePpdSafeConversionForChildren(
                         boolean[] ppdSafeConversion,
                         List<TypeDescription> children) {
     boolean safePpd;
@@ -344,12 +337,14 @@ public class SchemaEvolution {
       for (TypeDescription child : children) {
         TypeDescription fileType = getFileType(child.getId());
         safePpd = validatePPDConversion(fileType, child);
-        ppdSafeConversion[child.getId()] = safePpd;
-        populatePpdSafeConversionForChildern(ppdSafeConversion,
+        if (fileType != null) {
+          ppdSafeConversion[fileType.getId()] = safePpd;
+        }
+        populatePpdSafeConversionForChildren(ppdSafeConversion,
             child.getChildren());
       }
     }
-    return  ppdSafeConversion;
+    return ppdSafeConversion;
   }
 
   private boolean validatePPDConversion(final TypeDescription fileType,
@@ -497,7 +492,7 @@ public class SchemaEvolution {
           if (fileChildren.size() == readerChildren.size()) {
             for(int i=0; i < fileChildren.size(); ++i) {
               buildConversion(fileChildren.get(i),
-                              readerChildren.get(i), 0);
+                              readerChildren.get(i), positionalLevels - 1);
             }
           } else {
             isOk = false;
@@ -513,7 +508,7 @@ public class SchemaEvolution {
             isOnlyImplicitConversion = false;
           }
 
-          if (positionalLevels == 0) {
+          if (positionalLevels <= 0) {
             List<String> readerFieldNames = readerType.getFieldNames();
             List<String> fileFieldNames = fileType.getFieldNames();
 
@@ -575,24 +570,6 @@ public class SchemaEvolution {
     }
   }
 
-  void buildIdentityConversion(TypeDescription readerType) {
-    int id = readerType.getId();
-    if (!includeReaderColumn(id)) {
-      return;
-    }
-    if (readerFileTypes[id] != null) {
-      throw new RuntimeException("reader to file type entry already assigned");
-    }
-    readerFileTypes[id] = readerType;
-    fileIncluded[id] = true;
-    List<TypeDescription> children = readerType.getChildren();
-    if (children != null) {
-      for (TypeDescription child : children) {
-        buildIdentityConversion(child);
-      }
-    }
-  }
-
   public static boolean checkAcidSchema(TypeDescription type) {
     if (type.getCategory().equals(TypeDescription.Category.STRUCT)) {
       List<String> rootFields = type.getFieldNames();
@@ -635,7 +612,7 @@ public class SchemaEvolution {
   }
 
   private static final List<String> acidEventFieldNames=
-    new ArrayList<String>();
+      new ArrayList<String>();
 
   static {
     acidEventFieldNames.add("operation");

@@ -19,7 +19,10 @@
 #ifndef ORC_COLUMN_READER_HH
 #define ORC_COLUMN_READER_HH
 
+#include <unordered_map>
+
 #include "orc/Vector.hh"
+
 #include "ByteRLE.hh"
 #include "Compression.hh"
 #include "Timezone.hh"
@@ -66,6 +69,11 @@ namespace orc {
     virtual const Timezone& getWriterTimezone() const = 0;
 
     /**
+     * Get the reader's timezone, so that we can convert their dates correctly.
+     */
+    virtual const Timezone& getReaderTimezone() const = 0;
+
+    /**
      * Get the error stream.
      * @return a pointer to the stream that should get error messages
      */
@@ -83,6 +91,12 @@ namespace orc {
      * @return the number of scale digits
      */
     virtual int32_t getForcedScaleOnHive11Decimal() const = 0;
+
+    /**
+     * Whether decimals that have precision <=18 are encoded as fixed scale and values
+     * encoded in RLE.
+     */
+    virtual bool isDecimalAsLong() const = 0;
   };
 
   /**
@@ -117,6 +131,30 @@ namespace orc {
     virtual void next(ColumnVectorBatch& rowBatch,
                       uint64_t numValues,
                       char* notNull);
+
+    /**
+     * Read the next group of values without decoding
+     * @param rowBatch the memory to read into.
+     * @param numValues the number of values to read
+     * @param notNull if null, all values are not null. Otherwise, it is
+     *           a mask (with at least numValues bytes) for which values to
+     *           set.
+     */
+    virtual void nextEncoded(ColumnVectorBatch& rowBatch,
+                      uint64_t numValues,
+                      char* notNull)
+    {
+      rowBatch.isEncoded = false;
+      next(rowBatch, numValues, notNull);
+    }
+
+    /**
+     * Seek to beginning of a row group in the current stripe
+     * @param positions a list of PositionProviders storing the positions
+     */
+    virtual void seekToRowGroup(
+      std::unordered_map<uint64_t, PositionProvider>& positions);
+
   };
 
   /**

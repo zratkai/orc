@@ -27,6 +27,8 @@ ORC provides a rich set of scalar and compound types:
   * varchar
 * Binary blobs
   * binary
+* Decimal type
+  * decimal
 * Date/time
   * timestamp
   * timestamp with local time zone
@@ -51,7 +53,8 @@ columns have one child column for each of the variants.
 Given the following definition of the table Foobar, the columns in the
 file would form the given tree.
 
-```create table Foobar (
+```
+create table Foobar (
  myInt int,
  myMap map<string,
  struct<myString : string,
@@ -60,7 +63,7 @@ file would form the given tree.
 );
 ```
 
-![ORC column structure]({{ site.url }}/img/TreeWriters.png)
+![ORC column structure](/img/TreeWriters.png)
 
 # Timestamps
 

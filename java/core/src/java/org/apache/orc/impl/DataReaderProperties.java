@@ -17,9 +17,9 @@
  */
 package org.apache.orc.impl;
 
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.orc.OrcConf;
 
 import java.util.function.Supplier;
@@ -32,15 +32,19 @@ public final class DataReaderProperties {
   private final InStream.StreamOptions compression;
   private final boolean zeroCopy;
   private final int maxDiskRangeChunkLimit;
+  private final int minSeekSize;
+  private final double minSeekSizeTolerance;
   private final boolean isVectoredRead;
 
   private DataReaderProperties(Builder builder) {
-    this.file = builder.file;
     this.fileSystemSupplier = builder.fileSystemSupplier;
     this.path = builder.path;
+    this.file = builder.file;
     this.compression = builder.compression;
     this.zeroCopy = builder.zeroCopy;
     this.maxDiskRangeChunkLimit = builder.maxDiskRangeChunkLimit;
+    this.minSeekSize = builder.minSeekSize;
+    this.minSeekSizeTolerance = builder.minSeekSizeTolerance;
     this.isVectoredRead = builder.isVectoredRead;
   }
 
@@ -74,6 +78,14 @@ public final class DataReaderProperties {
     return new Builder();
   }
 
+  public int getMinSeekSize() {
+    return minSeekSize;
+  }
+
+  public double getMinSeekSizeTolerance() {
+    return minSeekSizeTolerance;
+  }
+
   public static class Builder {
 
     private Supplier<FileSystem> fileSystemSupplier;
@@ -81,9 +93,13 @@ public final class DataReaderProperties {
     private FSDataInputStream file;
     private InStream.StreamOptions compression;
     private boolean zeroCopy;
-    private int maxDiskRangeChunkLimit = (int) OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getDefaultValue();
+    private int maxDiskRangeChunkLimit =
+        (int) OrcConf.ORC_MAX_DISK_RANGE_CHUNK_LIMIT.getDefaultValue();
+    private int minSeekSize = (int) OrcConf.ORC_MIN_DISK_SEEK_SIZE.getDefaultValue();
+    private double minSeekSizeTolerance = (double) OrcConf.ORC_MIN_DISK_SEEK_SIZE_TOLERANCE
+        .getDefaultValue();
     private boolean isVectoredRead;
-    
+
     private Builder() {
 
     }
@@ -120,6 +136,16 @@ public final class DataReaderProperties {
 
     public Builder withMaxDiskRangeChunkLimit(int value) {
       maxDiskRangeChunkLimit = value;
+      return this;
+    }
+
+    public Builder withMinSeekSize(int value) {
+      minSeekSize = value;
+      return this;
+    }
+
+    public Builder withMinSeekSizeTolerance(double value) {
+      minSeekSizeTolerance = value;
       return this;
     }
 

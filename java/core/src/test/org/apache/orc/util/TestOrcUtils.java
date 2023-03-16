@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,13 +18,11 @@
 
 package org.apache.orc.util;
 
-import java.util.Arrays;
-
 import org.apache.orc.OrcUtils;
 import org.apache.orc.TypeDescription;
+import org.junit.jupiter.api.Test;
 
-import org.junit.Assert;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
 /**
  * Tests for OrcUtils.
@@ -42,8 +40,7 @@ public class TestOrcUtils {
     includeColumns[1] = true;
     includeColumns[3] = true;
 
-    Assert.assertTrue(Arrays.equals(includeColumns,
-        OrcUtils.includeColumns("msisdn, imei", schema)));
+    assertArrayEquals(includeColumns, OrcUtils.includeColumns("msisdn, imei", schema));
   }
 
   @Test
@@ -63,8 +60,7 @@ public class TestOrcUtils {
     boolean[] includeColumns = new boolean[8+1];
     includeColumns[7] = true;
 
-    Assert.assertTrue(Arrays.equals(includeColumns,
-        OrcUtils.includeColumns("msisdn", schema)));
+    assertArrayEquals(includeColumns, OrcUtils.includeColumns("msisdn", schema));
   }
 
   @Test
@@ -79,8 +75,7 @@ public class TestOrcUtils {
     boolean[] includeColumns = new boolean[3+1];
     includeColumns[2] = true;
 
-    Assert.assertTrue(Arrays.equals(includeColumns,
-        OrcUtils.includeColumns("row.msisdn", schema)));
+    assertArrayEquals(includeColumns, OrcUtils.includeColumns("row.msisdn", schema));
   }
 
   @Test
@@ -94,7 +89,6 @@ public class TestOrcUtils {
 
     boolean[] includeColumns = new boolean[3+1];
 
-    Assert.assertTrue(Arrays.equals(includeColumns,
-        OrcUtils.includeColumns("msisdn, row.msisdn2", schema)));
+    assertArrayEquals(includeColumns, OrcUtils.includeColumns("msisdn, row.msisdn2", schema));
   }
 }

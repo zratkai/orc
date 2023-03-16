@@ -18,17 +18,17 @@
 
 package org.apache.orc;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-
 import org.apache.orc.impl.StreamName;
 import org.apache.orc.impl.writer.StreamOptions;
 import org.apache.orc.impl.writer.WriterEncryptionVariant;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
+
 /**
  * This interface separates the physical layout of ORC files from the higher
  * level details.
- *
+ * <p>
  * This API is limited to being used by LLAP.
  */
 public interface PhysicalWriter {
@@ -120,7 +120,7 @@ public interface PhysicalWriter {
   void close() throws IOException;
 
   /**
-   * Flushes the writer so that readers can see the preceeding postscripts.
+   * Flushes the writer so that readers can see the preceding postscripts.
    */
   void flush() throws IOException;
 
@@ -135,7 +135,7 @@ public interface PhysicalWriter {
                        ) throws IOException;
 
   /**
-   * Get the number of bytes for a file in a givem column.
+   * Get the number of bytes for a file in a given column.
    * @param column column from which to get file size
    * @param variant the encryption variant to check
    * @return number of bytes for the given column

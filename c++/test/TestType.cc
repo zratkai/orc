@@ -277,6 +277,18 @@ namespace orc {
     EXPECT_EQ(13, cutType->getSubtype(1)->getMaximumColumnId());
   }
 
+  void expectLogicErrorDuringParse(std::string typeStr, const char* errMsg) {
+    try {
+      ORC_UNIQUE_PTR<Type> type = Type::buildTypeFromString(typeStr);
+      FAIL() << "'" << typeStr << "'"
+          << " should throw std::logic_error for invalid schema";
+    } catch (std::logic_error& e) {
+      EXPECT_EQ(e.what(), std::string(errMsg));
+    } catch (...) {
+      FAIL() << "Should only throw std::logic_error for invalid schema";
+    }
+  }
+
   TEST(TestType, buildTypeFromString) {
     std::string typeStr = "struct<a:int,b:string,c:decimal(10,2),d:varchar(5)>";
     ORC_UNIQUE_PTR<Type> type = Type::buildTypeFromString(typeStr);
@@ -295,9 +307,62 @@ namespace orc {
     EXPECT_EQ(typeStr, type->toString());
 
     typeStr =
+      "struct<a:bigint,b:struct<a:binary,b:timestamp with local time zone>>";
+    type = Type::buildTypeFromString(typeStr);
+    EXPECT_EQ(typeStr, type->toString());
+
+    typeStr =
       "struct<a:bigint,b:struct<a:binary,b:timestamp>,c:map<double,tinyint>>";
     type = Type::buildTypeFromString(typeStr);
     EXPECT_EQ(typeStr, type->toString());
+
+    typeStr = "timestamp with local time zone";
+    type = Type::buildTypeFromString(typeStr);
+    EXPECT_EQ(typeStr, type->toString());
+
+    expectLogicErrorDuringParse("foobar",
+        "Unknown type foobar");
+    expectLogicErrorDuringParse("struct<col0:int>other",
+        "Invalid type string.");
+    expectLogicErrorDuringParse("array<>",
+        "Unknown type ");
+    expectLogicErrorDuringParse("array<int,string>",
+        "Array type must contain exactly one sub type.");
+    expectLogicErrorDuringParse("map<int,string,double>",
+        "Map type must contain exactly two sub types.");
+    expectLogicErrorDuringParse("int<>","Invalid < after int type.");
+    expectLogicErrorDuringParse("array(int)", "Missing < after array.");
+    expectLogicErrorDuringParse("struct<struct<bigint>>",
+        "Invalid struct type. No field name set.");
+    expectLogicErrorDuringParse("struct<a:bigint;b:string>",
+        "Missing comma after field.");
+  }
+
+  TEST(TestType, quotedFieldNames) {
+    ORC_UNIQUE_PTR<Type> type = createStructType();
+    type->addStructField("foo bar", createPrimitiveType(INT));
+    type->addStructField("`some`thing`", createPrimitiveType(INT));
+    type->addStructField("1234567890_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        createPrimitiveType(INT));
+    type->addStructField("'!@#$%^&*()-=_+", createPrimitiveType(INT));
+    EXPECT_EQ("struct<`foo bar`"
+        ":int,```some``thing```:int,"
+        "1234567890_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ:int,"
+        "`'!@#$%^&*()-=_+`:int>", type->toString());
+
+    std::string typeStr =
+      "struct<`foo bar`:int,```quotes```:double,`abc``def````ghi`:float>";
+    type = Type::buildTypeFromString(typeStr);
+    EXPECT_EQ(3, type->getSubtypeCount());
+    EXPECT_EQ("foo bar", type->getFieldName(0));
+    EXPECT_EQ("`quotes`", type->getFieldName(1));
+    EXPECT_EQ("abc`def``ghi", type->getFieldName(2));
+    EXPECT_EQ(typeStr, type->toString());
+
+    expectLogicErrorDuringParse("struct<``:int>",
+        "Empty quoted field name.");
+    expectLogicErrorDuringParse("struct<`col0:int>",
+        "Invalid field name. Unmatched quote");
   }
 
   void testCorruptHelper(const proto::Type& type,
@@ -339,11 +404,25 @@ namespace orc {
     illUnionType.set_kind(proto::Type_Kind_UNION);
     testCorruptHelper(illUnionType, footer,
         "Illegal UNION type that doesn't contain any subtypes");
+
+    proto::Type illStructType;
+    proto::Type structType;
+    illStructType.set_kind(proto::Type_Kind_STRUCT);
+    structType.set_kind(proto::Type_Kind_STRUCT);
+    structType.add_subtypes(0);  // construct a loop back to root
+    structType.add_fieldnames("root");
+    illStructType.add_subtypes(1);
+    illStructType.add_fieldnames("f1");
+    illStructType.add_subtypes(2);
+    *(footer.add_types()) = illStructType;
+    *(footer.add_types()) = structType;
+    testCorruptHelper(illStructType, footer,
+        "Illegal STRUCT type that contains less fieldnames than subtypes");
   }
 
   void expectParseError(const proto::Footer &footer, const char* errMsg) {
     try {
-      checkProtoTypeIds(footer);
+      checkProtoTypes(footer);
       FAIL() << "Should throw ParseError for ill ids";
     } catch (ParseError& e) {
       EXPECT_EQ(e.what(), std::string(errMsg));
@@ -352,20 +431,26 @@ namespace orc {
     }
   }
 
-  TEST(TestType, testCheckProtoTypeIds) {
+  TEST(TestType, testCheckProtoTypes) {
     proto::Footer footer;
     proto::Type rootType;
+    expectParseError(footer, "Footer is corrupt: no types found");
+
     rootType.set_kind(proto::Type_Kind_STRUCT);
     rootType.add_subtypes(1); // add a non existent type id
+    rootType.add_fieldnames("f1");
     *(footer.add_types()) = rootType;
     expectParseError(footer, "Footer is corrupt: types(1) not exists");
 
     footer.clear_types();
     rootType.clear_subtypes();
+    rootType.clear_fieldnames();
     proto::Type structType;
     structType.set_kind(proto::Type_Kind_STRUCT);
     structType.add_subtypes(0);  // construct a loop back to root
+    structType.add_fieldnames("root");
     rootType.add_subtypes(1);
+    rootType.add_fieldnames("f1");
     *(footer.add_types()) = rootType;
     *(footer.add_types()) = structType;
     expectParseError(footer,
@@ -373,12 +458,14 @@ namespace orc {
 
     footer.clear_types();
     rootType.clear_subtypes();
+    rootType.clear_fieldnames();
     proto::Type listType;
     listType.set_kind(proto::Type_Kind_LIST);
     proto::Type mapType;
     mapType.set_kind(proto::Type_Kind_MAP);
     proto::Type unionType;
     unionType.set_kind(proto::Type_Kind_UNION);
+    rootType.add_fieldnames("f1");
     rootType.add_subtypes(1);   // 0 -> 1
     listType.add_subtypes(2);   // 1 -> 2
     mapType.add_subtypes(3);    // 2 -> 3
@@ -392,16 +479,35 @@ namespace orc {
 
     footer.clear_types();
     rootType.clear_subtypes();
+    rootType.clear_fieldnames();
     proto::Type intType;
     intType.set_kind(proto::Type_Kind_INT);
     proto::Type strType;
     strType.set_kind(proto::Type_Kind_STRING);
     rootType.add_subtypes(2);
+    rootType.add_fieldnames("f2");
     rootType.add_subtypes(1);
+    rootType.add_fieldnames("f1");
     *(footer.add_types()) = rootType;
     *(footer.add_types()) = intType;
     *(footer.add_types()) = strType;
     expectParseError(footer,
         "Footer is corrupt: subType(0) >= subType(1) in types(0). (2 >= 1)");
+
+    footer.clear_types();
+    rootType.clear_subtypes();
+    rootType.clear_fieldnames();
+    rootType.set_kind(proto::Type_Kind_STRUCT);
+    rootType.add_subtypes(1);
+    *(footer.add_types()) = rootType;
+    *(footer.add_types()) = intType;
+    expectParseError(footer,
+        "Footer is corrupt: STRUCT type 0 has 1 subTypes, but has 0 fieldNames");
+    // Should pass the check after adding the field name
+    footer.clear_types();
+    rootType.add_fieldnames("f1");
+    *(footer.add_types()) = rootType;
+    *(footer.add_types()) = intType;
+    checkProtoTypes(footer);
   }
 }

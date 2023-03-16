@@ -9,3 +9,6 @@ target
 *.iws
 .idea
 .DS_Store
+.java-version
+java/bench/data
+.swp

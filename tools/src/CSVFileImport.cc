@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <list>
 #include <memory>
 #include <getopt.h>
 #include <string>
@@ -46,7 +47,7 @@ std::string extractColumn(std::string s, uint64_t colIndex) {
 
 static const char* GetDate(void) {
   static char buf[200];
-  time_t t = time(nullptr);
+  time_t t = time(ORC_NULLPTR);
   struct tm* p = localtime(&t);
   strftime(buf, sizeof(buf), "[%Y-%m-%d %H:%M:%S]", p);
   return buf;
@@ -77,8 +78,8 @@ void fillStringValues(const std::vector<std::string>& data,
                       orc::ColumnVectorBatch* batch,
                       uint64_t numValues,
                       uint64_t colIndex,
-                      orc::DataBuffer<char>& buffer,
-                      uint64_t& offset) {
+                      orc::DataBuffer<char>& buffer) {
+  uint64_t offset = 0;
   orc::StringVectorBatch* stringBatch =
     dynamic_cast<orc::StringVectorBatch*>(batch);
   bool hasNull = false;
@@ -89,8 +90,17 @@ void fillStringValues(const std::vector<std::string>& data,
       hasNull = true;
     } else {
       batch->notNull[i] = 1;
-      if (buffer.size() - offset < col.size()) {
-        buffer.reserve(buffer.size() * 2);
+      char* oldBufferAddress = buffer.data();
+      // Resize the buffer in case buffer does not have remaining space to store the next string.
+      while (buffer.size() - offset < col.size()) {
+        buffer.resize(buffer.size() * 2);
+      }
+      char* newBufferAddress = buffer.data();
+      // Refill stringBatch->data with the new addresses, if buffer's address has changed.
+      if (newBufferAddress != oldBufferAddress){
+        for (uint64_t refillIndex = 0; refillIndex < i; ++refillIndex){
+        stringBatch->data[refillIndex] = stringBatch->data[refillIndex] - oldBufferAddress + newBufferAddress;
+        }
       }
       memcpy(buffer.data() + offset,
              col.c_str(),
@@ -246,7 +256,7 @@ void fillTimestampValues(const std::vector<std::string>& data,
     } else {
       memset(&timeStruct, 0, sizeof(timeStruct));
       char *left=strptime(col.c_str(), "%Y-%m-%d %H:%M:%S", &timeStruct);
-      if (left == nullptr) {
+      if (left == ORC_NULLPTR) {
 	batch->notNull[i] = 0;
       } else {
 	batch->notNull[i] = 1;
@@ -271,8 +281,10 @@ void usage() {
             << "                  [-s <size>] [--stripe=<size>]\n"
             << "                  [-c <size>] [--block=<size>]\n"
             << "                  [-b <size>] [--batch=<size>]\n"
+            << "                  [-t <string>] [--timezone=<string>]\n"
             << "                  <schema> <input> <output>\n"
             << "Import CSV file into an Orc file using the specified schema.\n"
+            << "The timezone is writer timezone of timestamp types.\n"
             << "Compound types are not yet supported.\n";
 }
 
@@ -280,6 +292,7 @@ int main(int argc, char* argv[]) {
   std::string input;
   std::string output;
   std::string schema;
+  std::string timezoneName="GMT";
   uint64_t stripeSize = (128 << 20); // 128M
   uint64_t blockSize = 64 << 10;     // 64K
   uint64_t batchSize = 1024;
@@ -288,18 +301,18 @@ int main(int argc, char* argv[]) {
   static struct option longOptions[] = {
     {"help", no_argument, ORC_NULLPTR, 'h'},
     {"delimiter", required_argument, ORC_NULLPTR, 'd'},
-    {"stripe", required_argument, ORC_NULLPTR, 'p'},
+    {"stripe", required_argument, ORC_NULLPTR, 's'},
     {"block", required_argument, ORC_NULLPTR, 'c'},
     {"batch", required_argument, ORC_NULLPTR, 'b'},
+    {"timezone", required_argument, ORC_NULLPTR, 't'},
     {ORC_NULLPTR, 0, ORC_NULLPTR, 0}
   };
   bool helpFlag = false;
   int opt;
   char *tail;
   do {
-    opt = getopt_long(argc, argv, "i:o:s:b:c:p:h", longOptions, ORC_NULLPTR);
+    opt = getopt_long(argc, argv, "d:s:c:b:t:h", longOptions, ORC_NULLPTR);
     switch (opt) {
-      case '?':
       case 'h':
         helpFlag = true;
         opt = -1;
@@ -307,7 +320,7 @@ int main(int argc, char* argv[]) {
       case 'd':
         gDelimiter = optarg[0];
         break;
-      case 'p':
+      case 's':
         stripeSize = strtoul(optarg, &tail, 10);
         if (*tail != '\0') {
           fprintf(stderr, "The --stripe parameter requires an integer option.\n");
@@ -327,6 +340,9 @@ int main(int argc, char* argv[]) {
           fprintf(stderr, "The --batch parameter requires an integer option.\n");
           return 1;
         }
+        break;
+      case 't':
+        timezoneName = std::string(optarg);
         break;
     }
   } while (opt != -1);
@@ -349,12 +365,14 @@ int main(int argc, char* argv[]) {
   double totalElapsedTime = 0.0;
   clock_t totalCPUTime = 0;
 
-  orc::DataBuffer<char> buffer(*orc::getDefaultPool(), 4 * 1024 * 1024);
+  typedef std::list<orc::DataBuffer<char>> DataBufferList;
+  DataBufferList bufferList;
 
   orc::WriterOptions options;
   options.setStripeSize(stripeSize);
   options.setCompressionBlockSize(blockSize);
   options.setCompression(compression);
+  options.setTimezoneName(timezoneName);
 
   ORC_UNIQUE_PTR<orc::OutputStream> outStream = orc::writeLocalFile(output);
   ORC_UNIQUE_PTR<orc::Writer> writer =
@@ -368,7 +386,6 @@ int main(int argc, char* argv[]) {
   std::ifstream finput(input.c_str());
   while (!eof) {
     uint64_t numValues = 0;      // num of lines read in a batch
-    uint64_t bufferOffset = 0;   // current offset in the string buffer
 
     data.clear();
     memset(rowBatch->notNull.data(), 1, batchSize);
@@ -403,13 +420,13 @@ int main(int argc, char* argv[]) {
           case orc::STRING:
           case orc::CHAR:
           case orc::VARCHAR:
-          case orc::BINARY:
+          case orc::BINARY: 
+            bufferList.emplace_back(*orc::getDefaultPool(), 1 * 1024 * 1024);
             fillStringValues(data,
                              structBatch->fields[i],
                              numValues,
                              i,
-                             buffer,
-                             bufferOffset);
+                             bufferList.back());
             break;
           case orc::FLOAT:
           case orc::DOUBLE:
@@ -439,6 +456,7 @@ int main(int argc, char* argv[]) {
                            i);
             break;
           case orc::TIMESTAMP:
+          case orc::TIMESTAMP_INSTANT:
             fillTimestampValues(data,
                                 structBatch->fields[i],
                                 numValues,
@@ -453,13 +471,13 @@ int main(int argc, char* argv[]) {
       }
 
       struct timeval t_start, t_end;
-      gettimeofday(&t_start, nullptr);
+      gettimeofday(&t_start, ORC_NULLPTR);
       clock_t c_start = clock();
 
       writer->add(*rowBatch);
 
       totalCPUTime += (clock() - c_start);
-      gettimeofday(&t_end, nullptr);
+      gettimeofday(&t_end, ORC_NULLPTR);
       totalElapsedTime +=
         (static_cast<double>(t_end.tv_sec - t_start.tv_sec) * 1000000.0
           + static_cast<double>(t_end.tv_usec - t_start.tv_usec)) / 1000000.0;
@@ -467,13 +485,13 @@ int main(int argc, char* argv[]) {
   }
 
   struct timeval t_start, t_end;
-  gettimeofday(&t_start, nullptr);
+  gettimeofday(&t_start, ORC_NULLPTR);
   clock_t c_start = clock();
 
   writer->close();
 
   totalCPUTime += (clock() - c_start);
-  gettimeofday(&t_end, nullptr);
+  gettimeofday(&t_end, ORC_NULLPTR);
   totalElapsedTime +=
     (static_cast<double>(t_end.tv_sec - t_start.tv_sec) * 1000000.0
      + static_cast<double>(t_end.tv_usec - t_start.tv_usec)) / 1000000.0;

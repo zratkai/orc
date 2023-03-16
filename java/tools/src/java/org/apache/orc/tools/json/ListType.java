@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -28,11 +28,11 @@ import java.io.PrintStream;
 class ListType extends HiveType {
   HiveType elementType;
 
-  public ListType() {
+  ListType() {
     super(Kind.LIST);
   }
 
-  public ListType(HiveType child) {
+  ListType(HiveType child) {
     super(Kind.LIST);
     this.elementType = child;
   }
@@ -76,6 +76,7 @@ class ListType extends HiveType {
     }
   }
 
+  @Override
   public void printFlat(PrintStream out, String prefix) {
     elementType.printFlat(out, prefix + "._list");
   }

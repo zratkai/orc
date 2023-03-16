@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,14 +20,14 @@ package org.apache.orc.impl;
 /**
  * Dynamic int array that uses primitive types and chunks to avoid copying
  * large number of integers when it resizes.
- *
+ * <p>
  * The motivation for this class is memory optimization, i.e. space efficient
  * storage of potentially huge arrays without good a-priori size guesses.
- *
+ * <p>
  * The API of this class is between a primitive array and a AbstractList. It's
  * not a Collection implementation because it handles primitive types, but the
  * API could be extended to support iterators and the like.
- *
+ * <p>
  * NOTE: Like standard Collection implementations/arrays, this class is not
  * synchronized.
  */
@@ -119,20 +119,22 @@ public final class DynamicIntArray {
     initializedChunks = 0;
   }
 
+  @Override
   public String toString() {
-    int i;
-    StringBuilder sb = new StringBuilder(length * 4);
-
-    sb.append('{');
     int l = length - 1;
-    for (i=0; i<l; i++) {
-      sb.append(get(i));
-      sb.append(',');
+    if (l == -1) {
+      return "{}";
     }
-    sb.append(get(i));
-    sb.append('}');
 
-    return sb.toString();
+    StringBuilder sb = new StringBuilder(length * 4);
+    sb.append('{');
+    for (int i = 0; i <= l; i++) {
+      sb.append(get(i));
+      if (i != l) {
+        sb.append(",");
+      }
+    }
+    return sb.append('}').toString();
   }
 
   public int getSizeInBytes() {

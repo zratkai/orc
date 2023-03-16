@@ -30,6 +30,8 @@ namespace orc {
       return new IntegerColumnStatisticsImpl(s);
     } else if (s.has_doublestatistics()) {
       return new DoubleColumnStatisticsImpl(s);
+    } else if (s.has_collectionstatistics()) {
+      return new CollectionColumnStatisticsImpl(s);
     } else if (s.has_stringstatistics()) {
       return new StringColumnStatisticsImpl(s, statContext);
     } else if (s.has_bucketstatistics()) {
@@ -64,7 +66,7 @@ namespace orc {
   }
 
   StatisticsImpl::~StatisticsImpl() {
-    for(std::list<ColumnStatistics*>::iterator ptr = colStats.begin();
+    for(std::vector<ColumnStatistics*>::iterator ptr = colStats.begin();
         ptr != colStats.end();
         ++ptr) {
       delete *ptr;
@@ -135,6 +137,10 @@ namespace orc {
     // PASS
   }
 
+  CollectionColumnStatistics::~CollectionColumnStatistics() {
+    // PASS
+  }
+
   MutableColumnStatistics::~MutableColumnStatistics() {
     // PASS
   }
@@ -167,16 +173,8 @@ namespace orc {
     // PASS
   }
 
-  void IntegerColumnStatisticsImpl::update(int64_t value, int repetitions) {
-    _stats.updateMinMax(value);
-
-    if (_stats.hasSum()) {
-      bool wasPositive = _stats.getSum() >= 0;
-      _stats.setSum(value * repetitions + _stats.getSum());
-      if ((value >= 0) == wasPositive) {
-        _stats.setHasSum((_stats.getSum() >= 0) == wasPositive);
-      }
-    }
+  CollectionColumnStatisticsImpl::~CollectionColumnStatisticsImpl() {
+    // PASS
   }
 
   StringColumnStatisticsImpl::~StringColumnStatisticsImpl() {
@@ -317,6 +315,8 @@ namespace orc {
       _stats.setMaximum(0);
       _lowerBound = 0;
       _upperBound = 0;
+      _minimumNanos = DEFAULT_MIN_NANOS;
+      _maximumNanos = DEFAULT_MAX_NANOS;
     }else{
       const proto::TimestampStatistics& stats = pb.timestampstatistics();
       _stats.setHasMinimum(
@@ -327,6 +327,12 @@ namespace orc {
                 (stats.has_maximum() && (statContext.writerTimezone != nullptr)));
       _hasLowerBound = stats.has_minimumutc() || stats.has_minimum();
       _hasUpperBound = stats.has_maximumutc() || stats.has_maximum();
+      // to be consistent with java side, non-default minimumnanos and maximumnanos
+      // are added by one in their serialized form.
+      _minimumNanos = stats.has_minimumnanos() ?
+                     stats.minimumnanos() - 1 : DEFAULT_MIN_NANOS;
+      _maximumNanos = stats.has_maximumnanos() ?
+                     stats.maximumnanos() - 1 : DEFAULT_MAX_NANOS;
 
       // Timestamp stats are stored in milliseconds
       if (stats.has_minimumutc()) {
@@ -373,6 +379,26 @@ namespace orc {
     }
   }
 
+  CollectionColumnStatisticsImpl::CollectionColumnStatisticsImpl
+  (const proto::ColumnStatistics& pb) {
+    _stats.setNumberOfValues(pb.numberofvalues());
+    _stats.setHasNull(pb.hasnull());
+    if (!pb.has_collectionstatistics()) {
+      _stats.setMinimum(0);
+      _stats.setMaximum(0);
+      _stats.setSum(0);
+    } else {
+      const proto::CollectionStatistics& stats = pb.collectionstatistics();
+      _stats.setHasMinimum(stats.has_minchildren());
+      _stats.setHasMaximum(stats.has_maxchildren());
+      _stats.setHasSum(stats.has_totalchildren());
+
+      _stats.setMinimum(stats.minchildren());
+      _stats.setMaximum(stats.maxchildren());
+      _stats.setSum(stats.totalchildren());
+    }
+  }
+
   std::unique_ptr<MutableColumnStatistics> createColumnStatistics(
     const Type& type) {
     switch (static_cast<int64_t>(type.getKind())) {
@@ -385,9 +411,11 @@ namespace orc {
       case SHORT:
         return std::unique_ptr<MutableColumnStatistics>(
           new IntegerColumnStatisticsImpl());
-      case STRUCT:
       case MAP:
       case LIST:
+        return std::unique_ptr<MutableColumnStatistics>(
+          new CollectionColumnStatisticsImpl());
+      case STRUCT:
       case UNION:
         return std::unique_ptr<MutableColumnStatistics>(
           new ColumnStatisticsImpl());
@@ -407,6 +435,7 @@ namespace orc {
         return std::unique_ptr<MutableColumnStatistics>(
           new DateColumnStatisticsImpl());
       case TIMESTAMP:
+      case TIMESTAMP_INSTANT:
         return std::unique_ptr<MutableColumnStatistics>(
           new TimestampColumnStatisticsImpl());
       case DECIMAL:

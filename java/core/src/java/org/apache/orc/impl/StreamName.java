@@ -24,7 +24,7 @@ import org.jetbrains.annotations.NotNull;
 
 /**
  * The name of a stream within a stripe.
- *
+ * <p>
  * Sorted by area, encryption, column, and then kind.
  */
 public class StreamName implements Comparable<StreamName> {
@@ -47,6 +47,7 @@ public class StreamName implements Comparable<StreamName> {
     this.encryption = encryption;
   }
 
+  @Override
   public boolean equals(Object obj) {
     if (obj instanceof  StreamName) {
       StreamName other = (StreamName) obj;

@@ -18,7 +18,6 @@
 
 package org.apache.orc.tools.convert;
 
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
@@ -28,21 +27,31 @@ import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
+import java.util.Locale;
 
 import static org.apache.orc.tools.convert.ConvertTool.DEFAULT_TIMESTAMP_FORMAT;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestCsvReader {
 
-  Configuration conf;
+  Locale defaultLocale;
 
-  @Before
-  public void openFileSystem () throws Exception {
-    conf = new Configuration();
+  @BeforeEach
+  public void storeDefaultLocale() {
+    defaultLocale = Locale.getDefault();
+    Locale.setDefault(Locale.US);
+  }
+
+  @AfterEach
+  public void restoreDefaultLocale() {
+    Locale.setDefault(defaultLocale);
   }
 
   @Test
@@ -63,7 +72,7 @@ public class TestCsvReader {
     RecordReader reader = new CsvReader(input, null, 1, schema, ',', '\'',
         '\\', 0, "", DEFAULT_TIMESTAMP_FORMAT);
     VectorizedRowBatch batch = schema.createRowBatch(5);
-    assertEquals(true, reader.nextBatch(batch));
+    assertTrue(reader.nextBatch(batch));
     assertEquals(5, batch.size);
     long bool = 0;
     for(int r = 0; r < batch.size; ++r) {
@@ -75,7 +84,7 @@ public class TestCsvReader {
       bool = 1 - bool;
       assertEquals(946684800000L, ((TimestampColumnVector) batch.cols[5]).getTime(r));
     }
-    assertEquals(true, reader.nextBatch(batch));
+    assertTrue(reader.nextBatch(batch));
     assertEquals(3, batch.size);
     for(int r = 0; r < batch.size; ++r) {
       assertEquals(r + 6, ((LongColumnVector) batch.cols[0]).vector[r]);
@@ -86,7 +95,7 @@ public class TestCsvReader {
       bool = 1 - bool;
       assertEquals(946684800000L, ((TimestampColumnVector) batch.cols[5]).getTime(r));
     }
-    assertEquals(false, reader.nextBatch(batch));
+    assertFalse(reader.nextBatch(batch));
   }
 
   @Test
@@ -101,10 +110,10 @@ public class TestCsvReader {
     RecordReader reader = new CsvReader(input, null, 1, schema, ',', '\'',
         '\\', 0, "null", DEFAULT_TIMESTAMP_FORMAT);
     VectorizedRowBatch batch = schema.createRowBatch();
-    assertEquals(true, reader.nextBatch(batch));
+    assertTrue(reader.nextBatch(batch));
     assertEquals(3, batch.size);
     for(int c=0; c < 4; ++c) {
-      assertEquals("column " + c, false, batch.cols[c].noNulls);
+      assertFalse(batch.cols[c].noNulls, "column " + c);
     }
 
     // check row 0
@@ -113,12 +122,12 @@ public class TestCsvReader {
     assertEquals("1", ((DecimalColumnVector) batch.cols[2]).vector[0].toString());
     assertEquals("a", ((BytesColumnVector) batch.cols[3]).toString(0));
     for(int c=0; c < 4; ++c) {
-      assertEquals("column " + c, false, batch.cols[c].isNull[0]);
+      assertFalse(batch.cols[c].isNull[0], "column " + c);
     }
 
     // row 1
     for(int c=0; c < 4; ++c) {
-      assertEquals("column " + c, true, batch.cols[c].isNull[1]);
+      assertTrue(batch.cols[c].isNull[1], "column " + c);
     }
 
     // check row 2
@@ -127,7 +136,7 @@ public class TestCsvReader {
     assertEquals("3", ((DecimalColumnVector) batch.cols[2]).vector[2].toString());
     assertEquals("row 3", ((BytesColumnVector) batch.cols[3]).toString(2));
     for(int c=0; c < 4; ++c) {
-      assertEquals("column " + c, false, batch.cols[c].isNull[2]);
+      assertFalse(batch.cols[c].isNull[2], "column " + c);
     }
   }
 
@@ -142,17 +151,17 @@ public class TestCsvReader {
     RecordReader reader = new CsvReader(input, null, 1, schema, ',', '\'',
         '\\', 0, "null", DEFAULT_TIMESTAMP_FORMAT);
     VectorizedRowBatch batch = schema.createRowBatch();
-    assertEquals(true, reader.nextBatch(batch));
+    assertTrue(reader.nextBatch(batch));
     assertEquals(2, batch.size);
     int nextVal = 1;
     for(int r=0; r < 2; ++r) {
-      assertEquals("row " + r, nextVal++, ((LongColumnVector) batch.cols[0]).vector[r]);
+      assertEquals(nextVal++, ((LongColumnVector) batch.cols[0]).vector[r], "row " + r);
       StructColumnVector b = (StructColumnVector) batch.cols[1];
-      assertEquals("row " + r, nextVal++, ((LongColumnVector) b.fields[0]).vector[r]);
-      assertEquals("row " + r, nextVal++, ((LongColumnVector) b.fields[1]).vector[r]);
-      assertEquals("row " + r, nextVal++, ((LongColumnVector) batch.cols[2]).vector[r]);
+      assertEquals(nextVal++, ((LongColumnVector) b.fields[0]).vector[r], "row " + r);
+      assertEquals(nextVal++, ((LongColumnVector) b.fields[1]).vector[r], "row " + r);
+      assertEquals(nextVal++, ((LongColumnVector) batch.cols[2]).vector[r], "row " + r);
     }
-    assertEquals(false, reader.nextBatch(batch));
+    assertFalse(reader.nextBatch(batch));
   }
 
   @Test
@@ -165,31 +174,32 @@ public class TestCsvReader {
     RecordReader reader = new CsvReader(input, null, 1, schema, ',', '\'',
             '\\', 0, "null", DEFAULT_TIMESTAMP_FORMAT);
     VectorizedRowBatch batch = schema.createRowBatch();
-    assertEquals(true, reader.nextBatch(batch));
+    assertTrue(reader.nextBatch(batch));
     assertEquals(1, batch.size);
     assertEquals(2147483646, ((LongColumnVector) batch.cols[0]).vector[0]);
     assertEquals(-2147483647, ((LongColumnVector) batch.cols[1]).vector[0]);
     assertEquals(9223372036854775806L, ((LongColumnVector) batch.cols[2]).vector[0]);
     assertEquals(-9223372036854775807L, ((LongColumnVector) batch.cols[3]).vector[0]);
-    assertEquals(false, reader.nextBatch(batch));
+    assertFalse(reader.nextBatch(batch));
   }
 
   @Test
   public void testCustomTimestampFormat() throws Exception {
-    String tsFormat = "d[d] MMM yyyy HH:mm:ss";
+    String tsFormat = "d[d] MMM yyyy HH:mm:ss.SSSSSS";
+
     StringReader input = new StringReader(
-            "'21 Mar 2018 12:23:34'\n" +
-                    "'3 Feb 2018 18:04:51'\n"
+            "'21 Mar 2018 12:23:34.123456'\n" +
+                    "'3 Feb 2018 18:04:51.456789'\n"
     );
     TypeDescription schema = TypeDescription.fromString(
             "struct<a:timestamp>");
     RecordReader reader = new CsvReader(input, null, 1, schema, ',', '\'',
             '\\', 0, "", tsFormat);
     VectorizedRowBatch batch = schema.createRowBatch(2);
-    assertEquals(true, reader.nextBatch(batch));
+    assertTrue(reader.nextBatch(batch));
     assertEquals(2, batch.size);
     TimestampColumnVector cv = (TimestampColumnVector) batch.cols[0];
-    assertEquals("2018-03-21 12:23:34.0", cv.asScratchTimestamp(0).toString());
-    assertEquals("2018-02-03 18:04:51.0", cv.asScratchTimestamp(1).toString());
+    assertEquals("2018-03-21 12:23:34.123456", cv.asScratchTimestamp(0).toString());
+    assertEquals("2018-02-03 18:04:51.456789", cv.asScratchTimestamp(1).toString());
   }
 }

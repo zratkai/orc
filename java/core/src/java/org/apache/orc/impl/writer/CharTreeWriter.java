@@ -36,8 +36,8 @@ public class CharTreeWriter extends StringBaseTreeWriter {
 
   CharTreeWriter(TypeDescription schema,
                  WriterEncryptionVariant encryption,
-                 WriterContext writer) throws IOException {
-    super(schema, encryption, writer);
+                 WriterContext context) throws IOException {
+    super(schema, encryption, context);
     maxLength = schema.getMaxLength();
     // utf-8 is currently 4 bytes long, but it could be upto 6
     padding = new byte[6*maxLength];
@@ -57,7 +57,7 @@ public class CharTreeWriter extends StringBaseTreeWriter {
       for(int i=0; i < length; ++i) {
         if (vec.noNulls || !vec.isNull[i + offset]) {
           // offset + i, once per loop
-         writePadded(vec, i + offset, 1);
+          writePadded(vec, i + offset, 1);
         }
       }
     }
