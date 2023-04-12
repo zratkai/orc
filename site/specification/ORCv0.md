@@ -27,7 +27,7 @@ include the minimum and maximum values for each column in each set of
 file reader can skip entire sets of rows that aren't important for
 this query.
 
-![ORC file structure]({{ site.url }}/img/OrcFileLayout.png)
+![ORC file structure](/img/OrcFileLayout.png)
 
 # File Tail
 
@@ -41,7 +41,7 @@ The metadata for ORC is stored using
 [Protocol Buffers](https://s.apache.org/protobuf_encoding), which provides
 the ability to add new fields without breaking readers. This document
 incorporates the Protobuf definition from the
-[ORC source code](https://s.apache.org/orc_proto) and the
+[ORC source code](https://github.com/apache/orc/blob/main/proto/orc_proto.proto) and the
 reader is encouraged to review the Protobuf encoding if they need to
 understand the byte-level encoding
 
@@ -65,7 +65,8 @@ than 256 bytes. Once the Postscript is parsed, the compressed
 serialized length of the Footer is known and it can be decompressed
 and parsed.
 
-```message PostScript {
+```
+message PostScript {
  // the length of the footer section in bytes
  optional uint64 footerLength = 1;
  // the kind of generic compression used
@@ -81,7 +82,8 @@ and parsed.
 }
 ```
 
-```enum CompressionKind {
+```
+enum CompressionKind {
  NONE = 0;
  ZLIB = 1;
  SNAPPY = 2;
@@ -103,7 +105,8 @@ scan the front of the file to determine the type of the file. The Body
 contains the rows and indexes, and the Tail gives the file level
 information as described in this section.
 
-```message Footer {
+```
+message Footer {
  // the length of the file header in bytes (always 3)
  optional uint64 headerLength = 1;
  // the length of the file header and body in bytes
@@ -134,7 +137,8 @@ itself, and a stripe footer. Both the indexes and the data sections
 are divided by columns so that only the data for the required columns
 needs to be read.
 
-```message StripeInformation {
+```
+message StripeInformation {
  // the start of the stripe within the file
  optional uint64 offset = 1;
  // the length of the indexes in bytes
@@ -154,11 +158,12 @@ All of the rows in an ORC file must have the same schema. Logically
 the schema is expressed as a tree as in the figure below, where
 the compound types have subcolumns under them.
 
-![ORC column structure]({{ site.url }}/img/TreeWriters.png)
+![ORC column structure](/img/TreeWriters.png)
 
 The equivalent Hive DDL would be:
 
-```create table Foobar (
+```
+create table Foobar (
  myInt int,
  myMap map<string,
  struct<myString : string,
@@ -172,7 +177,8 @@ where each type is assigned the next id. Clearly the root of the type
 tree is always type id 0. Compound types have a field named subtypes
 that contains the list of their children's type ids.
 
-```message Type {
+```
+message Type {
  enum Kind {
  BOOLEAN = 0;
  BYTE = 1;
@@ -218,7 +224,8 @@ there are any null values within the row group by setting the hasNull flag.
 The hasNull flag is used by ORC's predicate pushdown to better answer
 'IS NULL' queries.
 
-```message ColumnStatistics {
+```
+message ColumnStatistics {
  // the number of values
  optional uint64 numberOfValues = 1;
  // At most one of these has a value for any column
@@ -239,7 +246,8 @@ statistics includes the minimum, maximum, and sum. If the sum
 overflows long at any point during the calculation, no sum is
 recorded.
 
-```message IntegerStatistics {
+```
+message IntegerStatistics {
  optional sint64 minimum = 1;
  optional sint64 maximum = 2;
  optional sint64 sum = 3;
@@ -250,7 +258,8 @@ For floating point types (float, double), the column statistics
 include the minimum, maximum, and sum. If the sum overflows a double,
 no sum is recorded.
 
-```message DoubleStatistics {
+```
+message DoubleStatistics {
  optional double minimum = 1;
  optional double maximum = 2;
  optional double sum = 3;
@@ -260,7 +269,8 @@ no sum is recorded.
 For strings, the minimum value, maximum value, and the sum of the
 lengths of the values are recorded.
 
-```message StringStatistics {
+```
+message StringStatistics {
  optional string minimum = 1;
  optional string maximum = 2;
  // sum will store the total length of all strings
@@ -270,14 +280,16 @@ lengths of the values are recorded.
 
 For booleans, the statistics include the count of false and true values.
 
-```message BucketStatistics {
+```
+message BucketStatistics {
  repeated uint64 count = 1 [packed=true];
 }
 ```
 
 For decimals, the minimum, maximum, and sum are stored.
 
-```message DecimalStatistics {
+```
+message DecimalStatistics {
  optional string minimum = 1;
  optional string maximum = 2;
  optional string sum = 3;
@@ -285,9 +297,10 @@ For decimals, the minimum, maximum, and sum are stored.
 ```
 
 Date columns record the minimum and maximum values as the number of
-days since the epoch (1/1/2015).
+days since the UNIX epoch (1/1/1970 in UTC).
 
-```message DateStatistics {
+```
+message DateStatistics {
  // min,max values saved as days since epoch
  optional sint32 minimum = 1;
  optional sint32 maximum = 2;
@@ -297,7 +310,8 @@ days since the epoch (1/1/2015).
 Timestamp columns record the minimum and maximum values as the number of
 milliseconds since the epoch (1/1/2015).
 
-```message TimestampStatistics {
+```
+message TimestampStatistics {
  // min,max values saved as milliseconds since epoch
  optional sint64 minimum = 1;
  optional sint64 maximum = 2;
@@ -306,7 +320,8 @@ milliseconds since the epoch (1/1/2015).
 
 Binary columns store the aggregate number of bytes across all of the values.
 
-```message BinaryStatistics {
+```
+message BinaryStatistics {
  // sum will store the total binary blob length
  optional sint64 sum = 1;
 }
@@ -321,7 +336,8 @@ binary. Care should be taken by applications to make sure that their
 keys are unique and in general should be prefixed with an organization
 code.
 
-```message UserMetadataItem {
+```
+message UserMetadataItem {
  // the user defined key
  required string name = 1;
  // the user defined binary value
@@ -335,12 +351,14 @@ The file Metadata section contains column statistics at the stripe
 level granularity. These statistics enable input split elimination
 based on the predicate push-down evaluated per a stripe.
 
-```message StripeStatistics {
+```
+message StripeStatistics {
  repeated ColumnStatistics colStats = 1;
 }
 ```
 
-```message Metadata {
+```
+message Metadata {
  repeated StripeStatistics stripeStats = 1;
 }
 ```
@@ -363,7 +381,7 @@ for a chunk that compressed to 100,000 bytes would be [0x40, 0x0d,
 that as long as a decompressor starts at the top of a header, it can
 start decompressing without the previous bytes.
 
-![compression streams]({{ site.url }}/img/CompressionStream.png)
+![compression streams](/img/CompressionStream.png)
 
 The default compression chunk size is 256K, but writers can choose
 their own value. Larger chunks lead to better compression, but require
@@ -420,7 +438,7 @@ values.
 * Run - a sequence of at least 3 identical values
 * Literals - a sequence of non-identical values
 
-The first byte of each group of values is a header than determines
+The first byte of each group of values is a header that determines
 whether it is a run (value between 0 to 127) or literal list (value
 between -128 to -1). For runs, the control byte is the length of the
 run minus the length of the minimal run (3) and the control byte for
@@ -460,9 +478,9 @@ and the varint is 100 for an encoding of [0x61, 0xff, 0x64].
 Literals start with an initial byte of 0x80 to 0xff, which corresponds
 to the negative of number of literals in the sequence. Following the
 header byte, the list of N varints is encoded. Thus, if there are
-no runs, the overhead is 1 byte for each 128 integers. The first 5
-prime numbers [2, 3, 4, 7, 11] would encoded as [0xfb, 0x02, 0x03,
-0x04, 0x07, 0xb].
+no runs, the overhead is 1 byte for each 128 integers. Numbers
+[2, 3, 6, 7, 11] would be encoded as [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb].
+
 
 # Stripes
 
@@ -488,7 +506,8 @@ following subsections.
 The stripe footer contains the encoding of each column and the
 directory of the streams including their location.
 
-```message StripeFooter {
+```
+message StripeFooter {
  // the location of each stream
  repeated Stream streams = 1;
  // the encoding of each column
@@ -500,7 +519,8 @@ To describe each stream, ORC stores the kind of stream, the column id,
 and the stream's size in bytes. The details of what is stored in each stream
 depends on the type and encoding of the column.
 
-```message Stream {
+```
+message Stream {
  enum Kind {
  // boolean stream of whether the next value is non-null
  PRESENT = 0;
@@ -509,7 +529,7 @@ depends on the type and encoding of the column.
  // the length of each value for variable length data
  LENGTH = 2;
  // the dictionary blob
- DICTIONARY\_DATA = 3;
+ DICTIONARY_DATA = 3;
  // deprecated prior to Hive 0.11
  // It was used to store the number of instances of each value in the
  // dictionary
@@ -531,7 +551,8 @@ Depending on their type several options for encoding are possible. The
 encodings are divided into direct or dictionary-based categories and
 further refined as to whether they use RLE v1 or v2.
 
-```message ColumnEncoding {
+```
+message ColumnEncoding {
  enum Kind {
  // the encoding is mapped directly to the stream using RLE v1
  DIRECT = 0;
@@ -643,13 +664,13 @@ the precision to a maximum of 38 digits, which conveniently uses 127
 bits plus a sign bit. The current encoding of decimal columns stores
 the integer representation of the value as an unbounded length zigzag
 encoded base 128 varint. The scale is stored in the SECONDARY stream
-as an signed integer.
+as a signed integer.
 
 Encoding      | Stream Kind     | Optional | Contents
 :------------ | :-------------- | :------- | :-------
 DIRECT        | PRESENT         | Yes      | Boolean RLE
               | DATA            | No       | Unbounded base 128 varints
-              | SECONDARY       | No       | Unsigned Integer RLE v1
+              | SECONDARY       | No       | Signed Integer RLE v1
 
 ## Date Columns
 
@@ -670,9 +691,9 @@ number of nanoseconds.
 
 Because the number of nanoseconds often has a large number of trailing
 zeros, the number has trailing decimal zero digits removed and the
-last three bits are used to record how many zeros were removed. Thus
-1000 nanoseconds would be serialized as 0x0b and 100000 would be
-serialized as 0x0d.
+last three bits are used to record how many zeros were removed. if the
+trailing zeros are more than 2. Thus 1000 nanoseconds would be
+serialized as 0x0a and 100000 would be serialized as 0x0c.
 
 Encoding      | Stream Kind     | Optional | Contents
 :------------ | :-------------- | :------- | :-------
@@ -704,7 +725,7 @@ DIRECT        | PRESENT         | Yes      | Boolean RLE
 ## Map Columns
 
 Maps are encoded as the PRESENT stream and a length stream with number
-of items in each list. They have a child column for the key and
+of items in each map. They have a child column for the key and
 another child column for the value.
 
 Encoding      | Stream Kind     | Optional | Contents
@@ -739,13 +760,15 @@ the default case of streaming they do not need to be read. They are
 only loaded when either predicate push down is being used or the
 reader seeks to a particular row.
 
-```message RowIndexEntry {
+```
+message RowIndexEntry {
  repeated uint64 positions = 1 [packed=true];
  optional ColumnStatistics statistics = 2;
 }
 ```
 
-```message RowIndex {
+```
+message RowIndex {
  repeated RowIndexEntry entry = 1;
 }
 ```
@@ -766,4 +789,3 @@ indexes error-prone.
 Because dictionaries are accessed randomly, there is not a position to
 record for the dictionary and the entire dictionary must be read even
 if only part of a stripe is being read.
-

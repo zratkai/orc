@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,24 +17,6 @@
  */
 
 package org.apache.orc.tools;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assume.assumeTrue;
-
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileReader;
-import java.io.PrintStream;
-import java.nio.charset.StandardCharsets;
-import java.sql.Timestamp;
-import java.text.SimpleDateFormat;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -59,9 +41,37 @@ import org.apache.orc.Reader;
 import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.sql.Timestamp;
+import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static org.apache.orc.tools.FileDump.RECOVER_READ_SIZE;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class TestFileDump {
 
@@ -70,7 +80,7 @@ public class TestFileDump {
   FileSystem fs;
   Path testFilePath;
 
-  @Before
+  @BeforeEach
   public void openFileSystem () throws Exception {
     conf = new Configuration();
     fs = FileSystem.getLocal(conf);
@@ -97,7 +107,7 @@ public class TestFileDump {
       batch.cols[2].isNull[batch.size] = true;
     } else {
       ((BytesColumnVector) batch.cols[2]).setVal(batch.size,
-          str.getBytes());
+          str.getBytes(StandardCharsets.UTF_8));
     }
     batch.size += 1;
   }
@@ -155,18 +165,18 @@ public class TestFileDump {
     ((DecimalColumnVector) batch.cols[7]).vector[row].set(de);
     ((TimestampColumnVector) batch.cols[8]).set(row, t);
     ((LongColumnVector) batch.cols[9]).vector[row] = dt.getDays();
-    ((BytesColumnVector) batch.cols[10]).setVal(row, str.getBytes());
-    ((BytesColumnVector) batch.cols[11]).setVal(row, c.getBytes());
-    ((BytesColumnVector) batch.cols[12]).setVal(row, vc.getBytes());
+    ((BytesColumnVector) batch.cols[10]).setVal(row, str.getBytes(StandardCharsets.UTF_8));
+    ((BytesColumnVector) batch.cols[11]).setVal(row, c.getBytes(StandardCharsets.UTF_8));
+    ((BytesColumnVector) batch.cols[12]).setVal(row, vc.getBytes(StandardCharsets.UTF_8));
     MapColumnVector map = (MapColumnVector) batch.cols[13];
     int offset = map.childCount;
     map.offsets[row] = offset;
     map.lengths[row] = m.size();
     map.childCount += map.lengths[row];
     for(Map.Entry<String, String> entry: m.entrySet()) {
-      ((BytesColumnVector) map.keys).setVal(offset, entry.getKey().getBytes());
+      ((BytesColumnVector) map.keys).setVal(offset, entry.getKey().getBytes(StandardCharsets.UTF_8));
       ((BytesColumnVector) map.values).setVal(offset++,
-          entry.getValue().getBytes());
+          entry.getValue().getBytes(StandardCharsets.UTF_8));
     }
     ListColumnVector list = (ListColumnVector) batch.cols[14];
     offset = list.childCount;
@@ -178,25 +188,62 @@ public class TestFileDump {
     }
     StructColumnVector struct = (StructColumnVector) batch.cols[15];
     ((LongColumnVector) struct.fields[0]).vector[row] = sti;
-    ((BytesColumnVector) struct.fields[1]).setVal(row, sts.getBytes());
+    ((BytesColumnVector) struct.fields[1]).setVal(row, sts.getBytes(StandardCharsets.UTF_8));
   }
 
+  private static final Pattern ignoreTailPattern =
+      Pattern.compile("^(?<head>File Version|\"softwareVersion\"): .*");
+  private static final Pattern fileSizePattern =
+      Pattern.compile("^(\"fileLength\"|File length): (?<size>[0-9]+).*");
+  // Allow file size to be up to 100 bytes larger.
+  private static final int SIZE_SLOP = 100;
+
+  /**
+   * Preprocess the string for matching.
+   * If it matches the fileSizePattern, we return the file size as a Long.
+   * @param line the input line
+   * @return the processed line or a Long with the file size
+   */
+  private static Object preprocessLine(String line) {
+    if (line == null) {
+      return line;
+    }
+    line = line.trim();
+    Matcher match = fileSizePattern.matcher(line);
+    if (match.matches()) {
+      return Long.parseLong(match.group("size"));
+    }
+    match = ignoreTailPattern.matcher(line);
+    if (match.matches()) {
+      return match.group("head");
+    }
+    return line;
+  }
+
+  /**
+   * Compare two files for equivalence.
+   * @param expected Loaded from the class path
+   * @param actual Loaded from the file system
+   */
   public static void checkOutput(String expected,
                                  String actual) throws Exception {
-    BufferedReader eStream =
-        new BufferedReader(new FileReader
-            (TestJsonFileDump.getFileFromClasspath(expected)));
-    BufferedReader aStream =
-        new BufferedReader(new FileReader(actual));
-    String expectedLine = eStream.readLine().trim();
+    BufferedReader eStream = Files.newBufferedReader(Paths.get(
+        TestJsonFileDump.getFileFromClasspath(expected)), StandardCharsets.UTF_8);
+    BufferedReader aStream = Files.newBufferedReader(Paths.get(actual), StandardCharsets.UTF_8);
+    Object expectedLine = preprocessLine(eStream.readLine());
     while (expectedLine != null) {
-      String actualLine = aStream.readLine().trim();
-      Assert.assertEquals(expectedLine, actualLine);
-      expectedLine = eStream.readLine();
-      expectedLine = expectedLine == null ? null : expectedLine.trim();
+      Object actualLine = preprocessLine(aStream.readLine());
+      if (expectedLine instanceof Long && actualLine instanceof Long) {
+        long diff = (Long) actualLine - (Long) expectedLine;
+        assertTrue(diff < SIZE_SLOP,
+            "expected: " + expectedLine + ", actual: " + actualLine);
+      } else {
+        assertEquals(expectedLine, actualLine);
+      }
+      expectedLine = preprocessLine(eStream.readLine());
     }
-    Assert.assertNull(eStream.readLine());
-    Assert.assertNull(aStream.readLine());
+    assertNull(eStream.readLine());
+    assertNull(aStream.readLine());
     eStream.close();
     aStream.close();
   }
@@ -205,6 +252,7 @@ public class TestFileDump {
   public void testDump() throws Exception {
     TypeDescription schema = getMyRecordType();
     conf.set(OrcConf.ENCODING_STRATEGY.getAttribute(), "COMPRESSION");
+    conf.set(OrcConf.DICTIONARY_IMPL.getAttribute(), "rbtree");
     Writer writer = OrcFile.createWriter(testFilePath,
         OrcFile.writerOptions(conf)
             .fileSystem(fs)
@@ -248,7 +296,7 @@ public class TestFileDump {
     FileOutputStream myOut = new FileOutputStream(workDir + File.separator + outputFilename);
 
     // replace stdout and run command
-    System.setOut(new PrintStream(myOut));
+    System.setOut(new PrintStream(myOut, false, StandardCharsets.UTF_8.toString()));
     FileDump.main(new String[]{testFilePath.toString(), "--rowindex=1,2,3"});
     System.out.flush();
     System.setOut(origOut);
@@ -321,13 +369,13 @@ public class TestFileDump {
     ByteArrayOutputStream myOut = new ByteArrayOutputStream();
 
     // replace stdout and run command
-    System.setOut(new PrintStream(myOut));
+    System.setOut(new PrintStream(myOut, false, "UTF-8"));
     FileDump.main(new String[]{testFilePath.toString(), "-d"});
     System.out.flush();
     System.setOut(origOut);
-    String[] lines = myOut.toString().split("\n");
-    Assert.assertEquals("{\"b\":true,\"bt\":10,\"s\":100,\"i\":1000,\"l\":10000,\"f\":4,\"d\":20,\"de\":\"4.2222\",\"t\":\"2014-11-25 18:09:24.0\",\"dt\":\"2014-11-25\",\"str\":\"string\",\"c\":\"hello\",\"vc\":\"hello\",\"m\":[{\"_key\":\"k1\",\"_value\":\"v1\"}],\"a\":[100,200],\"st\":{\"i\":10,\"s\":\"foo\"}}", lines[0]);
-    Assert.assertEquals("{\"b\":false,\"bt\":20,\"s\":200,\"i\":2000,\"l\":20000,\"f\":8,\"d\":40,\"de\":\"2.2222\",\"t\":\"2014-11-25 18:02:44.0\",\"dt\":\"2014-09-28\",\"str\":\"abcd\",\"c\":\"world\",\"vc\":\"world\",\"m\":[{\"_key\":\"k3\",\"_value\":\"v3\"}],\"a\":[200,300],\"st\":{\"i\":20,\"s\":\"bar\"}}", lines[1]);
+    String[] lines = myOut.toString(StandardCharsets.UTF_8.toString()).split("\n");
+    assertEquals("{\"b\":true,\"bt\":10,\"s\":100,\"i\":1000,\"l\":10000,\"f\":4.0,\"d\":20.0,\"de\":\"4.2222\",\"t\":\"2014-11-25 18:09:24.0\",\"dt\":\"2014-11-25\",\"str\":\"string\",\"c\":\"hello\",\"vc\":\"hello\",\"m\":[{\"_key\":\"k1\",\"_value\":\"v1\"}],\"a\":[100,200],\"st\":{\"i\":10,\"s\":\"foo\"}}", lines[0]);
+    assertEquals("{\"b\":false,\"bt\":20,\"s\":200,\"i\":2000,\"l\":20000,\"f\":8.0,\"d\":40.0,\"de\":\"2.2222\",\"t\":\"2014-11-25 18:02:44.0\",\"dt\":\"2014-09-28\",\"str\":\"abcd\",\"c\":\"world\",\"vc\":\"world\",\"m\":[{\"_key\":\"k3\",\"_value\":\"v3\"}],\"a\":[200,300],\"st\":{\"i\":20,\"s\":\"bar\"}}", lines[1]);
   }
 
   // Test that if the fraction of rows that have distinct strings is greater than the configured
@@ -385,7 +433,7 @@ public class TestFileDump {
     FileOutputStream myOut = new FileOutputStream(workDir + File.separator + outputFilename);
 
     // replace stdout and run command
-    System.setOut(new PrintStream(myOut));
+    System.setOut(new PrintStream(myOut, false, StandardCharsets.UTF_8.toString()));
     FileDump.main(new String[]{testFilePath.toString(), "--rowindex=1,2,3"});
     System.out.flush();
     System.setOut(origOut);
@@ -401,6 +449,7 @@ public class TestFileDump {
         .setAttribute("test2", "value2")
         .setAttribute("test3", "value3");
     conf.set(OrcConf.ENCODING_STRATEGY.getAttribute(), "COMPRESSION");
+    conf.set(OrcConf.DICTIONARY_IMPL.getAttribute(), "rbtree");
     OrcFile.WriterOptions options = OrcFile.writerOptions(conf)
         .fileSystem(fs)
         .setSchema(schema)
@@ -440,7 +489,7 @@ public class TestFileDump {
     FileOutputStream myOut = new FileOutputStream(workDir + File.separator + outputFilename);
 
     // replace stdout and run command
-    System.setOut(new PrintStream(myOut));
+    System.setOut(new PrintStream(myOut, false, StandardCharsets.UTF_8.toString()));
     FileDump.main(new String[]{testFilePath.toString(), "--rowindex=3"});
     System.out.flush();
     System.setOut(origOut);
@@ -453,6 +502,7 @@ public class TestFileDump {
   public void testBloomFilter2() throws Exception {
     TypeDescription schema = getMyRecordType();
     conf.set(OrcConf.ENCODING_STRATEGY.getAttribute(), "COMPRESSION");
+    conf.set(OrcConf.DICTIONARY_IMPL.getAttribute(), "rbtree");
     OrcFile.WriterOptions options = OrcFile.writerOptions(conf)
         .fileSystem(fs)
         .setSchema(schema)
@@ -494,7 +544,7 @@ public class TestFileDump {
     FileOutputStream myOut = new FileOutputStream(workDir + File.separator + outputFilename);
 
     // replace stdout and run command
-    System.setOut(new PrintStream(myOut));
+    System.setOut(new PrintStream(myOut, false, StandardCharsets.UTF_8.toString()));
     FileDump.main(new String[]{testFilePath.toString(), "--rowindex=2"});
     System.out.flush();
     System.setOut(origOut);
@@ -525,7 +575,7 @@ public class TestFileDump {
       batch.cols[1].noNulls = false;
       batch.cols[1].isNull[row] = true;
     } else {
-      ((BytesColumnVector) batch.cols[1]).setVal(row, str.getBytes());
+      ((BytesColumnVector) batch.cols[1]).setVal(row, str.getBytes(StandardCharsets.UTF_8));
     }
   }
 
@@ -600,9 +650,9 @@ public class TestFileDump {
     assertEquals(20000, stats[0].getNumberOfValues());
     assertEquals(20000, stats[1].getNumberOfValues());
     assertEquals(7000, stats[2].getNumberOfValues());
-    assertEquals(false, stats[0].hasNull());
-    assertEquals(false, stats[1].hasNull());
-    assertEquals(true, stats[2].hasNull());
+    assertFalse(stats[0].hasNull());
+    assertFalse(stats[1].hasNull());
+    assertTrue(stats[2].hasNull());
 
     // check the stripe level stats
     List<StripeStatistics> stripeStats = reader.getStripeStatistics();
@@ -611,36 +661,36 @@ public class TestFileDump {
     ColumnStatistics ss1_cs1 = ss1.getColumnStatistics()[0];
     ColumnStatistics ss1_cs2 = ss1.getColumnStatistics()[1];
     ColumnStatistics ss1_cs3 = ss1.getColumnStatistics()[2];
-    assertEquals(false, ss1_cs1.hasNull());
-    assertEquals(false, ss1_cs2.hasNull());
-    assertEquals(true, ss1_cs3.hasNull());
+    assertFalse(ss1_cs1.hasNull());
+    assertFalse(ss1_cs2.hasNull());
+    assertTrue(ss1_cs3.hasNull());
 
     // stripe 2 stats
     StripeStatistics ss2 = stripeStats.get(1);
     ColumnStatistics ss2_cs1 = ss2.getColumnStatistics()[0];
     ColumnStatistics ss2_cs2 = ss2.getColumnStatistics()[1];
     ColumnStatistics ss2_cs3 = ss2.getColumnStatistics()[2];
-    assertEquals(false, ss2_cs1.hasNull());
-    assertEquals(false, ss2_cs2.hasNull());
-    assertEquals(true, ss2_cs3.hasNull());
+    assertFalse(ss2_cs1.hasNull());
+    assertFalse(ss2_cs2.hasNull());
+    assertTrue(ss2_cs3.hasNull());
 
     // stripe 3 stats
     StripeStatistics ss3 = stripeStats.get(2);
     ColumnStatistics ss3_cs1 = ss3.getColumnStatistics()[0];
     ColumnStatistics ss3_cs2 = ss3.getColumnStatistics()[1];
     ColumnStatistics ss3_cs3 = ss3.getColumnStatistics()[2];
-    assertEquals(false, ss3_cs1.hasNull());
-    assertEquals(false, ss3_cs2.hasNull());
-    assertEquals(false, ss3_cs3.hasNull());
+    assertFalse(ss3_cs1.hasNull());
+    assertFalse(ss3_cs2.hasNull());
+    assertFalse(ss3_cs3.hasNull());
 
     // stripe 4 stats
     StripeStatistics ss4 = stripeStats.get(3);
     ColumnStatistics ss4_cs1 = ss4.getColumnStatistics()[0];
     ColumnStatistics ss4_cs2 = ss4.getColumnStatistics()[1];
     ColumnStatistics ss4_cs3 = ss4.getColumnStatistics()[2];
-    assertEquals(false, ss4_cs1.hasNull());
-    assertEquals(false, ss4_cs2.hasNull());
-    assertEquals(true, ss4_cs3.hasNull());
+    assertFalse(ss4_cs1.hasNull());
+    assertFalse(ss4_cs2.hasNull());
+    assertTrue(ss4_cs3.hasNull());
 
     // Test file dump
     PrintStream origOut = System.out;
@@ -648,7 +698,7 @@ public class TestFileDump {
     FileOutputStream myOut = new FileOutputStream(workDir + File.separator + outputFilename);
 
     // replace stdout and run command
-    System.setOut(new PrintStream(myOut));
+    System.setOut(new PrintStream(myOut, false, StandardCharsets.UTF_8.toString()));
     FileDump.main(new String[]{testFilePath.toString(), "--rowindex=2"});
     System.out.flush();
     System.setOut(origOut);
@@ -656,5 +706,104 @@ public class TestFileDump {
     // and be ignored.
     assumeTrue(!System.getProperty("os.name").startsWith("Windows"));
     TestFileDump.checkOutput(outputFilename, workDir + File.separator + outputFilename);
+  }
+
+  @Test
+  public void testIndexOf() {
+    byte[] bytes = ("OO" + OrcFile.MAGIC).getBytes(StandardCharsets.UTF_8);
+    byte[] pattern = OrcFile.MAGIC.getBytes(StandardCharsets.UTF_8);
+
+    assertEquals(2, FileDump.indexOf(bytes, pattern, 1));
+  }
+
+  @Test
+  public void testRecover() throws Exception {
+    TypeDescription schema = getMyRecordType();
+    Writer writer = OrcFile.createWriter(testFilePath,
+        OrcFile.writerOptions(conf)
+            .fileSystem(fs)
+            .setSchema(schema));
+    Random r1 = new Random(1);
+    String[] words = new String[]{"It", "was", "the", "best", "of", "times,",
+        "it", "was", "the", "worst", "of", "times,", "it", "was", "the", "age",
+        "of", "wisdom,", "it", "was", "the", "age", "of", "foolishness,", "it",
+        "was", "the", "epoch", "of", "belief,", "it", "was", "the", "epoch",
+        "of", "incredulity,", "it", "was", "the", "season", "of", "Light,",
+        "it", "was", "the", "season", "of", "Darkness,", "it", "was", "the",
+        "spring", "of", "hope,", "it", "was", "the", "winter", "of", "despair,",
+        "we", "had", "everything", "before", "us,", "we", "had", "nothing",
+        "before", "us,", "we", "were", "all", "going", "direct", "to",
+        "Heaven,", "we", "were", "all", "going", "direct", "the", "other",
+        "way"};
+    VectorizedRowBatch batch = schema.createRowBatch(1000);
+    for(int i=0; i < 21000; ++i) {
+      appendMyRecord(batch, r1.nextInt(), r1.nextLong(),
+          words[r1.nextInt(words.length)]);
+      if (batch.size == batch.getMaxSize()) {
+        writer.addRowBatch(batch);
+        batch.reset();
+      }
+    }
+    if (batch.size > 0) {
+      writer.addRowBatch(batch);
+    }
+    writer.close();
+
+    long fileSize = fs.getFileStatus(testFilePath).getLen();
+
+    String testFilePathStr = Path.mergePaths(
+        workDir, Path.mergePaths(new Path(Path.SEPARATOR), testFilePath))
+        .toUri().getPath();
+
+    String copyTestFilePathStr = Path.mergePaths(
+        workDir, Path.mergePaths(new Path(Path.SEPARATOR),
+                new Path("CopyTestFileDump.testDump.orc")))
+        .toUri().getPath();
+
+    String testCrcFilePathStr = Path.mergePaths(
+        workDir, Path.mergePaths(new Path(Path.SEPARATOR),
+                new Path(".TestFileDump.testDump.orc.crc")))
+        .toUri().getPath();
+
+    try {
+      Files.copy(Paths.get(testFilePathStr), Paths.get(copyTestFilePathStr));
+
+      // Append write data to make it a corrupt file
+      try (FileOutputStream output = new FileOutputStream(testFilePathStr, true)) {
+        output.write(new byte[1024]);
+        output.write(OrcFile.MAGIC.getBytes(StandardCharsets.UTF_8));
+        output.write(new byte[1024]);
+        output.flush();
+      }
+
+      // Clean up the crc file and append data to avoid checksum read exceptions
+      Files.delete(Paths.get(testCrcFilePathStr));
+
+      conf.setInt(RECOVER_READ_SIZE, (int) (fileSize - 2));
+
+      FileDump.main(conf, new String[]{"--recover", "--skip-dump",
+          testFilePath.toUri().getPath()});
+
+      assertTrue(contentEquals(testFilePathStr, copyTestFilePathStr));
+    } finally {
+      Files.delete(Paths.get(copyTestFilePathStr));
+    }
+  }
+
+  private static boolean contentEquals(String filePath, String otherFilePath) throws IOException {
+    try (InputStream is = new BufferedInputStream(new FileInputStream(filePath));
+         InputStream otherIs = new BufferedInputStream(new FileInputStream(otherFilePath))) {
+      int ch = is.read();
+      while (-1 != ch) {
+        int ch2 = otherIs.read();
+        if (ch != ch2) {
+          return false;
+        }
+        ch = is.read();
+      }
+
+      int ch2 = otherIs.read();
+      return ch2 == -1;
+    }
   }
 }

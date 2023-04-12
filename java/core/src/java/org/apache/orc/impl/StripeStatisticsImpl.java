@@ -29,15 +29,15 @@ public class StripeStatisticsImpl extends StripeStatistics  {
   public StripeStatisticsImpl(TypeDescription schema,
                               List<OrcProto.ColumnStatistics> list,
                               boolean writerUsedProlepticGregorian,
-                              boolean convertToProlepticGregorian
-                              ) {
+                              boolean convertToProlepticGregorian) {
     super(schema, list, writerUsedProlepticGregorian, convertToProlepticGregorian);
   }
 
   public StripeStatisticsImpl(TypeDescription schema,
                               boolean writerUsedProlepticGregorian,
                               boolean convertToProlepticGregorian) {
-    super(schema, createList(schema), writerUsedProlepticGregorian, convertToProlepticGregorian);
+    super(schema, createList(schema), writerUsedProlepticGregorian,
+        convertToProlepticGregorian);
   }
 
   /**

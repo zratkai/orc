@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,10 +16,6 @@
  * limitations under the License.
  */
 package org.apache.orc.mapred;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
 
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
@@ -49,6 +45,10 @@ import org.apache.orc.Reader;
 import org.apache.orc.RecordReader;
 import org.apache.orc.TypeDescription;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * This record reader implements the org.apache.hadoop.mapred API.
  * @param <V> the root type of the file
@@ -70,13 +70,19 @@ public class OrcMapredRecordReader<V extends WritableComparable>
 
   protected OrcMapredRecordReader(Reader fileReader,
                                   Reader.Options options) throws IOException {
+    this(fileReader, options, VectorizedRowBatch.DEFAULT_SIZE);
+  }
+
+  protected OrcMapredRecordReader(Reader fileReader,
+                                  Reader.Options options,
+                                  int rowBatchSize) throws IOException {
     this.batchReader = fileReader.rows(options);
     if (options.getSchema() == null) {
       schema = fileReader.getSchema();
     } else {
       schema = options.getSchema();
     }
-    this.batch = schema.createRowBatch();
+    this.batch = schema.createRowBatch(rowBatchSize);
     rowInBatch = 0;
   }
 
@@ -98,16 +104,17 @@ public class OrcMapredRecordReader<V extends WritableComparable>
     if (!ensureBatch()) {
       return false;
     }
+    int rowIdx = batch.selectedInUse ? batch.selected[rowInBatch] : rowInBatch;
     if (schema.getCategory() == TypeDescription.Category.STRUCT) {
       OrcStruct result = (OrcStruct) value;
       List<TypeDescription> children = schema.getChildren();
       int numberOfChildren = children.size();
       for(int i=0; i < numberOfChildren; ++i) {
-        result.setFieldValue(i, nextValue(batch.cols[i], rowInBatch,
+        result.setFieldValue(i, nextValue(batch.cols[i], rowIdx,
             children.get(i), result.getFieldValue(i)));
       }
     } else {
-      nextValue(batch.cols[0], rowInBatch, schema, value);
+      nextValue(batch.cols[0], rowIdx, schema, value);
     }
     rowInBatch += 1;
     return true;
@@ -394,10 +401,10 @@ public class OrcMapredRecordReader<V extends WritableComparable>
       OrcStruct result;
       List<TypeDescription> childrenTypes = schema.getChildren();
       int numChildren = childrenTypes.size();
-      if (previous == null || previous.getClass() != OrcStruct.class) {
-        result = new OrcStruct(schema);
-      } else {
+      if (isReusable(previous, schema)) {
         result = (OrcStruct) previous;
+      } else {
+        result = new OrcStruct(schema);
       }
       StructColumnVector struct = (StructColumnVector) vector;
       for(int f=0; f < numChildren; ++f) {
@@ -408,6 +415,17 @@ public class OrcMapredRecordReader<V extends WritableComparable>
     } else {
       return null;
     }
+  }
+
+  /**
+   * Determine if a OrcStruct object is reusable.
+   */
+  private static boolean isReusable(Object previous, TypeDescription schema) {
+    if (previous == null || previous.getClass() != OrcStruct.class) {
+      return false;
+    }
+
+    return ((OrcStruct) previous).getSchema().equals(schema);
   }
 
   static OrcUnion nextUnion(ColumnVector vector,

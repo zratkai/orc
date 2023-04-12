@@ -10,16 +10,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required (VERSION 2.6)
+cmake_minimum_required (VERSION 2.8.12)
+if (POLICY CMP0048)
+    cmake_policy(SET CMP0048 NEW)
+endif ()
+if (POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif ()
 
-project(ORC)
+project(ORC C CXX)
 
 # Version number of package
 SET(CPACK_PACKAGE_VERSION_MAJOR "1")
-SET(CPACK_PACKAGE_VERSION_MINOR "5")
-SET(CPACK_PACKAGE_VERSION_PATCH "4")
+SET(CPACK_PACKAGE_VERSION_MINOR "8")
+SET(CPACK_PACKAGE_VERSION_PATCH "3")
 SET(ORC_VERSION "${CPACK_PACKAGE_VERSION_MAJOR}.${CPACK_PACKAGE_VERSION_MINOR}.${CPACK_PACKAGE_VERSION_PATCH}")
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake_modules")
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake_modules")
 
 option (BUILD_JAVA
     "Include ORC Java library in the build process"
@@ -41,9 +47,21 @@ option(BUILD_TOOLS
     "Build the tools"
     ON)
 
+option(TEST_VALGRIND_MEMCHECK
+    "Run the test suite using valgrind --tool=memcheck"
+    OFF)
+
 option(INSTALL_VENDORED_LIBS
     "Install vendored thirdparty libraries along with liborc"
     ON)
+
+option(STOP_BUILD_ON_WARNING
+    "Fail the build on C++ warnings"
+    ON)
+
+option(BUILD_POSITION_INDEPENDENT_LIB
+    "Compile static libraries with position independent code"
+    OFF)
 
 # Make sure that a build type is selected
 if (NOT CMAKE_BUILD_TYPE)
@@ -61,12 +79,16 @@ SET(CPACK_PACKAGE_CONTACT "Apache ORC <dev@orc.apache.org>")
 INCLUDE(CPack)
 INCLUDE(ExternalProject)
 
+if (BUILD_POSITION_INDEPENDENT_LIB)
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif ()
+
 #
 # Compiler specific flags
 #
 if (NOT MSVC)
-  set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
-  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG")
+  set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -fno-omit-frame-pointer")
+  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -g -DNDEBUG -fno-omit-frame-pointer")
   set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 endif ()
 message(STATUS "compiler ${CMAKE_CXX_COMPILER_ID} version ${CMAKE_CXX_COMPILER_VERSION}")
@@ -77,9 +99,28 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   set (WARN_FLAGS "${WARN_FLAGS} -Wno-covered-switch-default")
   set (WARN_FLAGS "${WARN_FLAGS} -Wno-missing-noreturn -Wno-unknown-pragmas")
   set (WARN_FLAGS "${WARN_FLAGS} -Wno-gnu-zero-variadic-macro-arguments")
-  set (WARN_FLAGS "${WARN_FLAGS} -Wconversion -Werror")
+  set (WARN_FLAGS "${WARN_FLAGS} -Wconversion")
+  if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "13.0")
+    set (WARN_FLAGS "${WARN_FLAGS} -Wno-reserved-identifier -Wno-suggest-destructor-override -Wno-suggest-override")
+  endif()
+  if (CMAKE_HOST_APPLE AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "12.0")
+    set (WARN_FLAGS "${WARN_FLAGS} -Wno-c++2a-compat -Wno-unknown-warning-option -Wno-suggest-override -Wno-suggest-destructor-override")
+  elseif (CMAKE_HOST_APPLE AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "11.0")
+    set (WARN_FLAGS "${WARN_FLAGS} -Wno-c++2a-compat")
+  endif ()
+  if (STOP_BUILD_ON_WARNING)
+    set (WARN_FLAGS "${WARN_FLAGS} -Werror")
+  endif ()
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  set (WARN_FLAGS "-Wall -Wno-unknown-pragmas -Wconversion -Werror")
+  set (WARN_FLAGS "-Wall -Wno-unknown-pragmas -Wconversion")
+  if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "12.0")
+    set (WARN_FLAGS "${WARN_FLAGS} -Wno-array-bounds -Wno-stringop-overread") # To compile protobuf in Fedora37
+  elseif (CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.9")
+    set (WARN_FLAGS "${WARN_FLAGS} -Wno-unused-function")
+  endif ()
+  if (STOP_BUILD_ON_WARNING)
+    set (WARN_FLAGS "${WARN_FLAGS} -Werror")
+  endif ()
   if (CMAKE_CXX_COMPILER_VERSION STREQUAL "" OR
       CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.7")
     set (CXX11_FLAGS "-std=c++0x")

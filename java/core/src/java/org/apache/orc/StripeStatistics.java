@@ -26,19 +26,21 @@ import java.util.List;
  * The statistics for a stripe.
  */
 public class StripeStatistics {
-  private final boolean writerUsedProlepticGregorian;
-  private final boolean convertToProlepticGregorian;
   protected final List<OrcProto.ColumnStatistics> cs;
   protected final TypeDescription schema;
+  private final boolean writerUsedProlepticGregorian;
+  private final boolean convertToProlepticGregorian;
 
   public StripeStatistics(List<OrcProto.ColumnStatistics> list) {
     this(null, list, false, false);
   }
 
-  public StripeStatistics(TypeDescription schema, List<OrcProto.ColumnStatistics> list,
-      boolean writerUsedProlepticGregorian, boolean convertToProlepticGregorian) {
-    this.cs = list;
+  public StripeStatistics(TypeDescription schema,
+                          List<OrcProto.ColumnStatistics> list,
+                          boolean writerUsedProlepticGregorian,
+                          boolean convertToProlepticGregorian) {
     this.schema = schema;
+    this.cs = list;
     this.writerUsedProlepticGregorian = writerUsedProlepticGregorian;
     this.convertToProlepticGregorian = convertToProlepticGregorian;
   }
@@ -57,7 +59,8 @@ public class StripeStatistics {
     int base = getBase();
     for (int c = 0; c < result.length; ++c) {
       TypeDescription column = schema == null ? null : schema.findSubtype(base + c);
-      result[c] = ColumnStatisticsImpl.deserialize(column, cs.get(c), writerUsedProlepticGregorian, convertToProlepticGregorian);
+      result[c] = ColumnStatisticsImpl.deserialize(column, cs.get(c),
+          writerUsedProlepticGregorian, convertToProlepticGregorian);
     }
     return result;
   }

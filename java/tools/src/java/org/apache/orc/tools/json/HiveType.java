@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -34,7 +34,8 @@ abstract class HiveType {
     BINARY(1), DATE(1), TIMESTAMP(1), TIMESTAMP_INSTANT(1), STRING(2),
     STRUCT(1, false),
     LIST(1, false),
-    UNION(8, false);
+    UNION(8, false),
+    MAP(9, false);
 
     // for types that subsume each other, establish a ranking.
     final int rank;
@@ -75,7 +76,7 @@ abstract class HiveType {
   public abstract boolean subsumes(HiveType other);
 
   /**
-   * Merge the other type into this one. It assumes that subsubes(other) is
+   * Merge the other type into this one. It assumes that subsumes(other) is
    * true.
    * @param other
    */

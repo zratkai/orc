@@ -140,10 +140,8 @@ public abstract class TreeWriterBase implements TreeWriter {
                                     boolean signed, boolean isDirectV2,
                                     WriterContext writer) {
     if (isDirectV2) {
-      boolean alignedBitpacking = false;
-      if (writer.getEncodingStrategy().equals(OrcFile.EncodingStrategy.SPEED)) {
-        alignedBitpacking = true;
-      }
+      boolean alignedBitpacking =
+          writer.getEncodingStrategy().equals(OrcFile.EncodingStrategy.SPEED);
       return new RunLengthIntegerWriterV2(output, signed, alignedBitpacking);
     } else {
       return new RunLengthIntegerWriter(output, signed);
@@ -164,6 +162,7 @@ public abstract class TreeWriterBase implements TreeWriter {
    * @param offset the row to start on
    * @param length the number of rows to write
    */
+  @Override
   public void writeRootBatch(VectorizedRowBatch batch, int offset,
                              int length) throws IOException {
     writeBatch(batch.cols[0], offset, length);
@@ -280,7 +279,7 @@ public abstract class TreeWriterBase implements TreeWriter {
             "index entries found: " + rowIndex.getEntryCount() + " expected: " +
             requiredIndexEntries);
       }
-      context.writeIndex(new StreamName(id, OrcProto.Stream.Kind.ROW_INDEX), rowIndex);
+      context.writeIndex(new StreamName(id, OrcProto.Stream.Kind.ROW_INDEX, encryption), rowIndex);
       rowIndex.clear();
       rowIndexEntry.clear();
     }
@@ -319,6 +318,7 @@ public abstract class TreeWriterBase implements TreeWriter {
    * statistics before they are cleared. Finally, it records the start of the
    * next index and ensures all of the children columns also create an entry.
    */
+  @Override
   public void createRowIndexEntry() throws IOException {
     stripeColStatistics.merge(indexStatistics);
     rowIndexEntry.setStatistics(indexStatistics.serialize());
@@ -380,6 +380,7 @@ public abstract class TreeWriterBase implements TreeWriter {
    * Estimate how much memory the writer is consuming excluding the streams.
    * @return the number of bytes.
    */
+  @Override
   public long estimateMemory() {
     long result = 0;
     if (isPresent != null) {

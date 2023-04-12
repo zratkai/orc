@@ -19,11 +19,17 @@
 package org.apache.orc.impl;
 
 import org.apache.hadoop.util.VersionInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.InvocationTargetException;
 
 /**
  * The factory for getting the proper version of the Hadoop shims.
  */
 public class HadoopShimsFactory {
+  private static final Logger LOG = LoggerFactory.getLogger(HadoopShimsFactory.class);
+
   private static final String CURRENT_SHIM_NAME =
       "org.apache.orc.impl.HadoopShimsCurrent";
   private static final String PRE_2_6_SHIM_NAME =
@@ -37,12 +43,10 @@ public class HadoopShimsFactory {
     try {
       Class<? extends HadoopShims> cls =
           (Class<? extends HadoopShims>) Class.forName(name);
-      return cls.newInstance();
-    } catch (InstantiationException e) {
-      throw new IllegalStateException("Can't create shims for " + name, e);
-    } catch (IllegalAccessException e) {
-      throw new IllegalStateException("Can't create shims for " + name, e);
-    } catch (ClassNotFoundException e) {
+      return cls.getDeclaredConstructor().newInstance();
+    } catch (ClassNotFoundException | NoSuchMethodException | SecurityException |
+             InstantiationException | IllegalAccessException | IllegalArgumentException |
+             InvocationTargetException e) {
       throw new IllegalStateException("Can't create shims for " + name, e);
     }
   }
@@ -52,6 +56,10 @@ public class HadoopShimsFactory {
       String[] versionParts = VersionInfo.getVersion().split("[.]");
       int major = Integer.parseInt(versionParts[0]);
       int minor = Integer.parseInt(versionParts[1]);
+      if (major < 2 || (major == 2 && minor < 7)) {
+        LOG.warn("Hadoop " + VersionInfo.getVersion() + " support is deprecated. " +
+            "Please upgrade to Hadoop 2.7.3 or above.");
+      }
       if (major < 2 || (major == 2 && minor < 3)) {
         SHIMS = new HadoopShimsPre2_3();
       } else if (major == 2 && minor < 6) {

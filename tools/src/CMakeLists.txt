@@ -22,34 +22,39 @@ include_directories (
   ${PROJECT_BINARY_DIR}/c++/include
   ${PROJECT_SOURCE_DIR}/c++/src
   ${PROJECT_BINARY_DIR}/c++/src
-  ${PROTOBUF_INCLUDE_DIR}
   )
 
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g ${CXX11_FLAGS} ${WARN_FLAGS}")
 
 add_executable (orc-contents
   FileContents.cc
+  ToolsHelper.cc
   )
 
 target_link_libraries (orc-contents
   orc
+  ${CMAKE_THREAD_LIBS_INIT}
   )
 
 add_executable (orc-scan
   FileScan.cc
+  ToolsHelper.cc
   )
 
 target_link_libraries (orc-scan
   orc
+  ${CMAKE_THREAD_LIBS_INIT}
   )
 
 add_executable (orc-metadata
   FileMetadata.cc
+  ToolsHelper.cc
   )
 
 target_link_libraries (orc-metadata
   orc
-  protobuf
+  orc::protobuf
+  ${CMAKE_THREAD_LIBS_INIT}
   )
 
  add_executable (orc-statistics
@@ -58,14 +63,17 @@ target_link_libraries (orc-metadata
 
 target_link_libraries (orc-statistics
   orc
+  ${CMAKE_THREAD_LIBS_INIT}
   )
 
 add_executable (orc-memory
   FileMemory.cc
+  ToolsHelper.cc
   )
 
 target_link_libraries (orc-memory
   orc
+  ${CMAKE_THREAD_LIBS_INIT}
   )
 
 add_executable (timezone-dump
@@ -74,6 +82,7 @@ add_executable (timezone-dump
 
 target_link_libraries (timezone-dump
   orc
+  ${CMAKE_THREAD_LIBS_INIT}
   )
 
 add_executable (csv-import
@@ -82,10 +91,21 @@ add_executable (csv-import
 
 target_link_libraries (csv-import
   orc
+  ${CMAKE_THREAD_LIBS_INIT}
   )
 
+set(CPP_TOOL_NAMES
+  orc-contents
+  orc-metadata
+  orc-statistics
+  orc-scan
+  orc-memory
+  timezone-dump
+  csv-import
+  )
+
+add_custom_target(tool-set ALL DEPENDS ${CPP_TOOL_NAMES})
+
 install(TARGETS
-   orc-contents
-   orc-metadata
-   orc-statistics
+   ${CPP_TOOL_NAMES}
    DESTINATION bin)

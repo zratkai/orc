@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with this
  * work for additional information regarding copyright ownership.  The ASF
@@ -18,16 +18,15 @@ package org.apache.orc.impl.mask;
 
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.orc.TypeDescription;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import javax.xml.bind.DatatypeConverter;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestSHA256Mask {
 
@@ -65,9 +64,9 @@ public class TestSHA256Mask {
       expectedHashShort = md.digest(inputShort);
       expectedHashLong = md.digest(inputLong);
 
-      expectedHash32_hex = DatatypeConverter.printHexBinary(expectedHash32).getBytes(StandardCharsets.UTF_8);
-      expectedHashShort_hex = DatatypeConverter.printHexBinary(expectedHashShort).getBytes(StandardCharsets.UTF_8);
-      expectedHashLong_hex = DatatypeConverter.printHexBinary(expectedHashLong).getBytes(StandardCharsets.UTF_8);
+      expectedHash32_hex = SHA256MaskFactory.printHexBinary(expectedHash32).getBytes(StandardCharsets.UTF_8);
+      expectedHashShort_hex = SHA256MaskFactory.printHexBinary(expectedHashShort).getBytes(StandardCharsets.UTF_8);
+      expectedHashLong_hex = SHA256MaskFactory.printHexBinary(expectedHashLong).getBytes(StandardCharsets.UTF_8);
 
     } catch (NoSuchAlgorithmException e) {
       throw new RuntimeException(e);

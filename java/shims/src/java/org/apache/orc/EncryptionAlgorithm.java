@@ -24,7 +24,7 @@ import java.security.NoSuchAlgorithmException;
 
 /**
  * The encryption algorithms supported by ORC.
- *
+ * <p>
  * This class can't reference any of the newer Hadoop classes.
  */
 public enum EncryptionAlgorithm {
@@ -60,7 +60,7 @@ public enum EncryptionAlgorithm {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalArgumentException("Bad algorithm " + algorithm);
     } catch (NoSuchPaddingException e) {
-      throw new IllegalArgumentException("Bad padding " + algorithm);
+      throw new IllegalArgumentException("Bad padding " + mode);
     }
   }
 

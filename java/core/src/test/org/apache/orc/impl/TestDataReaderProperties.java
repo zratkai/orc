@@ -20,14 +20,15 @@ package org.apache.orc.impl;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.orc.CompressionKind;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.function.Supplier;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 
 public class TestDataReaderProperties {
@@ -87,27 +88,33 @@ public class TestDataReaderProperties {
     assertFalse(properties.getZeroCopy());
   }
 
-  @Test(expected = java.lang.NullPointerException.class)
+  @Test
   public void testEmptyBuild() {
-    DataReaderProperties.builder().build();
+    assertThrows(NullPointerException.class, () -> {
+      DataReaderProperties.builder().build();
+    });
   }
 
-  @Test(expected = java.lang.NullPointerException.class)
+  @Test
   public void testMissingPath() {
-    DataReaderProperties.builder()
-      .withFileSystemSupplier(mockedSupplier)
-      .withCompression(InStream.options())
-      .withZeroCopy(mockedZeroCopy)
-      .build();
+    assertThrows(NullPointerException.class, () -> {
+      DataReaderProperties.builder()
+        .withFileSystemSupplier(mockedSupplier)
+        .withCompression(InStream.options())
+        .withZeroCopy(mockedZeroCopy)
+        .build();
+    });
   }
 
-  @Test(expected = java.lang.NullPointerException.class)
+  @Test
   public void testMissingFileSystem() {
-    DataReaderProperties.builder()
-      .withPath(mockedPath)
-      .withCompression(InStream.options())
-      .withZeroCopy(mockedZeroCopy)
-      .build();
+    assertThrows(NullPointerException.class, () -> {
+      DataReaderProperties.builder()
+        .withPath(mockedPath)
+        .withCompression(InStream.options())
+        .withZeroCopy(mockedZeroCopy)
+        .build();
+    });
   }
 
 }

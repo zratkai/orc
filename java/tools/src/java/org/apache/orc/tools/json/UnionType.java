@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -103,6 +103,7 @@ class UnionType extends HiveType {
     }
   }
 
+  @Override
   public void printFlat(PrintStream out, String prefix) {
     prefix = prefix + ".";
     int id = 0;

@@ -18,20 +18,17 @@
 
 package org.apache.orc.impl;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.security.SecureRandom;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.SortedMap;
-import java.util.TimeZone;
-import java.util.TreeMap;
-
+import com.google.protobuf.ByteString;
 import io.airlift.compress.lz4.Lz4Compressor;
 import io.airlift.compress.lz4.Lz4Decompressor;
 import io.airlift.compress.lzo.LzoCompressor;
 import io.airlift.compress.lzo.LzoDecompressor;
+import io.airlift.compress.zstd.ZstdCompressor;
+import io.airlift.compress.zstd.ZstdDecompressor;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.orc.ColumnStatistics;
 import org.apache.orc.CompressionCodec;
 import org.apache.orc.CompressionKind;
@@ -45,19 +42,24 @@ import org.apache.orc.PhysicalWriter;
 import org.apache.orc.StripeInformation;
 import org.apache.orc.StripeStatistics;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.impl.writer.WriterEncryptionKey;
-import org.apache.orc.impl.writer.WriterEncryptionVariant;
 import org.apache.orc.impl.writer.StreamOptions;
 import org.apache.orc.impl.writer.TreeWriter;
 import org.apache.orc.impl.writer.WriterContext;
+import org.apache.orc.impl.writer.WriterEncryptionKey;
+import org.apache.orc.impl.writer.WriterEncryptionVariant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 
-import com.google.protobuf.ByteString;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
+import java.util.TimeZone;
+import java.util.TreeMap;
 
 /**
  * An ORC file writer. The file is divided into stripes, which is the natural
@@ -67,13 +69,13 @@ import com.google.protobuf.ByteString;
  * type of column. TreeWriters may have children TreeWriters that handle the
  * sub-types. Each of the TreeWriters writes the column's data as a set of
  * streams.
- *
+ * <p>
  * This class is unsynchronized like most Stream objects, so from the creation
  * of an OrcFile and all access to a single instance has to be from a single
  * thread.
- *
+ * <p>
  * There are no known cases where these happen between different threads today.
- *
+ * <p>
  * Caveat: the MemoryManager is created during WriterOptions create, that has
  * to be confined to a single thread as well.
  *
@@ -86,6 +88,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
 
   private final Path path;
   private final long stripeSize;
+  private final long stripeRowCount;
   private final int rowIndexStride;
   private final TypeDescription schema;
   private final PhysicalWriter physicalWriter;
@@ -99,9 +102,9 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   private long lastFlushOffset = 0;
   private int stripesAtLastFlush = -1;
   private final List<OrcProto.StripeInformation> stripes =
-    new ArrayList<>();
+      new ArrayList<>();
   private final Map<String, ByteString> userMetadata =
-    new TreeMap<>();
+      new TreeMap<>();
   private final TreeWriter treeWriter;
   private final boolean buildIndex;
   private final MemoryManager memoryManager;
@@ -122,7 +125,6 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   private final boolean useUTCTimeZone;
   private final double dictionaryKeySizeThreshold;
   private final boolean[] directEncodingColumns;
-  private final boolean useProlepticGregorian;
   private final List<OrcProto.ColumnEncoding> unencryptedEncodings =
       new ArrayList<>();
 
@@ -138,6 +140,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
   // do we need to include the current encryption keys in the next stripe
   // information
   private boolean needKeyFlush;
+  private final boolean useProlepticGregorian;
+  private boolean isClose = false;
 
   public WriterImpl(FileSystem fs,
                     Path path,
@@ -160,35 +164,40 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
         opts.getKeyOverrides());
     needKeyFlush = encryption.length > 0;
 
-    // Set up the physical writer
-    this.physicalWriter = opts.getPhysicalWriter() == null ?
-                              new PhysicalFsWriter(fs, path, opts, encryption) :
-                              opts.getPhysicalWriter();
-    unencryptedOptions = physicalWriter.getStreamOptions();
-    OutStream.assertBufferSizeValid(unencryptedOptions.getBufferSize());
-
-    useProlepticGregorian = opts.getProlepticGregorian();
-    this.callback = opts.getCallback();
-    this.writerVersion = opts.getWriterVersion();
-    bloomFilterVersion = opts.getBloomFilterVersion();
     this.directEncodingColumns = OrcUtils.includeColumns(
         opts.getDirectEncodingColumns(), opts.getSchema());
     dictionaryKeySizeThreshold =
         OrcConf.DICTIONARY_KEY_SIZE_THRESHOLD.getDouble(conf);
+
+    this.callback = opts.getCallback();
     if (callback != null) {
       callbackContext = () -> WriterImpl.this;
     } else {
       callbackContext = null;
     }
+
+    this.useProlepticGregorian = opts.getProlepticGregorian();
     this.writeTimeZone = hasTimestamp(schema);
     this.useUTCTimeZone = opts.getUseUTCTimestamp();
-    this.stripeSize = opts.getStripeSize();
-    this.version = opts.getVersion();
+
     this.encodingStrategy = opts.getEncodingStrategy();
     this.compressionStrategy = opts.getCompressionStrategy();
-    this.rowIndexStride = opts.getRowIndexStride();
-    this.memoryManager = opts.getMemoryManager();
-    buildIndex = rowIndexStride > 0;
+
+    if (opts.getRowIndexStride() >= 0) {
+      this.rowIndexStride = opts.getRowIndexStride();
+    } else {
+      this.rowIndexStride = 0;
+    }
+
+    // ORC-1343: We ignore `opts.isBuildIndex` due to the lack of reader support
+    this.buildIndex = rowIndexStride > 0;
+    if (buildIndex && rowIndexStride < MIN_ROW_INDEX_STRIDE) {
+      throw new IllegalArgumentException("Row stride must be at least " +
+          MIN_ROW_INDEX_STRIDE);
+    }
+
+    this.writerVersion = opts.getWriterVersion();
+    this.version = opts.getVersion();
     if (version == OrcFile.Version.FUTURE) {
       throw new IllegalArgumentException("Can not write in a unknown version.");
     } else if (version == OrcFile.Version.UNSTABLE_PRE_2_0) {
@@ -196,31 +205,38 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
           " readable by other versions of the software. It is only for" +
           " developer testing.");
     }
-    boolean buildBloomFilter = buildIndex;
-    if (version == OrcFile.Version.V_0_11) {
-      /* do not write bloom filters for ORC v11 */
-      buildBloomFilter = false;
-    }
-    if (!buildBloomFilter) {
+
+    this.bloomFilterVersion = opts.getBloomFilterVersion();
+    this.bloomFilterFpp = opts.getBloomFilterFpp();
+    /* do not write bloom filters for ORC v11 */
+    if (!buildIndex || version == OrcFile.Version.V_0_11) {
       this.bloomFilterColumns = new boolean[schema.getMaximumId() + 1];
     } else {
       this.bloomFilterColumns =
           OrcUtils.includeColumns(opts.getBloomFilterColumns(), schema);
     }
-    this.bloomFilterFpp = opts.getBloomFilterFpp();
+
+    // ensure that we are able to handle callbacks before we register ourselves
+    ROWS_PER_CHECK = Math.min(opts.getStripeRowCountValue(),
+        OrcConf.ROWS_BETWEEN_CHECKS.getLong(conf));
+    this.stripeRowCount= opts.getStripeRowCountValue();
+    this.stripeSize = opts.getStripeSize();
+    memoryLimit = stripeSize;
+    memoryManager = opts.getMemoryManager();
+    memoryManager.addWriter(path, stripeSize, this);
+
+    // Set up the physical writer
+    this.physicalWriter = opts.getPhysicalWriter() == null ?
+        new PhysicalFsWriter(fs, path, opts, encryption) :
+        opts.getPhysicalWriter();
     physicalWriter.writeHeader();
+    unencryptedOptions = physicalWriter.getStreamOptions();
+    OutStream.assertBufferSizeValid(unencryptedOptions.getBufferSize());
 
     treeWriter = TreeWriter.Factory.create(schema, null, new StreamFactory());
-    if (buildIndex && rowIndexStride < MIN_ROW_INDEX_STRIDE) {
-      throw new IllegalArgumentException("Row stride must be at least " +
-          MIN_ROW_INDEX_STRIDE);
-    }
-    // ensure that we are able to handle callbacks before we register ourselves
-    ROWS_PER_CHECK = OrcConf.ROWS_BETWEEN_CHECKS.getLong(conf);
-    memoryLimit = stripeSize;
-    memoryManager.addWriter(path, stripeSize, this);
+
     LOG.info("ORC writer created for path: {} with stripeSize: {} options: {}",
-            path, stripeSize, unencryptedOptions);
+        path, stripeSize, unencryptedOptions);
   }
 
   //@VisibleForTesting
@@ -242,29 +258,18 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     }
   }
 
-  private static int getClosestBufferSize(int estBufferSize) {
+  /**
+   * Given a buffer size, return the nearest superior power of 2. Min value is
+   * 4Kib, Max value is 256Kib.
+   *
+   * @param size Proposed buffer size
+   * @return the suggested buffer size
+   */
+  private static int getClosestBufferSize(int size) {
     final int kb4 = 4 * 1024;
-    final int kb8 = 8 * 1024;
-    final int kb16 = 16 * 1024;
-    final int kb32 = 32 * 1024;
-    final int kb64 = 64 * 1024;
-    final int kb128 = 128 * 1024;
     final int kb256 = 256 * 1024;
-    if (estBufferSize <= kb4) {
-      return kb4;
-    } else if (estBufferSize <= kb8) {
-      return kb8;
-    } else if (estBufferSize <= kb16) {
-      return kb16;
-    } else if (estBufferSize <= kb32) {
-      return kb32;
-    } else if (estBufferSize <= kb64) {
-      return kb64;
-    } else if (estBufferSize <= kb128) {
-      return kb128;
-    } else {
-      return kb256;
-    }
+    final int pow2 = size == 1 ? 1 : Integer.highestOneBit(size - 1) * 2;
+    return Math.min(kb256, Math.max(kb4, pow2));
   }
 
   public static CompressionCodec createCodec(CompressionKind kind) {
@@ -281,6 +286,9 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       case LZ4:
         return new AircompressorCodec(kind, new Lz4Compressor(),
             new Lz4Decompressor());
+      case ZSTD:
+        return new AircompressorCodec(kind, new ZstdCompressor(),
+            new ZstdDecompressor());
       default:
         throw new IllegalArgumentException("Unknown compression codec: " +
             kind);
@@ -299,9 +307,10 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       long size = treeWriter.estimateMemory();
       if (LOG.isDebugEnabled()) {
         LOG.debug("ORC writer " + physicalWriter + " size = " + size +
-                      " limit = " + memoryLimit);
+            " memoryLimit = " + memoryLimit + " rowsInStripe = " + rowsInStripe +
+            " stripeRowCountLimit = " + stripeRowCount);
       }
-      if (size > memoryLimit) {
+      if (size > memoryLimit || rowsInStripe >= stripeRowCount) {
         flushStripe();
         return true;
       }
@@ -320,6 +329,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * @param name the name for the stream
      * @return The output outStream that the section needs to be written to.
      */
+    @Override
     public OutStream createStream(StreamName name) throws IOException {
       StreamOptions options = SerializationUtils.getCustomizedCodec(
           unencryptedOptions, compressionStrategy, name.getKind());
@@ -339,6 +349,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     /**
      * Get the stride rate of the row index.
      */
+    @Override
     public int getRowIndexStride() {
       return rowIndexStride;
     }
@@ -347,6 +358,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * Should be building the row index.
      * @return true if we are building the index
      */
+    @Override
     public boolean buildIndex() {
       return buildIndex;
     }
@@ -355,6 +367,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * Is the ORC file compressed?
      * @return are the streams compressed
      */
+    @Override
     public boolean isCompressed() {
       return unencryptedOptions.getCodec() != null;
     }
@@ -363,6 +376,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * Get the encoding strategy to use.
      * @return encoding strategy
      */
+    @Override
     public OrcFile.EncodingStrategy getEncodingStrategy() {
       return encodingStrategy;
     }
@@ -371,6 +385,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * Get the bloom filter columns
      * @return bloom filter columns
      */
+    @Override
     public boolean[] getBloomFilterColumns() {
       return bloomFilterColumns;
     }
@@ -379,6 +394,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * Get bloom filter false positive percentage.
      * @return fpp
      */
+    @Override
     public double getBloomFilterFPP() {
       return bloomFilterFpp;
     }
@@ -387,6 +403,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
      * Get the writer's configuration.
      * @return configuration
      */
+    @Override
     public Configuration getConfiguration() {
       return conf;
     }
@@ -394,6 +411,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     /**
      * Get the version of the file to write.
      */
+    @Override
     public OrcFile.Version getVersion() {
       return version;
     }
@@ -408,15 +426,18 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       return physicalWriter;
     }
 
+    @Override
     public OrcFile.BloomFilterVersion getBloomFilterVersion() {
       return bloomFilterVersion;
     }
 
+    @Override
     public void writeIndex(StreamName name,
                            OrcProto.RowIndex.Builder index) throws IOException {
       physicalWriter.writeIndex(name, index);
     }
 
+    @Override
     public void writeBloomFilter(StreamName name,
                                  OrcProto.BloomFilterIndex.Builder bloom
                                  ) throws IOException {
@@ -458,10 +479,12 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       physicalWriter.writeStatistics(name, stats);
     }
 
+    @Override
     public boolean getUseUTCTimestamp() {
       return useUTCTimeZone;
     }
 
+    @Override
     public double getDictionaryKeySizeThreshold(int columnId) {
       return directEncodingColumns[columnId] ? 0.0 : dictionaryKeySizeThreshold;
     }
@@ -554,6 +577,7 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       case SNAPPY: return OrcProto.CompressionKind.SNAPPY;
       case LZO: return OrcProto.CompressionKind.LZO;
       case LZ4: return OrcProto.CompressionKind.LZ4;
+      case ZSTD: return OrcProto.CompressionKind.ZSTD;
       default:
         throw new IllegalArgumentException("Unknown compression " + kind);
     }
@@ -646,12 +670,13 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     // add all of the user metadata
     for(Map.Entry<String, ByteString> entry: userMetadata.entrySet()) {
       builder.addMetadata(OrcProto.UserMetadataItem.newBuilder()
-        .setName(entry.getKey()).setValue(entry.getValue()));
+          .setName(entry.getKey()).setValue(entry.getValue()));
     }
     if (encryption.length > 0) {
       builder.setEncryption(writeEncryptionFooter());
     }
     builder.setWriter(OrcFile.WriterImplementation.ORC_JAVA.getId());
+    builder.setSoftwareVersion(OrcUtils.getOrcVersion());
     physicalWriter.writeFileFooter(builder);
     return writePostScript();
   }
@@ -681,7 +706,18 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
         while (posn < batch.size) {
           int chunkSize = Math.min(batch.size - posn,
               rowIndexStride - rowsInIndex);
-          treeWriter.writeRootBatch(batch, posn, chunkSize);
+          if (batch.isSelectedInUse()) {
+            // find the longest chunk that is continuously selected from posn
+            for (int len = 1; len < chunkSize; ++len) {
+              if (batch.selected[posn + len] - batch.selected[posn] != len) {
+                chunkSize = len;
+                break;
+              }
+            }
+            treeWriter.writeRootBatch(batch, batch.selected[posn], chunkSize);
+          } else {
+            treeWriter.writeRootBatch(batch, posn, chunkSize);
+          }
           posn += chunkSize;
           rowsInIndex += chunkSize;
           rowsInStripe += chunkSize;
@@ -690,8 +726,24 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
           }
         }
       } else {
+        if (batch.isSelectedInUse()) {
+          int posn = 0;
+          while (posn < batch.size) {
+            int chunkSize = 1;
+            while (posn + chunkSize < batch.size) {
+              // find the longest chunk that is continuously selected from posn
+              if (batch.selected[posn + chunkSize] - batch.selected[posn] != chunkSize) {
+                break;
+              }
+              ++chunkSize;
+            }
+            treeWriter.writeRootBatch(batch, batch.selected[posn], chunkSize);
+            posn += chunkSize;
+          }
+        } else {
+          treeWriter.writeRootBatch(batch, 0, batch.size);
+        }
         rowsInStripe += batch.size;
-        treeWriter.writeRootBatch(batch, 0, batch.size);
       }
       rowsSinceCheck += batch.size;
       previousAllocation = memoryManager.checkMemory(previousAllocation, this);
@@ -712,15 +764,21 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
 
   @Override
   public void close() throws IOException {
-    if (callback != null) {
-      callback.preFooterWrite(callbackContext);
+    if (!isClose) {
+      try {
+        if (callback != null) {
+          callback.preFooterWrite(callbackContext);
+        }
+        // remove us from the memory manager so that we don't get any callbacks
+        memoryManager.removeWriter(path);
+        // actually close the file
+        flushStripe();
+        lastFlushOffset = writeFooter();
+        physicalWriter.close();
+      } finally {
+        isClose = true;
+      }
     }
-    // remove us from the memory manager so that we don't get any callbacks
-    memoryManager.removeWriter(path);
-    // actually close the file
-    flushStripe();
-    lastFlushOffset = writeFooter();
-    physicalWriter.close();
   }
 
   /**
@@ -770,7 +828,8 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
                            ) throws IOException {
     appendStripe(stripe, offset, length, stripeInfo,
         new StripeStatistics[]{
-            new StripeStatisticsImpl(schema, stripeStatistics.getColStatsList(), false, false)});
+            new StripeStatisticsImpl(schema, stripeStatistics.getColStatsList(),
+                false, false)});
   }
 
   @Override
@@ -791,12 +850,12 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     }
     rowsInStripe = stripeInfo.getNumberOfRows();
     // update stripe information
-    OrcProto.StripeInformation.Builder dirEntry = OrcProto.StripeInformation
-                                                      .newBuilder()
-                                                      .setNumberOfRows(rowsInStripe)
-                                                      .setIndexLength(stripeInfo.getIndexLength())
-                                                      .setDataLength(stripeInfo.getDataLength())
-                                                      .setFooterLength(stripeInfo.getFooterLength());
+    OrcProto.StripeInformation.Builder dirEntry =
+        OrcProto.StripeInformation.newBuilder()
+                                  .setNumberOfRows(rowsInStripe)
+                                  .setIndexLength(stripeInfo.getIndexLength())
+                                  .setDataLength(stripeInfo.getDataLength())
+                                  .setFooterLength(stripeInfo.getFooterLength());
     // If this is the first stripe of the original file, we need to copy the
     // encryption information.
     if (stripeInfo.hasEncryptionStripeId()) {
@@ -838,6 +897,11 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     return result;
   }
 
+  @Override
+  public List<StripeInformation> getStripes() throws IOException {
+    return Collections.unmodifiableList(OrcUtils.convertProtoStripesToStripes(stripes));
+  }
+
   public CompressionCodec getCompressionCodec() {
     return unencryptedOptions.getCodec();
   }
@@ -850,24 +914,6 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
     if (children != null) {
       for (TypeDescription child : children) {
         if (hasTimestamp(child)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  private static boolean hasDateOrTime(TypeDescription schema) {
-    switch (schema.getCategory()) {
-    case TIMESTAMP:
-    case DATE:
-      return true;
-    default:
-    }
-    List<TypeDescription> children = schema.getChildren();
-    if (children != null) {
-      for(TypeDescription child: children) {
-        if (hasDateOrTime(child)) {
           return true;
         }
       }
@@ -936,10 +982,10 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
    * @param schema the type tree that we search for annotations
    * @param keyOverrides user specified key overrides
    */
-  private WriterEncryptionVariant[] setupEncryption(KeyProvider provider,
-                                                    TypeDescription schema,
-                                                    Map<String, HadoopShims.KeyMetadata> keyOverrides
-                                                    ) throws IOException {
+  private WriterEncryptionVariant[] setupEncryption(
+      KeyProvider provider,
+      TypeDescription schema,
+      Map<String, HadoopShims.KeyMetadata> keyOverrides) throws IOException {
     keyProvider = provider != null ? provider :
                       CryptoUtils.getKeyProvider(conf, new SecureRandom());
     // Load the overrides into the cache so that we use the required key versions.
@@ -971,5 +1017,10 @@ public class WriterImpl implements WriterInternal, MemoryManager.Callback {
       }
     }
     return result;
+  }
+
+  @Override
+  public long estimateMemory() {
+    return this.treeWriter.estimateMemory();
   }
 }

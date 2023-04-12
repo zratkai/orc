@@ -17,16 +17,9 @@
  */
 package org.apache.orc.impl;
 
-import java.sql.Date;
-import java.sql.Timestamp;
-import java.time.chrono.ChronoLocalDate;
-import java.time.chrono.Chronology;
-import java.time.chrono.IsoChronology;
-import java.util.TimeZone;
-
-import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
+import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableComparator;
@@ -42,6 +35,15 @@ import org.apache.orc.OrcProto;
 import org.apache.orc.StringColumnStatistics;
 import org.apache.orc.TimestampColumnStatistics;
 import org.apache.orc.TypeDescription;
+import org.threeten.extra.chrono.HybridChronology;
+
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.time.chrono.ChronoLocalDate;
+import java.time.chrono.Chronology;
+import java.time.chrono.IsoChronology;
+import java.util.TimeZone;
+
 
 import java.nio.charset.StandardCharsets;
 import org.threeten.extra.chrono.HybridChronology;
@@ -66,10 +68,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     if (hasNull != that.hasNull) {
       return false;
     }
-    if (bytesOnDisk != that.bytesOnDisk) {
-      return false;
-    }
-    return true;
+    return bytesOnDisk == that.bytesOnDisk;
   }
 
   @Override
@@ -122,7 +121,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     public OrcProto.ColumnStatistics.Builder serialize() {
       OrcProto.ColumnStatistics.Builder builder = super.serialize();
       OrcProto.BucketStatistics.Builder bucket =
-        OrcProto.BucketStatistics.newBuilder();
+          OrcProto.BucketStatistics.newBuilder();
       bucket.addCount(trueCount);
       builder.setBucketStatistics(bucket);
       return builder;
@@ -157,11 +156,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
       BooleanStatisticsImpl that = (BooleanStatisticsImpl) o;
 
-      if (trueCount != that.trueCount) {
-        return false;
-      }
-
-      return true;
+      return trueCount == that.trueCount;
     }
 
     @Override
@@ -296,11 +291,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       if (maximum != that.maximum) {
         return false;
       }
-      if (sum != that.sum) {
-        return false;
-      }
-
-      return true;
+      return sum == that.sum;
     }
 
     @Override
@@ -383,10 +374,13 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
         maximum = value;
       }
       if (!overflow) {
-        boolean wasPositive = sum >= 0;
-        sum += value * repetitions;
-        if ((value >= 0) == wasPositive) {
-          overflow = (sum >= 0) != wasPositive;
+        try {
+          long increment = repetitions > 1
+              ? Math.multiplyExact(value, repetitions)
+              : value;
+          sum = Math.addExact(sum, increment);
+        } catch (ArithmeticException e) {
+          overflow = true;
         }
       }
     }
@@ -410,10 +404,10 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
         overflow |= otherInt.overflow;
         if (!overflow) {
-          boolean wasPositive = sum >= 0;
-          sum += otherInt.sum;
-          if ((otherInt.sum >= 0) == wasPositive) {
-            overflow = (sum >= 0) != wasPositive;
+          try {
+            sum = Math.addExact(sum, otherInt.sum);
+          } catch (ArithmeticException e) {
+            overflow = true;
           }
         }
       } else {
@@ -502,11 +496,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       if (hasMinimum != that.hasMinimum) {
         return false;
       }
-      if (overflow != that.overflow) {
-        return false;
-      }
-
-      return true;
+      return overflow == that.overflow;
     }
 
     @Override
@@ -598,7 +588,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     public OrcProto.ColumnStatistics.Builder serialize() {
       OrcProto.ColumnStatistics.Builder builder = super.serialize();
       OrcProto.DoubleStatistics.Builder dbl =
-        OrcProto.DoubleStatistics.newBuilder();
+          OrcProto.DoubleStatistics.newBuilder();
       if (hasMinimum) {
         dbl.setMinimum(minimum);
         dbl.setMaximum(maximum);
@@ -660,11 +650,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       if (Double.compare(that.maximum, maximum) != 0) {
         return false;
       }
-      if (Double.compare(that.sum, sum) != 0) {
-        return false;
-      }
-
-      return true;
+      return Double.compare(that.sum, sum) == 0;
     }
 
     @Override
@@ -700,9 +686,15 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       OrcProto.StringStatistics str = stats.getStringStatistics();
       if (str.hasMaximum()) {
         maximum = new Text(str.getMaximum());
+      } else if (str.hasUpperBound()) {
+        maximum = new Text(str.getUpperBound());
+        isUpperBoundSet = true;
       }
       if (str.hasMinimum()) {
         minimum = new Text(str.getMinimum());
+      } else if (str.hasLowerBound()) {
+        minimum = new Text(str.getLowerBound());
+        isLowerBoundSet = true;
       }
       if(str.hasSum()) {
         sum = str.getSum();
@@ -802,12 +794,18 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     public OrcProto.ColumnStatistics.Builder serialize() {
       OrcProto.ColumnStatistics.Builder result = super.serialize();
       OrcProto.StringStatistics.Builder str =
-        OrcProto.StringStatistics.newBuilder();
+          OrcProto.StringStatistics.newBuilder();
       if (getNumberOfValues() != 0) {
-        /* getLowerBound() will ALWAYS return min value */
-        str.setMinimum(getLowerBound());
-        /* getUpperBound() will ALWAYS return max value */
-        str.setMaximum(getUpperBound());
+        if (isLowerBoundSet) {
+          str.setLowerBound(minimum.toString());
+        } else {
+          str.setMinimum(minimum.toString());
+        }
+        if (isUpperBoundSet) {
+          str.setUpperBound(maximum.toString());
+        } else {
+          str.setMaximum(maximum.toString());
+        }
         str.setSum(sum);
       }
       result.setStringStatistics(str);
@@ -905,11 +903,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       if (minimum != null ? !minimum.equals(that.minimum) : that.minimum != null) {
         return false;
       }
-      if (maximum != null ? !maximum.equals(that.maximum) : that.maximum != null) {
-        return false;
-      }
-
-      return true;
+      return maximum != null ? maximum.equals(that.maximum) : that.maximum == null;
     }
 
     @Override
@@ -919,32 +913,6 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       result = 31 * result + (maximum != null ? maximum.hashCode() : 0);
       result = 31 * result + (int) (sum ^ (sum >>> 32));
       return result;
-    }
-
-    /**
-     * Find the start of the last character that ends in the current string.
-     * @param text the bytes of the utf-8
-     * @param from the first byte location
-     * @param until the last byte location
-     * @return the index of the last character
-     */
-    private static int findLastCharacter(byte[] text, int from, int until) {
-      int posn = until;
-      /* we don't expect characters more than 5 bytes */
-      while (posn >= from) {
-        if (getCharLength(text[posn]) > 0) {
-          return posn;
-        }
-        posn -= 1;
-      }
-      /* beginning of a valid char not found */
-      throw new IllegalArgumentException(
-          "Could not truncate string, beginning of a valid char not found");
-    }
-
-    private static int getCodePoint(byte[] source, int from, int len) {
-      return new String(source, from, len, StandardCharsets.UTF_8)
-          .codePointAt(0);
     }
 
     private static void appendCodePoint(Text result, int codepoint) {
@@ -983,13 +951,13 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
      * @return truncated Text value
      */
     private static Text truncateUpperBound(final byte[] text, final int from) {
-      int followingChar = findLastCharacter(text, from,
+      int followingChar = Utf8Utils.findLastCharacter(text, from,
           from + MAX_BYTES_RECORDED);
-      int lastChar = findLastCharacter(text, from, followingChar - 1);
+      int lastChar = Utf8Utils.findLastCharacter(text, from, followingChar - 1);
       Text result = new Text();
       result.set(text, from, lastChar - from);
       appendCodePoint(result,
-          getCodePoint(text, lastChar, followingChar - lastChar) + 1);
+          Utf8Utils.getCodePoint(text, lastChar, followingChar - lastChar) + 1);
       return result;
     }
 
@@ -1003,35 +971,11 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
      */
     private static Text truncateLowerBound(final byte[] text, final int from) {
 
-      int lastChar = findLastCharacter(text, from, from + MAX_BYTES_RECORDED);
+      int lastChar = Utf8Utils.findLastCharacter(text, from,
+          from + MAX_BYTES_RECORDED);
       Text result = new Text();
       result.set(text, from, lastChar - from);
       return result;
-    }
-
-    /**
-     * A helper function that returns the length of the UTF-8 character
-     * IF the given byte is beginning of a valid char.
-     * In case it is a beginning byte, a value greater than 0
-     * is returned (length of character in bytes).
-     * Else 0 is returned
-     * @param b
-     * @return 0 if not beginning of char else length of char in bytes
-     */
-    private static int getCharLength(byte b) {
-      int len = 0;
-      if((b & 0b10000000) == 0b00000000 ) {
-        len = 1;
-      } else if ((b & 0b11100000) == 0b11000000 ) {
-        len = 2;
-      } else if ((b & 0b11110000) == 0b11100000 ) {
-        len = 3;
-      } else if ((b & 0b11111000) == 0b11110000 ) {
-        len = 4;
-      } else if ((b & 0b11111100) == 0b11111000 ) {
-        len = 5;
-      }
-      return len;
     }
   }
 
@@ -1119,11 +1063,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
       BinaryStatisticsImpl that = (BinaryStatisticsImpl) o;
 
-      if (sum != that.sum) {
-        return false;
-      }
-
-      return true;
+      return sum == that.sum;
     }
 
     @Override
@@ -1288,11 +1228,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       if (maximum != null ? !maximum.equals(that.maximum) : that.maximum != null) {
         return false;
       }
-      if (sum != null ? !sum.equals(that.sum) : that.sum != null) {
-        return false;
-      }
-
-      return true;
+      return sum != null ? sum.equals(that.sum) : that.sum == null;
     }
 
     @Override
@@ -1668,11 +1604,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       if (minimum != that.minimum) {
         return false;
       }
-      if (maximum != that.maximum) {
-        return false;
-      }
-
-      return true;
+      return maximum == that.maximum;
     }
 
     @Override
@@ -1686,8 +1618,14 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
   private static class TimestampStatisticsImpl extends ColumnStatisticsImpl
       implements TimestampColumnStatistics {
-    private Long minimum = null;
-    private Long maximum = null;
+    private static final int DEFAULT_MIN_NANOS = 000_000;
+    private static final int DEFAULT_MAX_NANOS = 999_999;
+
+    private long minimum = Long.MAX_VALUE;
+    private long maximum = Long.MIN_VALUE;
+
+    private int minNanos = DEFAULT_MIN_NANOS;
+    private int maxNanos = DEFAULT_MAX_NANOS;
 
     TimestampStatisticsImpl() {
     }
@@ -1718,31 +1656,51 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
         minimum = DateUtils.convertTime(timestampStats.getMinimumUtc(),
             writerUsedProlepticGregorian, convertToProlepticGregorian, true);
       }
+      if (timestampStats.hasMaximumNanos()) {
+        maxNanos = timestampStats.getMaximumNanos() - 1;
+      }
+      if (timestampStats.hasMinimumNanos()) {
+        minNanos = timestampStats.getMinimumNanos() - 1;
+      }
     }
 
     @Override
     public void reset() {
       super.reset();
-      minimum = null;
-      maximum = null;
+      minimum = Long.MAX_VALUE;
+      maximum = Long.MIN_VALUE;
+      minNanos = DEFAULT_MIN_NANOS;
+      maxNanos = DEFAULT_MAX_NANOS;
     }
 
     @Override
     public void updateTimestamp(Timestamp value) {
       long millis = SerializationUtils.convertToUtc(TimeZone.getDefault(),
           value.getTime());
-      updateTimestamp(millis);
+      // prune the last 6 digits for ns precision
+      updateTimestamp(millis, value.getNanos() % 1_000_000);
     }
 
     @Override
-    public void updateTimestamp(long value) {
-      if (minimum == null) {
+    public void updateTimestamp(long value, int nanos) {
+      if (minimum > maximum) {
         minimum = value;
         maximum = value;
-      } else if (minimum > value) {
-        minimum = value;
-      } else if (maximum < value) {
-        maximum = value;
+        minNanos = nanos;
+        maxNanos = nanos;
+      } else {
+        if (minimum >= value) {
+          if (minimum > value || nanos < minNanos) {
+            minNanos = nanos;
+          }
+          minimum = value;
+        }
+        if (maximum <= value) {
+          if (maximum < value || nanos > maxNanos) {
+            maxNanos = nanos;
+          }
+          maximum = value;
+        }
       }
     }
 
@@ -1750,19 +1708,31 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     public void merge(ColumnStatisticsImpl other) {
       if (other instanceof TimestampStatisticsImpl) {
         TimestampStatisticsImpl timestampStats = (TimestampStatisticsImpl) other;
-        if (minimum == null) {
-          minimum = timestampStats.minimum;
-          maximum = timestampStats.maximum;
-        } else if (timestampStats.minimum != null) {
-          if (minimum > timestampStats.minimum) {
+        if (count == 0) {
+          if (timestampStats.count != 0) {
+            minimum = timestampStats.minimum;
+            maximum = timestampStats.maximum;
+            minNanos = timestampStats.minNanos;
+            maxNanos = timestampStats.maxNanos;
+          }
+        } else if (timestampStats.count != 0) {
+          if (minimum >= timestampStats.minimum) {
+            if (minimum > timestampStats.minimum ||
+                minNanos > timestampStats.minNanos) {
+              minNanos = timestampStats.minNanos;
+            }
             minimum = timestampStats.minimum;
           }
-          if (maximum < timestampStats.maximum) {
+          if (maximum <= timestampStats.maximum) {
+            if (maximum < timestampStats.maximum ||
+                maxNanos < timestampStats.maxNanos) {
+              maxNanos = timestampStats.maxNanos;
+            }
             maximum = timestampStats.maximum;
           }
         }
       } else {
-        if (isStatsExists() && minimum != null) {
+        if (isStatsExists() && count != 0) {
           throw new IllegalArgumentException("Incompatible merging of timestamp column statistics");
         }
       }
@@ -1774,9 +1744,15 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
       OrcProto.ColumnStatistics.Builder result = super.serialize();
       OrcProto.TimestampStatistics.Builder timestampStats = OrcProto.TimestampStatistics
           .newBuilder();
-      if (getNumberOfValues() != 0 && minimum != null) {
+      if (getNumberOfValues() != 0) {
         timestampStats.setMinimumUtc(minimum);
         timestampStats.setMaximumUtc(maximum);
+        if (minNanos != DEFAULT_MIN_NANOS) {
+          timestampStats.setMinimumNanos(minNanos + 1);
+        }
+        if (maxNanos != DEFAULT_MAX_NANOS) {
+          timestampStats.setMaximumNanos(maxNanos + 1);
+        }
       }
       result.setTimestampStatistics(timestampStats);
       return result;
@@ -1784,32 +1760,54 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
     @Override
     public Timestamp getMinimum() {
-      return minimum == null ? null :
-          new Timestamp(SerializationUtils.convertFromUtc(TimeZone.getDefault(),
-              minimum));
+      if (minimum > maximum) {
+        return null;
+      } else {
+        Timestamp ts = new Timestamp(SerializationUtils.
+            convertFromUtc(TimeZone.getDefault(), minimum));
+        ts.setNanos(ts.getNanos() + minNanos);
+        return ts;
+      }
     }
 
     @Override
     public Timestamp getMaximum() {
-      return maximum == null ? null :
-          new Timestamp(SerializationUtils.convertFromUtc(TimeZone.getDefault(),
-              maximum));
+      if (minimum > maximum) {
+        return null;
+      } else {
+        Timestamp ts = new Timestamp(SerializationUtils.convertFromUtc(
+            TimeZone.getDefault(), maximum));
+        ts.setNanos(ts.getNanos() + maxNanos);
+        return ts;
+      }
     }
 
     @Override
     public Timestamp getMinimumUTC() {
-      return minimum == null ? null : new Timestamp(minimum);
+      if (minimum > maximum) {
+        return null;
+      } else {
+        Timestamp ts = new Timestamp(minimum);
+        ts.setNanos(ts.getNanos() + minNanos);
+        return ts;
+      }
     }
 
     @Override
     public Timestamp getMaximumUTC() {
-      return maximum == null ? null : new Timestamp(maximum);
+      if (minimum > maximum) {
+        return null;
+      } else {
+        Timestamp ts = new Timestamp(maximum);
+        ts.setNanos(ts.getNanos() + maxNanos);
+        return ts;
+      }
     }
 
     @Override
     public String toString() {
       StringBuilder buf = new StringBuilder(super.toString());
-      if (minimum != null || maximum != null) {
+      if (minimum <= maximum) {
         buf.append(" min: ");
         buf.append(getMinimum());
         buf.append(" max: ");
@@ -1832,21 +1830,16 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
       TimestampStatisticsImpl that = (TimestampStatisticsImpl) o;
 
-      if (minimum != null ? !minimum.equals(that.minimum) : that.minimum != null) {
-        return false;
-      }
-      if (maximum != null ? !maximum.equals(that.maximum) : that.maximum != null) {
-        return false;
-      }
-
-      return true;
+      return minimum == that.minimum && maximum == that.maximum &&
+          minNanos == that.minNanos && maxNanos == that.maxNanos;
     }
 
     @Override
     public int hashCode() {
+      final int prime = 31;
       int result = super.hashCode();
-      result = 31 * result + (minimum != null ? minimum.hashCode() : 0);
-      result = 31 * result + (maximum != null ? maximum.hashCode() : 0);
+      result = prime * result + (int) (maximum ^ (maximum >>> 32));
+      result = prime * result + (int) (minimum ^ (minimum >>> 32));
       return result;
     }
   }
@@ -1863,7 +1856,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
     @Override
     public void updateTimestamp(Timestamp value) {
-      updateTimestamp(value.getTime());
+      updateTimestamp(value.getTime(), value.getNanos() % 1_000_000);
     }
 
     @Override
@@ -1973,7 +1966,8 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     throw new UnsupportedOperationException("Can't update timestamp");
   }
 
-  public void updateTimestamp(long value) {
+  // has to be extended
+  public void updateTimestamp(long value, int nanos) {
     throw new UnsupportedOperationException("Can't update timestamp");
   }
 
@@ -2021,7 +2015,7 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
   public OrcProto.ColumnStatistics.Builder serialize() {
     OrcProto.ColumnStatistics.Builder builder =
-      OrcProto.ColumnStatistics.newBuilder();
+        OrcProto.ColumnStatistics.newBuilder();
     builder.setNumberOfValues(count);
     builder.setHasNull(hasNull);
     if (bytesOnDisk != 0) {
@@ -2080,13 +2074,6 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
 
   public static ColumnStatisticsImpl deserialize(TypeDescription schema,
                                                  OrcProto.ColumnStatistics stats,
-                                                 ReaderImpl reader) {
-    return deserialize(schema, stats, reader.writerUsedProlepticGregorian(),
-        reader.options.getConvertToProlepticGregorian());
-  }
-
-  public static ColumnStatisticsImpl deserialize(TypeDescription schema,
-                                                 OrcProto.ColumnStatistics stats,
                                                  boolean writerUsedProlepticGregorian,
                                                  boolean convertToProlepticGregorian) {
     if (stats.hasBucketStatistics()) {
@@ -2112,10 +2099,10 @@ public class ColumnStatisticsImpl implements ColumnStatistics {
     } else if (stats.hasTimestampStatistics()) {
       return schema == null ||
                  schema.getCategory() == TypeDescription.Category.TIMESTAMP ?
-                 new TimestampStatisticsImpl(stats, writerUsedProlepticGregorian,
-                                         convertToProlepticGregorian) :
+                 new TimestampStatisticsImpl(stats,
+                     writerUsedProlepticGregorian, convertToProlepticGregorian) :
                  new TimestampInstantStatisticsImpl(stats,
-                         writerUsedProlepticGregorian, convertToProlepticGregorian);
+                     writerUsedProlepticGregorian, convertToProlepticGregorian);
     } else if(stats.hasBinaryStatistics()) {
       return new BinaryStatisticsImpl(stats);
     } else {

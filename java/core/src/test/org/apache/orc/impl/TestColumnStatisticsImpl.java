@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,26 +21,26 @@ package org.apache.orc.impl;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
-import org.apache.orc.ColumnStatistics;
 import org.apache.orc.DecimalColumnStatistics;
 import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.Reader;
 import org.apache.orc.TimestampColumnStatistics;
 import org.apache.orc.TypeDescription;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.TimeZone;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestColumnStatisticsImpl {
 
   @Test
-  public void testUpdateDate() throws Exception {
+  public void testUpdateDate() {
     ColumnStatisticsImpl stat = ColumnStatisticsImpl.create(TypeDescription.createDate());
     DateWritable date = new DateWritable(16400);
     stat.increment();
@@ -83,12 +83,56 @@ public class TestColumnStatisticsImpl {
     TimestampColumnStatistics stats =
         (TimestampColumnStatistics) reader.getStatistics()[0];
     assertEquals("1995-01-01 00:00:00.688", stats.getMinimum().toString());
-    assertEquals("2037-01-01 00:00:00.0", stats.getMaximum().toString());
+    // ORC-611: add TS stats nanosecond support for older files by using (max TS + 0.999 ms)
+    assertEquals("2037-01-01 00:00:00.000999999", stats.getMaximum().toString());
     TimeZone.setDefault(original);
   }
 
   @Test
-  public void testDecimal64Overflow() throws IOException {
+  public void testTimestamps() {
+    TimeZone original = TimeZone.getDefault();
+    TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    TypeDescription instant = TypeDescription.createTimestampInstant();
+    ColumnStatisticsImpl stats = ColumnStatisticsImpl.create(instant);
+    TimestampColumnStatistics dstats = (TimestampColumnStatistics) stats;
+    assertNull(dstats.getMinimumUTC());
+    assertNull(dstats.getMaximumUTC());
+    stats.updateTimestamp(123, 456789);
+    stats.updateTimestamp(1234, 567890);
+    stats.increment(2);
+    assertEquals("1970-01-01 00:00:00.123456789", dstats.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:01.23456789", dstats.getMaximum().toString());
+    stats.updateTimestamp(123, 400000);
+    stats.updateTimestamp(1234, 600000);
+    assertEquals("1970-01-01 00:00:00.1234", dstats.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:01.2346", dstats.getMaximum().toString());
+    stats.updateTimestamp(122, 300000);
+    stats.updateTimestamp(1235, 400000);
+    assertEquals("1970-01-01 00:00:00.1223", dstats.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:01.2354", dstats.getMaximum().toString());
+    stats.merge(stats);
+    assertEquals("1970-01-01 00:00:00.1223", dstats.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:01.2354", dstats.getMaximum().toString());
+    ColumnStatisticsImpl stats2 = ColumnStatisticsImpl.create(instant);
+    stats2.updateTimestamp(100, 1);
+    stats2.increment(1);
+    TimestampColumnStatistics dstats2 = (TimestampColumnStatistics) stats2;
+    assertEquals("1970-01-01 00:00:00.100000001", dstats2.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:00.100000001", dstats2.getMaximum().toString());
+    stats.merge(stats2);
+    assertEquals("1970-01-01 00:00:00.100000001", dstats.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:01.2354", dstats.getMaximum().toString());
+    stats2.updateTimestamp(2000, 123456);
+    assertEquals("1970-01-01 00:00:00.100000001", dstats2.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:02.000123456", dstats2.getMaximum().toString());
+    stats.merge(stats2);
+    assertEquals("1970-01-01 00:00:00.100000001", dstats.getMinimum().toString());
+    assertEquals("1970-01-01 00:00:02.000123456", dstats.getMaximum().toString());
+    TimeZone.setDefault(original);
+  }
+
+  @Test
+  public void testDecimal64Overflow() {
     TypeDescription schema = TypeDescription.fromString("decimal(18,6)");
     OrcProto.ColumnStatistics.Builder pb =
         OrcProto.ColumnStatistics.newBuilder();
@@ -115,11 +159,11 @@ public class TestColumnStatisticsImpl {
     pb.setDecimalStatistics(decimalBuilder);
     DecimalColumnStatistics stats2 = (DecimalColumnStatistics)
         ColumnStatisticsImpl.deserialize(schema, pb.build());
-    assertEquals(null, stats2.getSum());
+    assertNull(stats2.getSum());
 
     // merge them together
     updateStats1.merge((ColumnStatisticsImpl) stats2);
-    assertEquals(null, stats1.getSum());
+    assertNull(stats1.getSum());
 
     updateStats1.reset();
     assertEquals("0", stats1.getSum().toString());
@@ -129,12 +173,12 @@ public class TestColumnStatisticsImpl {
     updateStats1.updateDecimal64(1, 4);
     assertEquals("0.0101", stats1.getSum().toString());
     updateStats1.updateDecimal64(TypeDescription.MAX_DECIMAL64, 6);
-    assertEquals(null, stats1.getSum());
+    assertNull(stats1.getSum());
     updateStats1.reset();
     updateStats1.updateDecimal64(TypeDescription.MAX_DECIMAL64, 6);
     assertEquals("999999999999.999999", stats1.getSum().toString());
     updateStats1.updateDecimal64(1, 6);
-    assertEquals(null, stats1.getSum());
+    assertNull(stats1.getSum());
 
     updateStats1.reset();
     ColumnStatisticsImpl updateStats2 = (ColumnStatisticsImpl) stats2;
@@ -146,11 +190,11 @@ public class TestColumnStatisticsImpl {
     assertEquals("999999999999.999999", stats1.getSum().toString());
     assertEquals("999999999999.999999", stats2.getSum().toString());
     updateStats1.merge(updateStats2);
-    assertEquals(null, stats1.getSum());
+    assertNull(stats1.getSum());
   }
 
   @Test
-  public void testCollectionColumnStats() throws Exception {
+  public void testCollectionColumnStats() {
     /* test List */
     final ColumnStatisticsImpl statList = ColumnStatisticsImpl.create(TypeDescription.createList(TypeDescription.createInt()));
 

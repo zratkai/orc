@@ -9,7 +9,16 @@
 - title: Installing
   docs:
   - building
-  - releases
+
+- title: Using in Spark
+  docs:
+  - spark-ddl
+  - spark-config
+
+- title: Using in Python
+  docs:
+  - pyarrow
+  - dask
 
 - title: Using in Hive
   docs:

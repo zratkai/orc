@@ -2,36 +2,35 @@
 layout: docs
 title: Building ORC
 permalink: /docs/building.html
-dockerUrl: https://github.com/apache/orc/blob/master/docker
+dockerUrl: https://github.com/apache/orc/blob/main/docker
 ---
 
 ## Building both C++ and Java
 
 The C++ library is supported on the following operating systems:
 
-* CentOS 6 or 7
-* Debian 7 or 8
-* MacOS 10.10 or 10.11
-* Ubuntu 12.04, 14.04, or 16.04
+* CentOS 7
+* Debian 10 to 11
+* MacOS 11.6 and 12.5
+* Ubuntu 18.04 to 22.04
 
 You'll want to install the usual set of developer tools, but at least:
 
 * cmake
 * g++ or clang++
-* java ( >= 1.7)
+* java ( >= 1.8)
 * make
 * maven ( >= 3)
 
 For each version of Linux, please check the corresponding Dockerfile, which
 is in the docker subdirectory, for the list of packages required to build ORC:
 
-* [CentOS 6]({{ page.dockerUrl }}/centos6/Dockerfile)
 * [CentOS 7]({{ page.dockerUrl }}/centos7/Dockerfile)
-* [Debian 7]({{ page.dockerUrl }}/debian7/Dockerfile)
-* [Debian 8]({{ page.dockerUrl }}/debian8/Dockerfile)
-* [Ubuntu 12]({{ page.dockerUrl }}/ubuntu12/Dockerfile)
-* [Ubuntu 14]({{ page.dockerUrl }}/ubuntu14/Dockerfile)
-* [Ubuntu 16]({{ page.dockerUrl }}/ubuntu16/Dockerfile)
+* [Debian 10]({{ page.dockerUrl }}/debian10/Dockerfile)
+* [Debian 11]({{ page.dockerUrl }}/debian11/Dockerfile)
+* [Ubuntu 18]({{ page.dockerUrl }}/ubuntu18/Dockerfile)
+* [Ubuntu 20]({{ page.dockerUrl }}/ubuntu20/Dockerfile)
+* [Ubuntu 22]({{ page.dockerUrl }}/ubuntu22/Dockerfile)
 
 To build a normal release:
 
@@ -60,14 +59,14 @@ is invoking:
 
 You'll need to install:
 
-* java (>= 1.7)
+* java (>= 1.8)
 * maven (>= 3)
 
 To build:
 
 ~~~ shell
 % cd java
-% mvn package
+% ./mvnw package
 ~~~
 
 ## Building just C++

@@ -58,13 +58,14 @@ public class WriterEncryptionKey implements EncryptionKey {
     return metadata.getVersion();
   }
 
+  @Override
   public EncryptionAlgorithm getAlgorithm() {
     return metadata.getAlgorithm();
   }
 
   @Override
   public WriterEncryptionVariant[] getEncryptionRoots() {
-    return roots.toArray(new WriterEncryptionVariant[roots.size()]);
+    return roots.toArray(new WriterEncryptionVariant[0]);
   }
 
   @Override

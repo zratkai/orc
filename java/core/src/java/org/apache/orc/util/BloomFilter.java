@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -33,12 +33,12 @@ import java.util.Arrays;
  * During the creation of bloom filter expected number of entries must be specified. If the number
  * of insertions exceed the specified initial number of entries then false positive probability will
  * increase accordingly.
- *
+ * <p>
  * Internally, this implementation of bloom filter uses Murmur3 fast non-cryptographic hash
  * algorithm. Although Murmur2 is slightly faster than Murmur3 in Java, it suffers from hash
  * collisions for specific sequence of repeating bytes. Check the following link for more info
  * https://code.google.com/p/smhasher/wiki/MurmurHash2Flaw
- *
+ * <p>
  * Note that this class is here for backwards compatibility, because it uses
  * the JVM default character set for strings. All new users should
  * BloomFilterUtf8, which always uses UTF8 for the encoding.
@@ -192,7 +192,7 @@ public class BloomFilter {
 
   // Thomas Wang's integer hash function
   // http://web.archive.org/web/20071223173210/http://www.concentric.net/~Ttwang/tech/inthash.htm
-  private long getLongHash(long key) {
+  static long getLongHash(long key) {
     key = (~key) + (key << 21); // key = (key << 21) - key - 1;
     key = key ^ (key >> 24);
     key = (key + (key << 3)) + (key << 8); // key * 265
@@ -234,7 +234,7 @@ public class BloomFilter {
    * @param that - bloom filter to merge
    */
   public void merge(BloomFilter that) {
-    if (this != that && this.numBits == that.numBits && this.numHashFunctions == that.numHashFunctions) {
+    if (this != that && numBits == that.numBits && numHashFunctions == that.numHashFunctions) {
       this.bitSet.putAll(that.bitSet);
     } else {
       throw new IllegalArgumentException("BloomFilters are not compatible for merging." +
@@ -244,6 +244,14 @@ public class BloomFilter {
 
   public void reset() {
     this.bitSet.clear();
+  }
+
+  /**
+   * Helper method that only used for tests. Check if the given position in the bitSet is
+   * true. Use default visibility.
+   */
+  boolean testBitSetPos(int pos) {
+    return this.bitSet.get(pos);
   }
 
   /**
@@ -324,11 +332,7 @@ public class BloomFilter {
 
     @Override
     public int hashCode() {
-      int result = 0;
-      for(long l: data) {
-        result = (int) (result * 13 + l);
-      }
-      return result;
+      return Arrays.hashCode(data);
     }
   }
 }

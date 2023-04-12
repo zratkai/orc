@@ -25,6 +25,7 @@
 #include "orc/Vector.hh"
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,11 @@ namespace orc {
   enum CompressionStrategy {
     CompressionStrategy_SPEED = 0,
     CompressionStrategy_COMPRESSION
+  };
+
+  enum RleVersion {
+    RleVersion_1 = 0,
+    RleVersion_2 = 1
   };
 
   class Timezone;
@@ -77,12 +83,12 @@ namespace orc {
     uint64_t getCompressionBlockSize() const;
 
     /**
-     * Set row index stride. Use value 0 to disable row index.
+     * Set row index stride (the number of rows per an entry in the row index). Use value 0 to disable row index.
      */
     WriterOptions& setRowIndexStride(uint64_t stride);
 
     /**
-     * Get the index stride size.
+     * Get the row index stride (the number of rows per an entry in the row index).
      * @return if not set, return default value.
      */
     uint64_t getRowIndexStride() const;
@@ -132,6 +138,12 @@ namespace orc {
     CompressionStrategy getCompressionStrategy() const;
 
     /**
+     * Get if the bitpacking should be aligned.
+     * @return true if should be aligned, return false otherwise
+     */
+    bool getAlignedBitpacking() const;
+
+    /**
      * Set the padding tolerance.
      */
     WriterOptions& setPaddingTolerance(double tolerance);
@@ -148,7 +160,7 @@ namespace orc {
     WriterOptions& setMemoryPool(MemoryPool * memoryPool);
 
     /**
-     * Get the strip size.
+     * Get the memory pool.
      * @return if not set, return default memory pool.
      */
     MemoryPool * getMemoryPool() const;
@@ -165,10 +177,64 @@ namespace orc {
     std::ostream * getErrorStream() const;
 
     /**
+     * Get the RLE version.
+     */
+    RleVersion getRleVersion() const;
+
+    /**
      * Get whether or not to write row group index
      * @return if not set, the default is false
      */
     bool getEnableIndex() const;
+
+    /**
+     * Get whether or not to enable dictionary encoding
+     * @return if not set, the default is false
+     */
+    bool getEnableDictionary() const;
+
+    /**
+     * Set columns that use BloomFilter
+     */
+    WriterOptions& setColumnsUseBloomFilter(const std::set<uint64_t>& columns);
+
+    /**
+     * Get whether this column uses BloomFilter
+     */
+    bool isColumnUseBloomFilter(uint64_t column) const;
+
+    /**
+     * Set false positive probability of BloomFilter
+     */
+    WriterOptions& setBloomFilterFPP(double fpp);
+
+    /**
+     * Get false positive probability of BloomFilter
+     */
+    double getBloomFilterFPP() const;
+
+    /**
+     * Get version of BloomFilter
+     */
+    BloomFilterVersion getBloomFilterVersion() const;
+
+    /**
+     * Get writer timezone
+     * @return writer timezone
+     */
+    const Timezone& getTimezone() const;
+
+    /**
+     * Get writer timezone name
+     * @return writer timezone name
+     */
+    const std::string& getTimezoneName() const;
+
+    /**
+     * Set writer timezone
+     * @param zone writer timezone name
+     */
+    WriterOptions& setTimezoneName(const std::string& zone);
   };
 
   class Writer {
@@ -177,8 +243,8 @@ namespace orc {
 
     /**
      * Create a row batch for writing the columns into this file.
-     * @param size the number of rows to read
-     * @return a new ColumnVectorBatch to write into
+     * @param size the number of rows to write.
+     * @return a new ColumnVectorBatch to write into.
      */
     virtual ORC_UNIQUE_PTR<ColumnVectorBatch> createRowBatch(uint64_t size
                                                              ) const = 0;
@@ -190,9 +256,14 @@ namespace orc {
     virtual void add(ColumnVectorBatch& rowsToAdd) = 0;
 
     /**
-     * Close the write and flush any pending data to the output stream.
+     * Close the writer and flush any pending data to the output stream.
      */
     virtual void close() = 0;
+
+    /**
+     * Add user metadata to the writer.
+     */
+    virtual void addUserMetadata(const std::string name, const std::string value) = 0;
   };
 }
 

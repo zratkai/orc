@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,13 +17,11 @@
  */
 package org.apache.orc.impl;
 
+import org.junit.jupiter.api.Test;
+
 import java.util.Random;
 
-import org.apache.orc.impl.DynamicByteArray;
-import org.apache.orc.impl.DynamicIntArray;
-import org.junit.Test;
-
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestDynamicArray {
 
@@ -86,5 +84,11 @@ public class TestDynamicArray {
       dia.increment(i, 3);
     }
     assertEquals("{6,15,68,3,3}", dia.toString());
+  }
+
+  @Test
+  public void testEmptyIntArrayToString() {
+    DynamicIntArray dia = new DynamicIntArray();
+    assertEquals("{}", dia.toString());
   }
 }

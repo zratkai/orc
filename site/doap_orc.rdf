@@ -35,7 +35,7 @@ a columnar format lets the reader read, decompress, and process only
 the values that are required for the current query.</description>
     <bug-database rdf:resource="https://issues.apache.org/jira/browse/orc" />
     <mailing-list rdf:resource="https://orc.apache.org/develop" />
-    <download-page rdf:resource="https://orc.apache.org/docs/releases.html" />
+    <download-page rdf:resource="https://orc.apache.org/releases" />
     <programming-language>Java</programming-language>
     <programming-language>C++</programming-language>
     <category rdf:resource="http://projects.apache.org/category/big-data" />
@@ -44,21 +44,26 @@ the values that are required for the current query.</description>
     <category rdf:resource="http://projects.apache.org/category/library" />
     <release>
       <Version>
-        <name>Apache ORC 1.4.3</name>
-        <created>2018-02-09</created>
-        <revision>1.4.3</revision>
+        <name>Latest release</name>
+        <created>2022-12-02</created>
+        <revision>1.8.1</revision>
+      </Version>
+      <Version>
+        <name>Stable release</name>
+        <created>2022-11-17</created>
+        <revision>1.7.7</revision>
       </Version>
     </release>
     <repository>
       <GitRepository>
-        <location rdf:resource="https://git-wip-us.apache.org/repos/asf/orc.git"/>
+        <location rdf:resource="https://gitbox.apache.org/repos/asf/orc.git"/>
         <browse rdf:resource="https://github.com/apache/orc"/>
       </GitRepository>
     </repository>
     <maintainer>
       <foaf:Person>
-        <foaf:name>Owen O'Malley</foaf:name>
-          <foaf:mbox rdf:resource="mailto:omalley@apache.org"/>
+        <foaf:name>Dongjoon Hyun</foaf:name>
+          <foaf:mbox rdf:resource="mailto:dongjoon@apache.org"/>
       </foaf:Person>
     </maintainer>
   </Project>

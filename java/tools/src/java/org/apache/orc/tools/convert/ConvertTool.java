@@ -47,7 +47,8 @@ import java.util.zip.GZIPInputStream;
  * A conversion tool to convert CSV or JSON files into ORC files.
  */
 public class ConvertTool {
-  static final String DEFAULT_TIMESTAMP_FORMAT = "yyyy[[-][/]]MM[[-][/]]dd[['T'][ ]]HH:mm:ss[ ][XXX][X]";
+  static final String DEFAULT_TIMESTAMP_FORMAT =
+      "yyyy[[-][/]]MM[[-][/]]dd[['T'][ ]]HH:mm:ss[ ][XXX][X]";
 
   private final List<FileInformation> fileList;
   private final TypeDescription schema;
@@ -57,6 +58,9 @@ public class ConvertTool {
   private final int csvHeaderLines;
   private final String csvNullString;
   private final String timestampFormat;
+  private final String bloomFilterColumns;
+  private final String unionTag;
+  private final String unionValue;
   private final Writer writer;
   private final VectorizedRowBatch batch;
 
@@ -68,13 +72,16 @@ public class ConvertTool {
       if (file.format == Format.JSON) {
         System.err.println("Scanning " + file.path + " for schema");
         filesScanned += 1;
-        schemaFinder.addFile(file.getReader(file.filesystem.open(file.path)));
+        schemaFinder.addFile(file.getReader(file.filesystem.open(file.path)), file.path.getName());
       } else if (file.format == Format.ORC) {
         System.err.println("Merging schema from " + file.path);
         filesScanned += 1;
         Reader reader = OrcFile.createReader(file.path,
             OrcFile.readerOptions(conf)
                 .filesystem(file.filesystem));
+        if (files.size() == 1) {
+          return reader.getSchema();
+        }
         schemaFinder.addSchema(reader.getSchema());
       }
     }
@@ -146,7 +153,8 @@ public class ConvertTool {
         }
         case JSON: {
           FSDataInputStream underlying = filesystem.open(path);
-          return new JsonReader(getReader(underlying), underlying, size, schema);
+          return new JsonReader(getReader(underlying), underlying, size, schema, timestampFormat,
+              unionTag, unionValue);
         }
         case CSV: {
           FSDataInputStream underlying = filesystem.open(path);
@@ -190,10 +198,19 @@ public class ConvertTool {
     this.csvHeaderLines = getIntOption(opts, 'H', 0);
     this.csvNullString = opts.getOptionValue('n', "");
     this.timestampFormat = opts.getOptionValue("t", DEFAULT_TIMESTAMP_FORMAT);
+    this.bloomFilterColumns = opts.getOptionValue('b', null);
+    this.unionTag = opts.getOptionValue("union-tag", "tag");
+    this.unionValue = opts.getOptionValue("union-value", "value");
     String outFilename = opts.hasOption('o')
         ? opts.getOptionValue('o') : "output.orc";
-    writer = OrcFile.createWriter(new Path(outFilename),
-        OrcFile.writerOptions(conf).setSchema(schema));
+    boolean overwrite = opts.hasOption('O');
+    OrcFile.WriterOptions writerOpts = OrcFile.writerOptions(conf)
+        .setSchema(schema)
+        .overwrite(overwrite);
+    if (this.bloomFilterColumns != null) {
+      writerOpts.bloomFilterColumns(this.bloomFilterColumns);
+    }
+    writer = OrcFile.createWriter(new Path(outFilename), writerOpts);
     batch = schema.createRowBatch();
   }
 
@@ -234,6 +251,10 @@ public class ConvertTool {
         Option.builder("s").longOpt("schema").hasArg()
             .desc("The schema to write in to the file").build());
     options.addOption(
+        Option.builder("b").longOpt("bloomFilterColumns").hasArg()
+            .desc("Comma separated values of column names for which bloom filter is " +
+                "to be created").build());
+    options.addOption(
         Option.builder("o").longOpt("output").desc("Output filename")
             .hasArg().build());
     options.addOption(
@@ -252,7 +273,19 @@ public class ConvertTool {
         Option.builder("H").longOpt("header").desc("CSV header lines")
             .hasArg().build());
     options.addOption(
-            Option.builder("t").longOpt("timestampformat").desc("Timestamp Format")
+        Option.builder("t").longOpt("timestampformat").desc("Timestamp Format")
+            .hasArg().build());
+    options.addOption(
+        Option.builder("O").longOpt("overwrite").desc("Overwrite an existing file")
+            .build()
+    );
+    options.addOption(
+        Option.builder().longOpt("union-tag")
+            .desc("JSON key name representing UNION tag. Default to \"tag\".")
+            .hasArg().build());
+    options.addOption(
+        Option.builder().longOpt("union-value")
+            .desc("JSON key name representing UNION value. Default to \"value\".")
             .hasArg().build());
     CommandLine cli = new DefaultParser().parse(options, args);
     if (cli.hasOption('h') || cli.getArgs().length == 0) {

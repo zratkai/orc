@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,16 +17,7 @@
  */
 package org.apache.orc;
 
-import static junit.framework.Assert.assertEquals;
-import static org.apache.orc.TestVectorOrcFile.assertEmptyStats;
-import static org.junit.Assert.assertArrayEquals;
-
-import java.io.File;
-import java.io.IOException;
-import java.util.List;
-import java.util.Random;
-
-import org.junit.Assert;
+import com.google.common.collect.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -35,14 +26,22 @@ import org.apache.hadoop.hive.ql.exec.vector.ListColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.StructColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
-
 import org.apache.orc.impl.RecordReaderImpl;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
-import com.google.common.collect.Lists;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Random;
+
+import static org.apache.orc.TestVectorOrcFile.assertEmptyStats;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestOrcNullOptimization {
 
@@ -80,7 +79,7 @@ public class TestOrcNullOptimization {
       bColumn.noNulls = false;
       bColumn.isNull[row] = true;
     } else {
-      bColumn.setVal(row, b.getBytes());
+      bColumn.setVal(row, b.getBytes(StandardCharsets.UTF_8));
     }
     if (c == null) {
       cColumn.noNulls = false;
@@ -108,15 +107,12 @@ public class TestOrcNullOptimization {
   FileSystem fs;
   Path testFilePath;
 
-  @Rule
-  public TestName testCaseName = new TestName();
-
-  @Before
-  public void openFileSystem() throws Exception {
+  @BeforeEach
+  public void openFileSystem(TestInfo testInfo) throws Exception {
     conf = new Configuration();
     fs = FileSystem.getLocal(conf);
     testFilePath = new Path(workDir, "TestOrcNullOptimization." +
-        testCaseName.getMethodName() + ".orc");
+        testInfo.getTestMethod().get().getName() + ".orc");
     fs.delete(testFilePath, false);
   }
 
@@ -148,7 +144,7 @@ public class TestOrcNullOptimization {
 
     assertEquals(0, ((IntegerColumnStatistics) stats[1]).getMaximum());
     assertEquals(0, ((IntegerColumnStatistics) stats[1]).getMinimum());
-    assertEquals(true, ((IntegerColumnStatistics) stats[1]).isSumDefined());
+    assertTrue(((IntegerColumnStatistics) stats[1]).isSumDefined());
     assertEquals(0, ((IntegerColumnStatistics) stats[1]).getSum());
     assertEquals("count: 19998 hasNull: true bytesOnDisk: 184 min: 0 max: 0 sum: 0",
         stats[1].toString());
@@ -190,12 +186,12 @@ public class TestOrcNullOptimization {
     ListColumnVector dColumn = (ListColumnVector) batch.cols[3];
     LongColumnVector dElements =
         (LongColumnVector)(((StructColumnVector) dColumn.child).fields[0]);
-    assertEquals(true , rows.nextBatch(batch));
+    assertTrue(rows.nextBatch(batch));
     assertEquals(1024, batch.size);
 
     // row 1
-    assertEquals(true, aColumn.isNull[0]);
-    assertEquals(true, bColumn.isNull[0]);
+    assertTrue(aColumn.isNull[0]);
+    assertTrue(bColumn.isNull[0]);
     assertEquals(1, cColumn.vector[0]);
     assertEquals(0, dColumn.offsets[0]);
     assertEquals(1, dColumn.lengths[1]);
@@ -214,14 +210,14 @@ public class TestOrcNullOptimization {
     assertEquals(100, dElements.vector[0]);
 
     // last row
-    assertEquals(true, aColumn.isNull[1]);
-    assertEquals(true, bColumn.isNull[1]);
+    assertTrue(aColumn.isNull[1]);
+    assertTrue(bColumn.isNull[1]);
     assertEquals(1, cColumn.vector[1]);
     assertEquals(1, dColumn.offsets[1]);
     assertEquals(1, dColumn.lengths[1]);
     assertEquals(100, dElements.vector[1]);
 
-    assertEquals(false, rows.nextBatch(batch));
+    assertFalse(rows.nextBatch(batch));
     rows.close();
   }
 
@@ -263,7 +259,7 @@ public class TestOrcNullOptimization {
 
     assertEquals(0, ((IntegerColumnStatistics) stats[1]).getMaximum());
     assertEquals(0, ((IntegerColumnStatistics) stats[1]).getMinimum());
-    assertEquals(true, ((IntegerColumnStatistics) stats[1]).isSumDefined());
+    assertTrue(((IntegerColumnStatistics) stats[1]).isSumDefined());
     assertEquals(0, ((IntegerColumnStatistics) stats[1]).getSum());
     assertEquals("count: 20000 hasNull: false bytesOnDisk: 160 min: 0 max: 0 sum: 0",
         stats[1].toString());
@@ -275,7 +271,7 @@ public class TestOrcNullOptimization {
         stats[2].toString());
 
     // check the inspectors
-    Assert.assertEquals("struct<a:int,b:string,c:boolean,d:array<struct<z:int>>>",
+    assertEquals("struct<a:int,b:string,c:boolean,d:array<struct<z:int>>>",
         reader.getSchema().toString());
 
     RecordReader rows = reader.rows();
@@ -306,7 +302,7 @@ public class TestOrcNullOptimization {
     LongColumnVector dElements =
         (LongColumnVector)(((StructColumnVector) dColumn.child).fields[0]);
 
-    assertEquals(true, rows.nextBatch(batch));
+    assertTrue(rows.nextBatch(batch));
     assertEquals(2, batch.size);
 
     // last-1 row
@@ -357,7 +353,7 @@ public class TestOrcNullOptimization {
 
     assertEquals(3, ((IntegerColumnStatistics) stats[1]).getMaximum());
     assertEquals(2, ((IntegerColumnStatistics) stats[1]).getMinimum());
-    assertEquals(true, ((IntegerColumnStatistics) stats[1]).isSumDefined());
+    assertTrue(((IntegerColumnStatistics) stats[1]).isSumDefined());
     assertEquals(17, ((IntegerColumnStatistics) stats[1]).getSum());
     assertEquals("count: 7 hasNull: true bytesOnDisk: 12 min: 2 max: 3 sum: 17",
         stats[1].toString());
@@ -376,7 +372,7 @@ public class TestOrcNullOptimization {
     ListColumnVector dColumn = (ListColumnVector) batch.cols[3];
     LongColumnVector dElements =
         (LongColumnVector)(((StructColumnVector) dColumn.child).fields[0]);
-    Assert.assertEquals("struct<a:int,b:string,c:boolean,d:array<struct<z:int>>>",
+    assertEquals("struct<a:int,b:string,c:boolean,d:array<struct<z:int>>>",
         reader.getSchema().toString());
 
     RecordReader rows = reader.rows();
@@ -397,7 +393,7 @@ public class TestOrcNullOptimization {
     }
     assertEquals(expected, got);
 
-    assertEquals(true, rows.nextBatch(batch));
+    assertTrue(rows.nextBatch(batch));
     assertEquals(8, batch.size);
 
     // row 1
@@ -409,7 +405,7 @@ public class TestOrcNullOptimization {
     assertEquals(100, dElements.vector[0]);
 
     // row 2
-    assertEquals(true, aColumn.isNull[1]);
+    assertTrue(aColumn.isNull[1]);
     assertEquals("b", bColumn.toString(1));
     assertEquals(1, cColumn.vector[1]);
     assertEquals(1, dColumn.offsets[1]);
@@ -418,7 +414,7 @@ public class TestOrcNullOptimization {
 
     // row 3
     assertEquals(3, aColumn.vector[2]);
-    assertEquals(true, bColumn.isNull[2]);
+    assertTrue(bColumn.isNull[2]);
     assertEquals(0, cColumn.vector[2]);
     assertEquals(2, dColumn.offsets[2]);
     assertEquals(1, dColumn.lengths[2]);

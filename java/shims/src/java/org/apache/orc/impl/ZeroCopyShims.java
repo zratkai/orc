@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,29 +17,29 @@
  */
 package org.apache.orc.impl;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.EnumSet;
-
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.ReadOption;
 import org.apache.hadoop.io.ByteBufferPool;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.EnumSet;
 
 class ZeroCopyShims {
   private static final class ByteBufferPoolAdapter implements ByteBufferPool {
     private HadoopShims.ByteBufferPoolShim pool;
 
-    public ByteBufferPoolAdapter(HadoopShims.ByteBufferPoolShim pool) {
+    ByteBufferPoolAdapter(HadoopShims.ByteBufferPoolShim pool) {
       this.pool = pool;
     }
 
     @Override
-    public final ByteBuffer getBuffer(boolean direct, int length) {
+    public ByteBuffer getBuffer(boolean direct, int length) {
       return this.pool.getBuffer(direct, length);
     }
 
     @Override
-    public final void putBuffer(ByteBuffer buffer) {
+    public void putBuffer(ByteBuffer buffer) {
       this.pool.putBuffer(buffer);
     }
   }
@@ -47,12 +47,12 @@ class ZeroCopyShims {
   private static final class ZeroCopyAdapter implements HadoopShims.ZeroCopyReaderShim {
     private final FSDataInputStream in;
     private final ByteBufferPoolAdapter pool;
-    private final static EnumSet<ReadOption> CHECK_SUM = EnumSet
+    private static final EnumSet<ReadOption> CHECK_SUM = EnumSet
         .noneOf(ReadOption.class);
-    private final static EnumSet<ReadOption> NO_CHECK_SUM = EnumSet
+    private static final EnumSet<ReadOption> NO_CHECK_SUM = EnumSet
         .of(ReadOption.SKIP_CHECKSUMS);
 
-    public ZeroCopyAdapter(FSDataInputStream in,
+    ZeroCopyAdapter(FSDataInputStream in,
                            HadoopShims.ByteBufferPoolShim poolshim) {
       this.in = in;
       if (poolshim != null) {
@@ -62,7 +62,8 @@ class ZeroCopyShims {
       }
     }
 
-    public final ByteBuffer readBuffer(int maxLength, boolean verifyChecksums)
+    @Override
+    public ByteBuffer readBuffer(int maxLength, boolean verifyChecksums)
         throws IOException {
       EnumSet<ReadOption> options = NO_CHECK_SUM;
       if (verifyChecksums) {
@@ -71,18 +72,19 @@ class ZeroCopyShims {
       return this.in.read(this.pool, maxLength, options);
     }
 
-    public final void releaseBuffer(ByteBuffer buffer) {
+    @Override
+    public void releaseBuffer(ByteBuffer buffer) {
       this.in.releaseBuffer(buffer);
     }
 
     @Override
-    public final void close() throws IOException {
+    public void close() throws IOException {
       this.in.close();
     }
   }
 
-  public static HadoopShims.ZeroCopyReaderShim getZeroCopyReader(FSDataInputStream in,
-                                                                 HadoopShims.ByteBufferPoolShim pool) throws IOException {
+  public static HadoopShims.ZeroCopyReaderShim getZeroCopyReader(
+      FSDataInputStream in, HadoopShims.ByteBufferPoolShim pool) throws IOException {
     return new ZeroCopyAdapter(in, pool);
   }
 

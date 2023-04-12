@@ -17,22 +17,21 @@
  */
 package org.apache.orc.impl;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgumentFactory;
 import org.apache.orc.IntegerColumnStatistics;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.util.BloomFilter;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
-import static junit.framework.Assert.assertEquals;
 import static org.apache.orc.impl.TestRecordReaderImpl.createPredicateLeaf;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestPredicatePushDownBounds {
 
@@ -279,12 +278,6 @@ public class TestPredicatePushDownBounds {
     assertEquals(SearchArgument.TruthValue.NO,
         RecordReaderImpl.evaluatePredicate(stat, predicateLowerBoundSet, null));
 
-    /* Test for a case LESS_THAN_EQUALS where only upperbound is set */
-    final PredicateLeaf predicateUpperBoundLessThanEquals = TestRecordReaderImpl
-        .createPredicateLeaf(PredicateLeaf.Operator.IN,
-            PredicateLeaf.Type.STRING, "x", null, args);
-
-
     /* Test the case were both upper and lower bounds are set */
     args.clear();
     args.add(lowerboundString);
@@ -346,8 +339,8 @@ public class TestPredicatePushDownBounds {
     stat.updateInteger(3, 100);
 
     IntegerColumnStatistics typed = (IntegerColumnStatistics) stat;
-    Assert.assertEquals(1, typed.getMinimum());
-    Assert.assertEquals(3, typed.getMaximum());
+    assertEquals(1, typed.getMinimum());
+    assertEquals(3, typed.getMaximum());
 
     SearchArgument sArg = SearchArgumentFactory.newBuilder()
         .startAnd()
@@ -365,8 +358,8 @@ public class TestPredicatePushDownBounds {
     newStat.updateInteger(3, 100);
 
     typed = (IntegerColumnStatistics) newStat;
-    Assert.assertEquals(3, typed.getMinimum());
-    Assert.assertEquals(3, typed.getMaximum());
+    assertEquals(3, typed.getMinimum());
+    assertEquals(3, typed.getMaximum());
 
     sArg = SearchArgumentFactory.newBuilder()
         .startAnd()

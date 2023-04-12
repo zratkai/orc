@@ -43,7 +43,8 @@ namespace orc {
     DECIMAL = 14,
     DATE = 15,
     VARCHAR = 16,
-    CHAR = 17
+    CHAR = 17,
+    TIMESTAMP_INSTANT = 18
   };
 
   class Type {
@@ -58,13 +59,20 @@ namespace orc {
     virtual uint64_t getMaximumLength() const = 0;
     virtual uint64_t getPrecision() const = 0;
     virtual uint64_t getScale() const = 0;
+    virtual Type& setAttribute(const std::string& key,
+                               const std::string& value) = 0;
+    virtual bool hasAttributeKey(const std::string& key) const = 0;
+    virtual Type& removeAttribute(const std::string& key) = 0;
+    virtual std::vector<std::string> getAttributeKeys() const = 0;
+    virtual std::string getAttributeValue(const std::string& key) const = 0;
     virtual std::string toString() const = 0;
 
     /**
      * Create a row batch for this type.
      */
     virtual ORC_UNIQUE_PTR<ColumnVectorBatch> createRowBatch(uint64_t size,
-                                                             MemoryPool& pool
+                                                             MemoryPool& pool,
+                                                             bool encoded = false
                                                              ) const = 0;
 
     /**

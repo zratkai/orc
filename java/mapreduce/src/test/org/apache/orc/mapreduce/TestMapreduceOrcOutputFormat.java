@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +18,7 @@
 
 package org.apache.orc.mapreduce;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.io.sarg.PredicateLeaf;
@@ -39,15 +40,19 @@ import org.apache.orc.OrcConf;
 import org.apache.orc.OrcFile;
 import org.apache.orc.Reader;
 import org.apache.orc.TypeDescription;
+import org.apache.orc.Writer;
 import org.apache.orc.mapred.OrcKey;
 import org.apache.orc.mapred.OrcStruct;
 import org.apache.orc.mapred.OrcValue;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestMapreduceOrcOutputFormat {
 
@@ -74,6 +79,7 @@ public class TestMapreduceOrcOutputFormat {
     OrcConf.MAPRED_OUTPUT_SCHEMA.setString(conf, typeStr);
     conf.set("mapreduce.output.fileoutputformat.outputdir", workDir.toString());
     conf.setInt(OrcConf.ROW_INDEX_STRIDE.getAttribute(), 1000);
+    conf.setBoolean(OrcConf.ALLOW_SARG_TO_FILTER.getAttribute(), false);
     conf.setBoolean(OrcOutputFormat.SKIP_TEMP_DIRECTORY, true);
     OutputFormat<NullWritable, OrcStruct> outputFormat =
         new OrcOutputFormat<OrcStruct>();
@@ -102,12 +108,12 @@ public class TestMapreduceOrcOutputFormat {
             attemptContext);
     // the sarg should cause it to skip over the rows except 1000 to 2000
     for(int r=1000; r < 2000; ++r) {
-      assertEquals(true, reader.nextKeyValue());
+      assertTrue(reader.nextKeyValue());
       row = reader.getCurrentValue();
       assertEquals(r, ((IntWritable) row.getFieldValue(0)).get());
       assertEquals(Integer.toBinaryString(r), row.getFieldValue(1).toString());
     }
-    assertEquals(false, reader.nextKeyValue());
+    assertFalse(reader.nextKeyValue());
   }
 
   @Test
@@ -144,13 +150,41 @@ public class TestMapreduceOrcOutputFormat {
             attemptContext);
     // the sarg should cause it to skip over the rows except 1000 to 2000
     for(int r=0; r < 3000; ++r) {
-      assertEquals(true, reader.nextKeyValue());
+      assertTrue(reader.nextKeyValue());
       row = reader.getCurrentValue();
       assertEquals(r, ((IntWritable) row.getFieldValue(0)).get());
-      assertEquals(null, row.getFieldValue(1));
+      assertNull(row.getFieldValue(1));
       assertEquals(r * 3, ((IntWritable) row.getFieldValue(2)).get());
     }
-    assertEquals(false, reader.nextKeyValue());
+    assertFalse(reader.nextKeyValue());
+  }
+
+  @Test
+  public void testAcidSelectionNoSchema() throws IOException, InterruptedException {
+    TaskAttemptID id = new TaskAttemptID("jt", 0, TaskType.MAP, 0, 1);
+    TaskAttemptContext attemptContext = new TaskAttemptContextImpl(conf, id);
+    // struct<operation:int,originalTransaction:bigint,bucket:int,rowId:bigint,currentTransaction:bigint,
+    // row:struct<i:int,j:int,k:int>>
+    conf.set(OrcConf.INCLUDE_COLUMNS.getAttribute(), "5");
+    // Do not set OrcConf.MAPRED_INPUT_SCHEMA (reader should use file schema instead)
+    FileSplit split = new FileSplit(new Path(getClass().getClassLoader().
+        getSystemResource("acid5k.orc").getPath()),
+        0, 1000000, new String[0]);
+    RecordReader<NullWritable, OrcStruct> reader =
+        new OrcInputFormat<OrcStruct>().createRecordReader(split,
+            attemptContext);
+    // Make sure we can read all rows
+    OrcStruct row;
+    for (int r=0; r < 5000; ++r) {
+      assertTrue(reader.nextKeyValue());
+      row = reader.getCurrentValue();
+      assertEquals(6, row.getNumFields());
+      OrcStruct innerRow = (OrcStruct) row.getFieldValue(5);
+      assertEquals(3,innerRow.getNumFields());
+      assertTrue(((IntWritable)innerRow.getFieldValue(0)).get() >= 0);
+      assertTrue(((IntWritable)innerRow.getFieldValue(1)).get() >= 0);
+      assertTrue(((IntWritable)innerRow.getFieldValue(2)).get() >= 0);
+    }
   }
 
   @Test
@@ -187,13 +221,13 @@ public class TestMapreduceOrcOutputFormat {
             attemptContext);
     // the sarg should cause it to skip over the rows except 1000 to 2000
     for (int r = 0; r < 3000; ++r) {
-      assertEquals(true, reader.nextKeyValue());
+      assertTrue(reader.nextKeyValue());
       row = reader.getCurrentValue();
-      assertEquals(null, row.getFieldValue(0));
-      assertEquals(null, row.getFieldValue(1));
-      assertEquals(null, row.getFieldValue(2));
+      assertNull(row.getFieldValue(0));
+      assertNull(row.getFieldValue(1));
+      assertNull(row.getFieldValue(2));
     }
-    assertEquals(false, reader.nextKeyValue());
+    assertFalse(reader.nextKeyValue());
   }
 
   /**
@@ -251,6 +285,36 @@ public class TestMapreduceOrcOutputFormat {
     Path path = new Path(workDir, "part-m-00000.orc");
     Reader file = OrcFile.createReader(path, OrcFile.readerOptions(conf));
     assertEquals(3000, file.getNumberOfRows());
+    assertEquals(TYPE_STRING, file.getSchema().toString());
+  }
+
+  /**
+   * Make sure that the ORC writer is initialized with a configured row batch size
+   * @throws Exception
+   */
+  @Test
+  public void testOrcOutputFormatWithRowBatchSize() throws Exception {
+    conf.set("mapreduce.output.fileoutputformat.outputdir", workDir.toString());
+    OrcConf.ROW_BATCH_SIZE.setInt(conf, 128);
+    String TYPE_STRING = "struct<i:int,s:string>";
+    OrcConf.MAPRED_OUTPUT_SCHEMA.setString(conf, TYPE_STRING);
+    conf.setBoolean(OrcOutputFormat.SKIP_TEMP_DIRECTORY, true);
+    TaskAttemptID id = new TaskAttemptID("jt", 0, TaskType.MAP, 0, 1);
+    TaskAttemptContext attemptContext = new TaskAttemptContextImpl(conf, id);
+    TypeDescription schema = TypeDescription.fromString(TYPE_STRING);
+    OrcKey key = new OrcKey(new OrcStruct(schema));
+    RecordWriter<NullWritable, Writable> writer =
+        new OrcOutputFormat<>().getRecordWriter(attemptContext);
+    NullWritable nada = NullWritable.get();
+    for(int r=0; r < 2000; ++r) {
+      ((OrcStruct) key.key).setAllFields(new IntWritable(r),
+          new Text(Integer.toString(r)));
+      writer.write(nada, key);
+    }
+    writer.close(attemptContext);
+    Path path = new Path(workDir, "part-m-00000.orc");
+    Reader file = OrcFile.createReader(path, OrcFile.readerOptions(conf));
+    assertEquals(2000, file.getNumberOfRows());
     assertEquals(TYPE_STRING, file.getSchema().toString());
   }
 }

@@ -20,17 +20,14 @@ package org.apache.orc.impl;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.io.compress.snappy.SnappyDecompressor.SnappyDirectDecompressor;
-import org.apache.hadoop.io.compress.zlib.ZlibDecompressor;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.ByteBuffer;
 import java.util.Random;
 
 /**
  * Shims for versions of Hadoop less than 2.6
- *
+ * <p>
  * Adds support for:
  * <ul>
  *   <li>Direct buffer decompression</li>
@@ -39,82 +36,10 @@ import java.util.Random;
  */
 public class HadoopShimsPre2_6 implements HadoopShims {
 
-  static class SnappyDirectDecompressWrapper implements DirectDecompressor {
-    private final SnappyDirectDecompressor root;
-    private boolean isFirstCall = true;
-
-    SnappyDirectDecompressWrapper(SnappyDirectDecompressor root) {
-      this.root = root;
-    }
-
-    public void decompress(ByteBuffer input, ByteBuffer output) throws IOException {
-      if (!isFirstCall) {
-        root.reset();
-      } else {
-        isFirstCall = false;
-      }
-      root.decompress(input, output);
-    }
-
-    @Override
-    public void reset() {
-      root.reset();
-    }
-
-    @Override
-    public void end() {
-      root.end();
-    }
+  @Override
+  public DirectDecompressor getDirectDecompressor(DirectCompressionType codec) {
+    return HadoopShimsCurrent.getDecompressor(codec);
   }
-
-  static class ZlibDirectDecompressWrapper implements DirectDecompressor {
-    private final ZlibDecompressor.ZlibDirectDecompressor root;
-    private boolean isFirstCall = true;
-
-    ZlibDirectDecompressWrapper(ZlibDecompressor.ZlibDirectDecompressor root) {
-      this.root = root;
-    }
-
-    public void decompress(ByteBuffer input, ByteBuffer output) throws IOException {
-      if (!isFirstCall) {
-        root.reset();
-      } else {
-        isFirstCall = false;
-      }
-      root.decompress(input, output);
-    }
-
-    @Override
-    public void reset() {
-      root.reset();
-    }
-
-    @Override
-    public void end() {
-      root.end();
-    }
-  }
-
-  static DirectDecompressor getDecompressor( DirectCompressionType codec) {
-    switch (codec) {
-      case ZLIB:
-        return new ZlibDirectDecompressWrapper
-            (new ZlibDecompressor.ZlibDirectDecompressor());
-      case ZLIB_NOHEADER:
-        return new ZlibDirectDecompressWrapper
-            (new ZlibDecompressor.ZlibDirectDecompressor
-                (ZlibDecompressor.CompressionHeader.NO_HEADER, 0));
-      case SNAPPY:
-        return new SnappyDirectDecompressWrapper
-            (new SnappyDirectDecompressor());
-      default:
-        return null;
-    }
-  }
-
-  public DirectDecompressor getDirectDecompressor( DirectCompressionType codec) {
-    return getDecompressor(codec);
- }
 
   @Override
   public ZeroCopyReaderShim getZeroCopyReader(FSDataInputStream in,
@@ -130,6 +55,6 @@ public class HadoopShimsPre2_6 implements HadoopShims {
 
   @Override
   public KeyProvider getHadoopKeyProvider(Configuration conf, Random random) {
-    return new HadoopShimsPre2_3.NullKeyProvider();
+    return new NullKeyProvider();
   }
 }

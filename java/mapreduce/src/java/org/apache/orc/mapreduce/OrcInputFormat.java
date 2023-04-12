@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,6 +21,7 @@ package org.apache.orc.mapreduce;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
+import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.JobContext;
@@ -28,16 +29,13 @@ import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.FileSplit;
-
+import org.apache.orc.OrcConf;
+import org.apache.orc.OrcFile;
+import org.apache.orc.Reader;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-
-import org.apache.hadoop.io.NullWritable;
-import org.apache.orc.OrcConf;
-import org.apache.orc.OrcFile;
-import org.apache.orc.Reader;
 
 /**
  * An ORC input format that satisfies the org.apache.hadoop.mapreduce API.
@@ -68,11 +66,14 @@ public class OrcInputFormat<V extends WritableComparable>
     Reader file = OrcFile.createReader(split.getPath(),
         OrcFile.readerOptions(conf)
             .maxLength(OrcConf.MAX_FILE_LENGTH.getLong(conf)));
-    return new OrcMapreduceRecordReader<>(file,
-        org.apache.orc.mapred.OrcInputFormat.buildOptions(conf,
-            file, split.getStart(), split.getLength()));
+    //Mapreduce supports selected vector
+    Reader.Options options = org.apache.orc.mapred.OrcInputFormat.buildOptions(
+        conf, file, split.getStart(), split.getLength())
+        .useSelected(true);
+    return new OrcMapreduceRecordReader<>(file, options);
   }
 
+  @Override
   protected List<FileStatus> listStatus(JobContext job) throws IOException {
     List<FileStatus> complete = super.listStatus(job);
     List<FileStatus> result = new ArrayList<>(complete.size());

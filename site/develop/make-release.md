@@ -17,7 +17,7 @@ Commit the changes back to Apache along with a tag for the release candidate.
 
 ~~~
 % git commit -s -S -am 'Preparing for release X.Y.Z'
-% git remote add apache https://git-wip-us.apache.org/repos/asf/orc.git
+% git remote add apache https://gitbox.apache.org/repos/asf/orc.git
 % git push apache branch-X.Y
 % git tag release-X.Y.Zrc0
 % git push apache release-X.Y.Zrc0
@@ -29,23 +29,37 @@ Generate the source tarball and checksums for the release.
 % wget https://github.com/apache/orc/archive/release-X.Y.Zrc0.tar.gz
 % tar xzf release-X.Y.Zrc0.tar.gz
 % mv orc-release-X.Y.Zrc0 orc-X.Y.Z
-% tar czf orc-X.Y.Zrc0.tar.gz orc-X.Y.Z
-% shasum -a 256 orc-X.Y.Zrc0.tar.gz > orc-X.Y.Zrc0.tar.gz.sha256
-% gpg --detach-sig --armor orc-X.Y.Zrc0.tar.gz
+% tar czf orc-X.Y.Z.tar.gz orc-X.Y.Z
+% mkdir orc-X.Y.Z-rc0
+% mv orc-X.Y.Z.tar.gz orc-X.Y.Z-rc0
+% cd orc-X.Y.Z-rc0
+% shasum -a 256 orc-X.Y.Z.tar.gz > orc-X.Y.Z.tar.gz.sha256
+% gpg --detach-sig --armor orc-X.Y.Z.tar.gz
 ~~~
 
-Copy the artifacts into your personal Apache website.
+Verify the artifacts
 
 ~~~
-% sftp <apacheid>@home.apache.org
-sftp> cd public_html
-sftp> mkdir orc-X.Y.Zrc0
-sftp> cd orc-X.Y.Zrc0
-sftp> put orc-X.Y.Zrc0*
-sftp> quit
+% shasum -a256 orc-X.Y.Z.tar.gz | diff - orc-X.Y.Z.tar.gz.sha256
+% gpg --verify orc-X.Y.Z.tar.gz.asc
+% cd ..
 ~~~
 
-Make sure your GPG key exists [here](https://dist.apache.org/repos/dist/release/orc/KEYS) for others to verify signature in RC
+Upload the artifacts into Apache dev distribution website.
+
+~~~
+% svn co --depth=files "https://dist.apache.org/repos/dist/dev/orc" svn-orc
+% mv orc-X.Y.Z-rc0 svn-orc
+% cd svn-orc
+% svn add orc-X.Y.Z-rc0
+% svn commit -m "Upload Apache ORC X.Y.Z RC0"
+~~~
+
+Make sure your GPG key is present in [Apache
+LDAP](https://id.apache.org) and the ORC [svn dist
+area](https://dist.apache.org/repos/dist/release/orc/KEYS). That will
+be necessary for others to verify the signatures on the release
+candidate.
 
 Click the version to release (X.Y.Z) [here](https://issues.apache.org/jira/projects/ORC?selectedItem=com.atlassian.jira.jira-projects-plugin:release-page)
 to get the list of jiras that are fixed in X.Y.Z
@@ -54,15 +68,23 @@ Send email with the vote:
 
 ~~~
 To: dev@orc.apache.org
-Subject: [VOTE] Should we release ORC X.Y.Zrc0?
+Subject: [VOTE] Release Apache ORC X.Y.Z (RC0)
 
-All,
+Please vote on releasing the following candidate as Apache ORC version X.Y.Z.
 
-Should we release the following artifacts as ORC X.Y.Z?
+[ ] +1 Release this package as Apache ORC X.Y.Z
+[ ] -1 Do not release this package because ...
 
-tar: http://home.apache.org/~omalley/orc-X.Y.Zrc0/
-tag: https://github.com/apache/orc/releases/tag/release-X.Y.Zrc0
-jiras: https://issues.apache.org/jira/browse/ORC/fixforversion/<fixid>
+TAG:
+https://github.com/apache/orc/releases/tag/release-X.Y.Zrc0
+
+RELEASE FILES:
+https://dist.apache.org/repos/dist/dev/orc/orc-X.Y.Z-rc0
+
+LIST OF ISSUES:
+https://issues.apache.org/jira/projects/ORC/versions/<fixid>
+
+This vote will be open for 72 hours.
 
 Thanks!
 ~~~
@@ -81,13 +103,13 @@ Publish the artifacts to Maven central staging. Make sure to have this [setup](h
 
 ~~~
 % cd java
-% mvn -Papache-release clean deploy
+% ./mvnw -Papache-release clean deploy
 ~~~
 
 Publish from the staging area:
 
 * login to [Maven staging](https://repository.apache.org/index.html#stagingRepositories)
-* find your staging repository (search for org.apache.org)
+* find your staging repository (search for org.apache.orc)
 * close it
 * release it
 
@@ -121,22 +143,15 @@ edit CMakeLists.txt to change version to X.Y.(Z+1)-SNAPSHOT
 
 Update the site with the new release.
 
-* Check out the master branch (git co apache/master)
+* Check out the main branch (git checkout apache/main)
 
 ~~~
 Change directory in to site.
 % pwd
-<path-to-master-src>
+<path-to-main-src>
 % cd site
-% mkdir target
-% cd target
 Set up site/target to be a separate git workspace that tracks the asf-site branch.
-% git init
-% git remote add origin https://git-wip-us.apache.org/repos/asf/orc.git -t asf-site
-% git fetch origin
-% git checkout asf-site
-% cd ..
-% bundle install
+% git clone git@github.com:apache/orc.git -b asf-site target
 ~~~
 * edit site/_data/releases.yml to add new release
    * update the state for the releases to match the changes in the Apache dist
@@ -144,26 +159,24 @@ Set up site/target to be a separate git workspace that tracks the asf-site branc
       * stable = other release still in dist
       * archived = removed from dist
 * create a new file _posts/YYYY-MM-DD-ORC-X.Y.Z.md for the news section
-* Run "bundle exec jekyll serve"
-* Check the website on http://0.0.0.0:4000/
-* If it looks good, use git add (from within site directory) to add the new files and commit to master with a message of "update site for X.Y.Z".
+* Run `docker build -t orc-site .`
+* Run `CONTAINER=$(docker run -d -p 4000:4000 orc-site)`
+* Check the website on [http://0.0.0.0:4000/](http://0.0.0.0:4000/)
+* If it looks good, copy the results out of docker:
+   * Run `docker cp $CONTAINER:/home/orc/site/target .`
+   * Run `docker stop $CONTAINER`
 
 ~~~
-% pwd
-<path-to-master-src>/site
 % git commit -am "Update site for X.Y.Z"
-% git push origin master
+% git push origin main
 ~~~
 
 * Change directory into site/target for publishing the site.
 * Add the new files that you just generated.
    * This assumes you've set up site/target to be a separate git workspace that tracks the asf-site branch.
 * Commit to asf-site to publish the updated site.
-
 ~~~
 % cd target
-% pwd
-<path-to-master-src>/site/target
 % git commit -am "Publish site for X.Y.Z"
 % git push origin asf-site
 ~~~

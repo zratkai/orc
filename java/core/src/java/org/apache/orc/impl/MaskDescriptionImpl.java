@@ -18,23 +18,23 @@
 
 package org.apache.orc.impl;
 
+import org.apache.orc.DataMask;
 import org.apache.orc.DataMaskDescription;
 import org.apache.orc.OrcProto;
 import org.apache.orc.TypeDescription;
-import org.apache.orc.DataMask;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.List;
 
 public class MaskDescriptionImpl implements DataMaskDescription,
                                             Comparable<MaskDescriptionImpl> {
   private int id;
   private final String name;
   private final String[] parameters;
-  private final Set<TypeDescription> columns = new HashSet<>();
+  private final List<TypeDescription> columns = new ArrayList<>();
 
   public MaskDescriptionImpl(String name,
                              String... parameters) {
@@ -82,7 +82,7 @@ public class MaskDescriptionImpl implements DataMaskDescription,
 
   @Override
   public TypeDescription[] getColumns() {
-    TypeDescription[] result = columns.toArray(new TypeDescription[columns.size()]);
+    TypeDescription[] result = columns.toArray(new TypeDescription[0]);
     // sort the columns by their ids
     Arrays.sort(result, Comparator.comparingInt(TypeDescription::getId));
     return result;
@@ -118,10 +118,10 @@ public class MaskDescriptionImpl implements DataMaskDescription,
 
   @Override
   public int hashCode() {
-    int result = name.hashCode();
-    for (String p: parameters) {
-      result = result * 101 + p.hashCode();
-    }
+    final int prime = 31;
+    int result = 1;
+    result = prime * result + ((name == null) ? 0 : name.hashCode());
+    result = prime * result + Arrays.hashCode(parameters);
     return result;
   }
 

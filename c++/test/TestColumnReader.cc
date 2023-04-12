@@ -31,48 +31,81 @@
 
 #ifdef __clang__
   DIAGNOSTIC_IGNORE("-Winconsistent-missing-override")
+  DIAGNOSTIC_IGNORE("-Wmissing-variable-declarations")
+#endif
+#ifdef __GNUC__
+  DIAGNOSTIC_IGNORE("-Wparentheses")
 #endif
 
 namespace orc {
+  using ::testing::TestWithParam;
+  using ::testing::Values;
 
-class MockStripeStreams: public StripeStreams {
-public:
-  ~MockStripeStreams() override;
-  std::unique_ptr<SeekableInputStream> getStream(uint64_t columnId,
-                                                 proto::Stream_Kind kind,
-                                                 bool stream) const override;
-  MOCK_CONST_METHOD0(getSelectedColumns, const std::vector<bool>());
-  MOCK_CONST_METHOD1(getEncoding, proto::ColumnEncoding (uint64_t));
-  MOCK_CONST_METHOD3(getStreamProxy, SeekableInputStream*
-                     (uint64_t, proto::Stream_Kind, bool));
-  MOCK_CONST_METHOD0(getErrorStream, std::ostream*());
-  MOCK_CONST_METHOD0(getThrowOnHive11DecimalOverflow, bool());
-  MOCK_CONST_METHOD0(getForcedScaleOnHive11Decimal, int32_t());
+  class MockStripeStreams : public StripeStreams {
+  public:
+    ~MockStripeStreams() override;
 
-  MemoryPool& getMemoryPool() const {
-    return *getDefaultPool();
+    std::unique_ptr<SeekableInputStream> getStream(uint64_t columnId,
+                                                   proto::Stream_Kind kind,
+                                                   bool stream) const override;
+
+    MOCK_CONST_METHOD0(getSelectedColumns,
+
+    const std::vector<bool>()
+
+    );
+    MOCK_CONST_METHOD1(getEncoding, proto::ColumnEncoding(uint64_t)
+    );
+    MOCK_CONST_METHOD3(getStreamProxy, SeekableInputStream
+    *
+    (uint64_t, proto::Stream_Kind, bool));
+    MOCK_CONST_METHOD0(getErrorStream, std::ostream
+    *());
+    MOCK_CONST_METHOD0(getThrowOnHive11DecimalOverflow,
+    bool());
+    MOCK_CONST_METHOD0(getForcedScaleOnHive11Decimal, int32_t()
+    );
+    MOCK_CONST_METHOD0(isDecimalAsLong, bool());
+
+    MemoryPool &getMemoryPool() const {
+      return *getDefaultPool();
+    }
+
+    const Timezone &getWriterTimezone() const override {
+      return getTimezoneByName("America/Los_Angeles");
+    }
+
+    const Timezone& getReaderTimezone() const override {
+      return getTimezoneByName("GMT");
+    }
+  };
+
+  MockStripeStreams::~MockStripeStreams() {
+    // PASS
   }
 
-  const Timezone& getWriterTimezone() const override {
-    return getTimezoneByName("America/Los_Angeles");
+  std::unique_ptr<SeekableInputStream>
+  MockStripeStreams::getStream(uint64_t columnId,
+                               proto::Stream_Kind kind,
+                               bool shouldStream) const {
+    return std::unique_ptr<SeekableInputStream>
+            (getStreamProxy(columnId, kind, shouldStream));
   }
-};
 
-MockStripeStreams::~MockStripeStreams() {
-  // PASS
-}
+  bool isNotNull(tm *timeptr) {
+    return timeptr != nullptr;
+  }
 
-std::unique_ptr<SeekableInputStream>
-MockStripeStreams::getStream(uint64_t columnId,
-                             proto::Stream_Kind kind,
-                             bool shouldStream) const {
-  return std::unique_ptr < SeekableInputStream >
-    (getStreamProxy(columnId, kind, shouldStream));
-}
+  class TestColumnReaderEncoded : public TestWithParam<bool> {
+    virtual void SetUp();
 
-bool isNotNull(tm *timeptr) {
-  return timeptr != nullptr;
-}
+  protected:
+    bool encoded;
+  };
+
+  void TestColumnReaderEncoded::SetUp() {
+    encoded = GetParam();
+  }
 
 TEST(TestColumnReader, testBooleanWithNulls) {
   MockStripeStreams streams;
@@ -363,7 +396,7 @@ TEST(TestColumnReader, testIntegerWithNulls) {
   }
 }
 
-TEST(TestColumnReader, testDictionaryWithNulls) {
+TEST_P(TestColumnReaderEncoded, testDictionaryWithNulls) {
   MockStripeStreams streams;
 
   // set getSelectedColumns()
@@ -409,32 +442,65 @@ TEST(TestColumnReader, testDictionaryWithNulls) {
 
   std::unique_ptr<ColumnReader> reader =
       buildReader(*rowType, streams);
-  StringVectorBatch *stringBatch = new StringVectorBatch(1024,
-                                                         *getDefaultPool());
-  StructVectorBatch batch(1024, *getDefaultPool());
-  batch.fields.push_back(stringBatch);
-  reader->next(batch, 200, 0);
-  ASSERT_EQ(200, batch.numElements);
-  ASSERT_EQ(true, !batch.hasNulls);
-  ASSERT_EQ(200, stringBatch->numElements);
-  ASSERT_EQ(true, stringBatch->hasNulls);
-  for (size_t i = 0; i < batch.numElements; ++i) {
-    if (i & 4) {
-      EXPECT_EQ(0, stringBatch->notNull[i]);
-    } else {
-      EXPECT_EQ(1, stringBatch->notNull[i]);
-      const char* expected = i < 98 ? "ORC" : "Owen";
-      ASSERT_EQ(strlen(expected), stringBatch->length[i])
-      << "Wrong length at " << i;
-      for (size_t letter = 0; letter < strlen(expected); ++letter) {
+
+  if (encoded) {
+    EncodedStringVectorBatch *encodedStringBatch = new EncodedStringVectorBatch(1024,
+                                                           *getDefaultPool());
+    StructVectorBatch batch(1024, *getDefaultPool());
+    batch.fields.push_back(encodedStringBatch);
+    reader->nextEncoded(batch, 200, 0);
+    ASSERT_EQ(200, batch.numElements);
+    ASSERT_EQ(true, !batch.hasNulls);
+    ASSERT_EQ(200, encodedStringBatch->numElements);
+    ASSERT_EQ(true, encodedStringBatch->hasNulls);
+    for (size_t i = 0; i < batch.numElements; ++i) {
+      if (i & 4) {
+        EXPECT_EQ(0, encodedStringBatch->notNull[i]);
+      } else {
+        EXPECT_EQ(1, encodedStringBatch->notNull[i]);
+        const char* expected = i < 98 ? "ORC" : "Owen";
+        int64_t index = encodedStringBatch->index.data()[i];
+
+        char* actualString;
+        int64_t actualLength;
+        encodedStringBatch->dictionary->getValueByIndex(index, actualString, actualLength);
+        ASSERT_EQ(strlen(expected), actualLength)
+          << "Wrong length at " << i;
+
+        for (size_t letter = 0; letter < strlen(expected); ++letter) {
+          EXPECT_EQ(expected[letter], actualString[letter])
+          << "Wrong contents at " << i << ", " << letter;
+        }
+      }
+    }
+  } else {
+    StringVectorBatch *stringBatch = new StringVectorBatch(1024,
+                                                           *getDefaultPool());
+    StructVectorBatch batch(1024, *getDefaultPool());
+    batch.fields.push_back(stringBatch);
+    reader->next(batch, 200, 0);
+    ASSERT_EQ(200, batch.numElements);
+    ASSERT_EQ(true, !batch.hasNulls);
+    ASSERT_EQ(200, stringBatch->numElements);
+    ASSERT_EQ(true, stringBatch->hasNulls);
+    for (size_t i = 0; i < batch.numElements; ++i) {
+      if (i & 4) {
+        EXPECT_EQ(0, stringBatch->notNull[i]);
+      } else {
+        EXPECT_EQ(1, stringBatch->notNull[i]);
+        const char* expected = i < 98 ? "ORC" : "Owen";
+        ASSERT_EQ(strlen(expected), stringBatch->length[i])
+          << "Wrong length at " << i;
+        for (size_t letter = 0; letter < strlen(expected); ++letter) {
         EXPECT_EQ(expected[letter], stringBatch->data[i][letter])
-            << "Wrong contents at " << i << ", " << letter;
+          << "Wrong contents at " << i << ", " << letter;
+        }
       }
     }
   }
 }
 
-TEST(TestColumnReader, testVarcharDictionaryWithNulls) {
+TEST_P(TestColumnReaderEncoded, testVarcharDictionaryWithNulls) {
   MockStripeStreams streams;
 
   // set getSelectedColumns()
@@ -508,31 +574,64 @@ TEST(TestColumnReader, testVarcharDictionaryWithNulls) {
     ->addStructField("col1", createPrimitiveType(CHAR))
     ->addStructField("col2", createPrimitiveType(STRING));
 
+
   std::unique_ptr<ColumnReader> reader =
-      buildReader(*rowType, streams);
-  StructVectorBatch batch(1024, *getDefaultPool());
-  StringVectorBatch *stringBatch = new StringVectorBatch(1024,
-                                                         *getDefaultPool());
-  StringVectorBatch *nullBatch = new StringVectorBatch(1024,
-                                                       *getDefaultPool());
-  batch.fields.push_back(stringBatch);
-  batch.fields.push_back(nullBatch);
-  reader->next(batch, 200, 0);
-  ASSERT_EQ(200, batch.numElements);
-  ASSERT_EQ(true, !batch.hasNulls);
-  ASSERT_EQ(200, stringBatch->numElements);
-  ASSERT_EQ(true, !stringBatch->hasNulls);
-  ASSERT_EQ(200, nullBatch->numElements);
-  ASSERT_EQ(true, nullBatch->hasNulls);
-  for (size_t i = 0; i < batch.numElements; ++i) {
-    EXPECT_EQ(true, stringBatch->notNull[i]);
-    EXPECT_EQ(true, !nullBatch->notNull[i]);
-    const char* expected = i < 100 ? "Owen" : "ORC";
-    ASSERT_EQ(strlen(expected), stringBatch->length[i])
-    << "Wrong length at " << i;
-    for (size_t letter = 0; letter < strlen(expected); ++letter) {
-      EXPECT_EQ(expected[letter], stringBatch->data[i][letter])
-          << "Wrong contents at " << i << ", " << letter;
+    buildReader(*rowType, streams);
+  if (encoded) {
+    StructVectorBatch batch(1024, *getDefaultPool());
+    EncodedStringVectorBatch *encodedStringBatch = new EncodedStringVectorBatch(1024,
+                                                           *getDefaultPool());
+    EncodedStringVectorBatch *nullBatch = new EncodedStringVectorBatch(1024,
+                                                        *getDefaultPool());
+    batch.fields.push_back(encodedStringBatch);
+    batch.fields.push_back(nullBatch);
+    reader->nextEncoded(batch, 200, 0);
+    ASSERT_EQ(200, batch.numElements);
+    ASSERT_EQ(true, !batch.hasNulls);
+    ASSERT_EQ(200, encodedStringBatch->numElements);
+    ASSERT_EQ(true, !encodedStringBatch->hasNulls);
+    ASSERT_EQ(200, nullBatch->numElements);
+    ASSERT_EQ(true, nullBatch->hasNulls);
+    for (size_t i = 0; i < batch.numElements; ++i) {
+      EXPECT_EQ(true, encodedStringBatch->notNull[i]);
+      EXPECT_EQ(true, !nullBatch->notNull[i]);
+      const char* expected = i < 100 ? "Owen" : "ORC";
+      int64_t index = encodedStringBatch->index.data()[i];
+      char* actualString;
+      int64_t actualLength;
+      encodedStringBatch->dictionary->getValueByIndex(index, actualString, actualLength);
+      ASSERT_EQ(strlen(expected), actualLength)
+        << "Wrong length at " << i;
+      for (size_t letter = 0; letter < strlen(expected); ++letter) {
+        EXPECT_EQ(expected[letter], actualString[letter])
+            << "Wrong contents at " << i << ", " << letter;
+      }
+    }
+  } else {
+    StructVectorBatch batch(1024, *getDefaultPool());
+    StringVectorBatch *stringBatch = new StringVectorBatch(1024,
+                                                          *getDefaultPool());
+    StringVectorBatch *nullBatch = new StringVectorBatch(1024,
+                                                        *getDefaultPool());
+    batch.fields.push_back(stringBatch);
+    batch.fields.push_back(nullBatch);
+    reader->next(batch, 200, 0);
+    ASSERT_EQ(200, batch.numElements);
+    ASSERT_EQ(true, !batch.hasNulls);
+    ASSERT_EQ(200, stringBatch->numElements);
+    ASSERT_EQ(true, !stringBatch->hasNulls);
+    ASSERT_EQ(200, nullBatch->numElements);
+    ASSERT_EQ(true, nullBatch->hasNulls);
+    for (size_t i = 0; i < batch.numElements; ++i) {
+      EXPECT_EQ(true, stringBatch->notNull[i]);
+      EXPECT_EQ(true, !nullBatch->notNull[i]);
+      const char* expected = i < 100 ? "Owen" : "ORC";
+      ASSERT_EQ(strlen(expected), stringBatch->length[i])
+      << "Wrong length at " << i;
+      for (size_t letter = 0; letter < strlen(expected); ++letter) {
+        EXPECT_EQ(expected[letter], stringBatch->data[i][letter])
+            << "Wrong contents at " << i << ", " << letter;
+      }
     }
   }
 }
@@ -899,7 +998,7 @@ TEST(TestColumnReader, testShortBlobError) {
   EXPECT_THROW(reader->next(batch, 100, 0), ParseError);
 }
 
-TEST(TestColumnReader, testStringDirectShortBuffer) {
+TEST_P(TestColumnReaderEncoded, testStringDirectShortBuffer) {
   MockStripeStreams streams;
 
   // set getSelectedColumns()
@@ -946,7 +1045,11 @@ TEST(TestColumnReader, testStringDirectShortBuffer) {
   StringVectorBatch *strings = new StringVectorBatch(25, *getDefaultPool());
   batch.fields.push_back(strings);
   for (size_t i = 0; i < 4; ++i) {
-    reader->next(batch, 25, 0);
+    if (encoded) {
+      reader->nextEncoded(batch, 25, 0);
+    } else {
+      reader->next(batch, 25, 0);
+    }
     ASSERT_EQ(25, batch.numElements);
     ASSERT_EQ(true, !batch.hasNulls);
     ASSERT_EQ(25, strings->numElements);
@@ -959,7 +1062,7 @@ TEST(TestColumnReader, testStringDirectShortBuffer) {
   }
 }
 
-TEST(TestColumnReader, testStringDirectShortBufferWithNulls) {
+TEST_P(TestColumnReaderEncoded, testStringDirectShortBufferWithNulls) {
   MockStripeStreams streams;
 
   // set getSelectedColumns()
@@ -1009,7 +1112,11 @@ TEST(TestColumnReader, testStringDirectShortBufferWithNulls) {
   batch.fields.push_back(strings);
   size_t next = 0;
   for (size_t i = 0; i < 8; ++i) {
-    reader->next(batch, 64, 0);
+    if (encoded) {
+      reader->nextEncoded(batch, 64, 0);
+    } else {
+      reader->next(batch, 64, 0);
+    }
     ASSERT_EQ(64, batch.numElements);
     ASSERT_EQ(true, !batch.hasNulls);
     ASSERT_EQ(64, strings->numElements);
@@ -1286,7 +1393,7 @@ TEST(TestColumnReader, testStringDirectSkipWithNulls) {
   }
 }
 
-TEST(TestColumnReader, testList) {
+TEST_P(TestColumnReaderEncoded, testList) {
   MockStripeStreams streams;
 
   // set getSelectedColumns()
@@ -1341,7 +1448,11 @@ TEST(TestColumnReader, testList) {
   LongVectorBatch *longs = new LongVectorBatch(512, *getDefaultPool());
   batch.fields.push_back(lists);
   lists->elements = std::unique_ptr < ColumnVectorBatch > (longs);
-  reader->next(batch, 512, 0);
+  if (encoded) {
+    reader->nextEncoded(batch, 512, 0);
+  } else {
+    reader->next(batch, 512, 0);
+  }
   ASSERT_EQ(512, batch.numElements);
   ASSERT_EQ(true, !batch.hasNulls);
   ASSERT_EQ(512, lists->numElements);
@@ -1787,7 +1898,7 @@ TEST(TestColumnReader, testListSkipWithNullsNoData) {
   EXPECT_EQ(19, lists->offsets[2]);
 }
 
-TEST(TestColumnReader, testMap) {
+TEST_P(TestColumnReaderEncoded, testMap) {
   MockStripeStreams streams;
 
   // set getSelectedColumns()
@@ -1860,7 +1971,11 @@ TEST(TestColumnReader, testMap) {
   batch.fields.push_back(maps);
   maps->keys = std::unique_ptr < ColumnVectorBatch > (keys);
   maps->elements = std::unique_ptr < ColumnVectorBatch > (elements);
-  reader->next(batch, 512, 0);
+  if (encoded) {
+    reader->nextEncoded(batch, 512, 0);
+  } else {
+    reader->next(batch, 512, 0);
+  }
   ASSERT_EQ(512, batch.numElements);
   ASSERT_EQ(true, !batch.hasNulls);
   ASSERT_EQ(512, maps->numElements);
@@ -3184,6 +3299,156 @@ TEST(DecimalColumnReader, testDecimal128Skip) {
             values[4].toDecimalString(decimals->scale));
 }
 
+TEST(DecimalColumnReader, testDecimal64V2) {
+  MockStripeStreams streams;
+
+  // set getSelectedColumns() for struct<decimal(12,2)>
+  std::vector<bool> selectedColumns(2, true);
+  EXPECT_CALL(streams, getSelectedColumns())
+      .WillRepeatedly(testing::Return(selectedColumns));
+
+  // Use the decimal encoding in ORCv2
+  EXPECT_CALL(streams, isDecimalAsLong())
+      .WillRepeatedly(testing::Return(true));
+
+  // set encoding
+  proto::ColumnEncoding directEncoding;
+  directEncoding.set_kind(proto::ColumnEncoding_Kind_DIRECT);
+  EXPECT_CALL(streams, getEncoding(testing::_))
+      .WillRepeatedly(testing::Return(directEncoding));
+
+  // set getStream
+  // PRESENT stream of the struct column is nullptr.
+  EXPECT_CALL(streams, getStreamProxy(0, proto::Stream_Kind_PRESENT, true))
+      .WillRepeatedly(testing::Return(nullptr));
+
+  // PRESENT stream of the decimal column is in Boolean Run Length Encoding.
+  // {0x05, 0xff} -> 8 bytes of 0xff -> 64 true values.
+  // {0x04, 0x00} -> 7 bytes of 0x00 -> 56 false values.
+  // {0xff, 0x01} -> 1 byte of 0x01 -> 7 false values followed with 1 true.
+  const unsigned char buffer1[] = { 0x05, 0xff, 0x04, 0x00, 0xff, 0x01 };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_PRESENT, true))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer1, ARRAY_SIZE(buffer1))));
+
+  // DATA stream of the decimal column is in RLEv2.
+  // Original values: [-32, -31, -30, ..., -1, 0, 1, 2, ..., 32]. See RLEv2.basicDelta5.
+  const unsigned char buffer2[] = { 0xc0, 0x40, 0x3f, 0x02 };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_DATA, true))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer2, ARRAY_SIZE(buffer2), 3)));
+
+  // create the row type
+  std::unique_ptr<Type> rowType = createStructType();
+  rowType->addStructField("col0", createDecimalType(12, 2));
+
+  std::unique_ptr<ColumnReader> reader = buildReader(*rowType, streams);
+
+  StructVectorBatch batch(64, *getDefaultPool());
+  Decimal64VectorBatch *decimals = new Decimal64VectorBatch(64, *getDefaultPool());
+  batch.fields.push_back(decimals);
+  reader->next(batch, 64, 0);
+  EXPECT_FALSE(batch.hasNulls);
+  EXPECT_EQ(64, batch.numElements);
+  EXPECT_FALSE(decimals->hasNulls);
+  EXPECT_EQ(64, decimals->numElements);
+  EXPECT_EQ(2, decimals->scale);
+  int64_t *values = decimals->values.data();
+  for (int64_t i = 0; i < 64; ++i) {
+    EXPECT_EQ(i - 32, values[i]);
+  }
+  reader->next(batch, 64, 0);
+  EXPECT_FALSE(batch.hasNulls);
+  EXPECT_EQ(64, batch.numElements);
+  EXPECT_TRUE(decimals->hasNulls);
+  EXPECT_EQ(64, decimals->numElements);
+  for (size_t i=0; i < 63; ++i) {
+    EXPECT_EQ(0, decimals->notNull[i]);
+  }
+  EXPECT_EQ(1, decimals->notNull[63]);
+  EXPECT_EQ(32, decimals->values.data()[63]);
+}
+
+TEST(DecimalColumnReader, testDecimal64V2Skip) {
+  MockStripeStreams streams;
+
+  // set getSelectedColumns() for struct<decimal(12,2)>
+  std::vector<bool> selectedColumns(2, true);
+  EXPECT_CALL(streams, getSelectedColumns())
+      .WillRepeatedly(testing::Return(selectedColumns));
+
+  // Use the decimal encoding in ORCv2
+  EXPECT_CALL(streams, isDecimalAsLong())
+      .WillRepeatedly(testing::Return(true));
+
+  // set encoding
+  proto::ColumnEncoding directEncoding;
+  directEncoding.set_kind(proto::ColumnEncoding_Kind_DIRECT);
+  EXPECT_CALL(streams, getEncoding(testing::_))
+      .WillRepeatedly(testing::Return(directEncoding));
+
+  // set getStream
+  // PRESENT stream of the struct column is nullptr.
+  EXPECT_CALL(streams, getStreamProxy(0, proto::Stream_Kind_PRESENT, true))
+      .WillRepeatedly(testing::Return(nullptr));
+
+  // PRESENT stream of the decimal column is in Boolean Run Length Encoding.
+  // {0x05, 0xff} -> 8 bytes of 0xff -> 64 true values.
+  // {0x04, 0x00} -> 7 bytes of 0x00 -> 56 false values.
+  // {0xff, 0x01} -> 1 byte of 0x01 -> 7 false values followed with 1 true.
+  const unsigned char buffer1[] = { 0x05, 0xff, 0x04, 0x00, 0xff, 0x01 };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_PRESENT, true))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer1, ARRAY_SIZE(buffer1))));
+
+  // DATA stream of the decimal column is in RLEv2.
+  // Original values: [-32, -31, -30, ..., -1, 0, 1, 2, ..., 32]. See RLEv2.basicDelta5.
+  const unsigned char buffer2[] = { 0xc0, 0x40, 0x3f, 0x02 };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_DATA, true))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer2, ARRAY_SIZE(buffer2), 3)));
+
+  // create the row type
+  std::unique_ptr<Type> rowType = createStructType();
+  rowType->addStructField("col0", createDecimalType(12, 2));
+
+  std::unique_ptr<ColumnReader> reader = buildReader(*rowType, streams);
+  StructVectorBatch batch(64, *getDefaultPool());
+  Decimal64VectorBatch *decimals = new Decimal64VectorBatch(64, *getDefaultPool());
+  batch.fields.push_back(decimals);
+  // Read 10 values
+  reader->next(batch, 10, 0);
+  EXPECT_FALSE(batch.hasNulls);
+  EXPECT_EQ(10, batch.numElements);
+  EXPECT_FALSE(decimals->hasNulls);
+  EXPECT_EQ(10, decimals->numElements);
+  EXPECT_EQ(2, decimals->scale);
+  int64_t *values = decimals->values.data();
+  for (int64_t i = 0; i < 10; ++i) {
+    EXPECT_EQ(i - 32, values[i]);
+  }
+  // Skip 50 values and read 10 values again
+  reader->skip(50);
+  reader->next(batch, 10, 0);
+  EXPECT_FALSE(batch.hasNulls);
+  EXPECT_EQ(10, batch.numElements);
+  EXPECT_TRUE(decimals->hasNulls);
+  values = decimals->values.data();
+  for (int64_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(60 + i - 32, values[i]);
+  }
+  for (size_t i = 4; i < 10; ++i) {
+    EXPECT_EQ(0, decimals->notNull[i]);
+  }
+  // Skip 57 values and read the last value
+  reader->skip(57);
+  reader->next(batch, 1, 0);
+  EXPECT_FALSE(batch.hasNulls);
+  EXPECT_EQ(1, batch.numElements);
+  EXPECT_FALSE(decimals->hasNulls);
+  EXPECT_EQ(32, decimals->values.data()[0]);
+}
+
 TEST(DecimalColumnReader, testDecimalHive11) {
   MockStripeStreams streams;
 
@@ -4302,7 +4567,7 @@ TEST(TestColumnReader, testUnionWithManyVariants) {
   // for variant in range(0, 130):
   //   [variant & 0x3f, (variant & 0x3f) + 1, (variant & 0x3f) + 2]
   unsigned char buffer[3 * 130];
-  for(uint variant = 0; variant < 130; ++variant) {
+  for(size_t variant = 0; variant < 130; ++variant) {
     buffer[3 * variant] = 0x00;
     buffer[3 * variant + 1] = 0x01;
     buffer[3 * variant + 2] = static_cast<unsigned char>((variant * 2) & 0x7f);
@@ -4369,5 +4634,96 @@ TEST(TestColumnReader, testUnionWithManyVariants) {
               ->data[unions->offsets[i]]);
   }
 }
+
+
+TEST(TestColumnReader, testStringDictinoryIndexOverflow) {
+  MockStripeStreams streams;
+
+  // set getSelectedColumns()
+  std::vector<bool> selectedColumns(2, true);
+  EXPECT_CALL(streams, getSelectedColumns())
+      .WillRepeatedly(testing::Return(selectedColumns));
+
+  // set getEncoding
+  proto::ColumnEncoding directEncoding;
+  directEncoding.set_kind(proto::ColumnEncoding_Kind_DIRECT);
+  EXPECT_CALL(streams, getEncoding(0))
+      .WillRepeatedly(testing::Return(directEncoding));
+  proto::ColumnEncoding dictionaryEncoding;
+  dictionaryEncoding.set_kind(proto::ColumnEncoding_Kind_DICTIONARY);
+  dictionaryEncoding.set_dictionarysize(2);
+  EXPECT_CALL(streams, getEncoding(1))
+      .WillRepeatedly(testing::Return(dictionaryEncoding));
+
+  // set getStream
+  EXPECT_CALL(streams, getStreamProxy(0, proto::Stream_Kind_PRESENT, true))
+      .WillRepeatedly(testing::Return(nullptr));
+  // [11110000 for 0..127] * 2
+  const unsigned char buffer1[] = { 0x7f, 0xf0, 0x7f, 0xf0 };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_PRESENT, true))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer1, ARRAY_SIZE(buffer1))));
+  // [0 for x in 1..256*2] + [1 for x in 1..256*3]
+  const unsigned char buffer2[] = { 0x7f, 0x00, 0x00,
+                                    0x7f, 0x00, 0x00,
+                                    0x7f, 0x00, 0x01,
+                                    0x7f, 0x00, 0x01,
+                                    0x7f, 0x00, 0x01 };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_DATA, true))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer2, ARRAY_SIZE(buffer2))));
+  const unsigned char buffer3[] = { 0x4f, 0x52, 0x43, 0x4f, 0x77, 0x65, 0x6e };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_DICTIONARY_DATA,
+                                      false))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer3, ARRAY_SIZE(buffer3))));
+  const unsigned char buffer4[] = { 0x02, 0x01, 0x03 };
+  EXPECT_CALL(streams, getStreamProxy(1, proto::Stream_Kind_LENGTH, false))
+      .WillRepeatedly(testing::Return(new SeekableArrayInputStream
+                                      (buffer4, ARRAY_SIZE(buffer4))));
+
+  // create the row type
+  std::unique_ptr<Type> rowType = createStructType();
+  rowType->addStructField("myString",createPrimitiveType(STRING));
+  std::unique_ptr<ColumnReader> reader = buildReader(*rowType, streams);
+
+  EncodedStringVectorBatch *encodedStringBatch =
+      new EncodedStringVectorBatch(1024, *getDefaultPool());
+
+  StructVectorBatch batch(1024, *getDefaultPool());
+  batch.fields.push_back(encodedStringBatch);
+  reader->nextEncoded(batch, 8, 0);
+  ASSERT_EQ(8, batch.numElements);
+  ASSERT_EQ(true, !batch.hasNulls);
+  ASSERT_EQ(8, encodedStringBatch->numElements);
+  ASSERT_EQ(true, encodedStringBatch->hasNulls);
+  reader->nextEncoded(batch, 1100, 0);
+  ASSERT_EQ(1100, batch.numElements);
+  ASSERT_EQ(true, !batch.hasNulls);
+  ASSERT_EQ(1100, encodedStringBatch->numElements);
+  ASSERT_EQ(true, encodedStringBatch->hasNulls);
+  for (size_t i = 0; i < batch.numElements; ++i) {
+    if (i & 4) {
+      EXPECT_EQ(0, encodedStringBatch->notNull[i]);
+    } else {
+      EXPECT_EQ(1, encodedStringBatch->notNull[i]);
+      const char* expected = i < 512 ? "ORC" : "Owen";
+      int64_t index = encodedStringBatch->index.data()[i];
+
+      char* actualString;
+      int64_t actualLength;
+      encodedStringBatch->dictionary->getValueByIndex(index, actualString, actualLength);
+      ASSERT_EQ(strlen(expected), actualLength)
+        << "Wrong length at " << i;
+
+      for (size_t letter = 0; letter < strlen(expected); ++letter) {
+        EXPECT_EQ(expected[letter], actualString[letter])
+        << "Wrong contents at " << i << ", " << letter;
+      }
+    }
+  }
+}
+
+INSTANTIATE_TEST_CASE_P(OrcColumnReaderTest, TestColumnReaderEncoded, Values(true, false));
 
 }  // namespace orc

@@ -18,18 +18,8 @@
 
 package org.apache.orc.impl;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
-
 import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedOutputStream;
-
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -39,11 +29,20 @@ import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
 import org.apache.orc.PhysicalWriter;
 import org.apache.orc.TypeDescription;
+import org.apache.orc.impl.writer.StreamOptions;
 import org.apache.orc.impl.writer.WriterEncryptionKey;
 import org.apache.orc.impl.writer.WriterEncryptionVariant;
-import org.apache.orc.impl.writer.StreamOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 public class PhysicalFsWriter implements PhysicalWriter {
   private static final Logger LOG = LoggerFactory.getLogger(PhysicalFsWriter.class);
@@ -58,7 +57,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
   // a protobuf outStream around streamFactory
   private CodedOutputStream codedCompressStream;
 
-  private final Path path;
+  private Path path;
   private final HadoopShims shims;
   private final long blockSize;
   private final int maxPadding;
@@ -92,7 +91,18 @@ public class PhysicalFsWriter implements PhysicalWriter {
                           OrcFile.WriterOptions opts,
                           WriterEncryptionVariant[] encryption
                           ) throws IOException {
+    this(fs.create(path, opts.getOverwrite(), HDFS_BUFFER_SIZE,
+            fs.getDefaultReplication(path), opts.getBlockSize()), opts, encryption);
     this.path = path;
+    LOG.info("ORC writer created for path: {} with stripeSize: {} blockSize: {}" +
+            " compression: {}", path, opts.getStripeSize(), blockSize, compress);
+  }
+
+  public PhysicalFsWriter(FSDataOutputStream outputStream,
+                          OrcFile.WriterOptions opts,
+                          WriterEncryptionVariant[] encryption
+                          ) throws IOException {
+    this.rawWriter = outputStream;
     long defaultStripeSize = opts.getStripeSize();
     this.addBlockPadding = opts.getBlockPadding();
     if (opts.isEnforceBufferSize()) {
@@ -110,10 +120,6 @@ public class PhysicalFsWriter implements PhysicalWriter {
     this.compressionStrategy = opts.getCompressionStrategy();
     this.maxPadding = (int) (opts.getPaddingTolerance() * defaultStripeSize);
     this.blockSize = opts.getBlockSize();
-    LOG.info("ORC writer created for path: {} with stripeSize: {} blockSize: {}" +
-        " compression: {}", path, defaultStripeSize, blockSize, compress);
-    rawWriter = fs.create(path, opts.getOverwrite(), HDFS_BUFFER_SIZE,
-        fs.getDefaultReplication(path), blockSize);
     blockOffset = 0;
     unencrypted = new VariantTracker(opts.getSchema(), compress);
     writeVariableLengthBlocks = opts.getWriteVariableLengthBlocks();
@@ -187,7 +193,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
           builder.setColumn(name.getColumn())
               .setKind(name.getKind())
               .setLength(size);
-            result.add(builder.build());
+          result.add(builder.build());
         }
       }
       return result;
@@ -503,8 +509,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
     if (length < blockSize && length > availBlockSpace &&
         addBlockPadding) {
       byte[] pad = new byte[(int) Math.min(HDFS_BUFFER_SIZE, availBlockSpace)];
-      LOG.info(String.format("Padding ORC by %d bytes while merging..",
-          availBlockSpace));
+      LOG.info("Padding ORC by {} bytes while merging", availBlockSpace);
       start += availBlockSpace;
       while (availBlockSpace > 0) {
         int writeLen = (int) Math.min(availBlockSpace, pad.length);
@@ -536,6 +541,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
       }
     }
 
+    @Override
     public void suppress() {
       isSuppressed = true;
       output.clear();
@@ -550,7 +556,7 @@ public class PhysicalFsWriter implements PhysicalWriter {
       if (!isSuppressed) {
         for (ByteBuffer buffer: output) {
           raw.write(buffer.array(), buffer.arrayOffset() + buffer.position(),
-            buffer.remaining());
+              buffer.remaining());
         }
         output.clear();
         return true;
@@ -764,6 +770,10 @@ public class PhysicalFsWriter implements PhysicalWriter {
 
   @Override
   public String toString() {
-    return path.toString();
+    if (path != null) {
+      return path.toString();
+    } else {
+      return ByteString.EMPTY.toString();
+    }
   }
 }

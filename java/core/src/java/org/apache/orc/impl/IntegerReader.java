@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,9 +18,9 @@
 
 package org.apache.orc.impl;
 
-import java.io.IOException;
-
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+
+import java.io.IOException;
 
 /**
  * Interface for reading integers.
@@ -62,10 +62,10 @@ public interface IntegerReader {
    * @param length the number of numbers to read
    * @throws IOException
    */
-   void nextVector(ColumnVector column,
-                   long[] data,
-                   int length
-                   ) throws IOException;
+  void nextVector(ColumnVector column,
+                  long[] data,
+                  int length
+                  ) throws IOException;
 
 
   /**

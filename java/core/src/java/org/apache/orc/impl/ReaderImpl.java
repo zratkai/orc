@@ -18,51 +18,53 @@
 
 package org.apache.orc.impl;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.security.Key;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.function.Supplier;
-
-import org.apache.orc.EncryptionAlgorithm;
-import org.apache.orc.EncryptionKey;
-import org.apache.orc.CompressionKind;
-import org.apache.orc.DataMaskDescription;
-import org.apache.orc.EncryptionVariant;
-import org.apache.orc.FileMetadata;
-import org.apache.orc.OrcConf;
-import org.apache.orc.OrcFile;
-import org.apache.orc.OrcUtils;
-import org.apache.orc.Reader;
-import org.apache.orc.RecordReader;
-import org.apache.orc.TypeDescription;
-import org.apache.orc.ColumnStatistics;
-import org.apache.orc.CompressionCodec;
-import org.apache.orc.FileFormatException;
-import org.apache.orc.StripeInformation;
-import org.apache.orc.StripeStatistics;
-import org.apache.orc.UnknownFormatException;
-import org.apache.orc.impl.reader.ReaderEncryption;
-import org.apache.hadoop.fs.FileStatus;
+import com.google.protobuf.CodedInputStream;
+import com.google.protobuf.TextFormat;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.hadoop.io.Text;
+import org.apache.orc.ColumnStatistics;
+import org.apache.orc.CompressionCodec;
+import org.apache.orc.CompressionKind;
+import org.apache.orc.DataMaskDescription;
+import org.apache.orc.EncryptionAlgorithm;
+import org.apache.orc.EncryptionKey;
+import org.apache.orc.EncryptionVariant;
+import org.apache.orc.FileFormatException;
+import org.apache.orc.FileMetadata;
+import org.apache.orc.OrcConf;
+import org.apache.orc.OrcFile;
 import org.apache.orc.OrcProto;
-
-import com.google.protobuf.CodedInputStream;
+import org.apache.orc.OrcUtils;
+import org.apache.orc.Reader;
+import org.apache.orc.RecordReader;
+import org.apache.orc.StripeInformation;
+import org.apache.orc.StripeStatistics;
+import org.apache.orc.TypeDescription;
+import org.apache.orc.impl.reader.ReaderEncryption;
 import org.apache.orc.impl.reader.ReaderEncryptionVariant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.security.Key;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 public class ReaderImpl implements Reader {
 
   private static final Logger LOG = LoggerFactory.getLogger(ReaderImpl.class);
 
   private static final int DIRECTORY_SIZE_GUESS = 16 * 1024;
+  public static final int DEFAULT_COMPRESSION_BLOCK_SIZE = 256 * 1024;
 
   private final long maxLength;
   protected final Path path;
@@ -74,7 +76,7 @@ public class ReaderImpl implements Reader {
   protected List<OrcProto.StripeStatistics> stripeStatistics;
   private final int metadataSize;
   protected final List<OrcProto.Type> types;
-  private TypeDescription schema;
+  private final TypeDescription schema;
   private final List<OrcProto.UserMetadataItem> userMetadata;
   private final List<OrcProto.ColumnStatistics> fileStats;
   private final List<StripeInformation> stripes;
@@ -87,6 +89,7 @@ public class ReaderImpl implements Reader {
   protected final boolean useUTCTimestamp;
   private final List<Integer> versionList;
   private final OrcFile.WriterVersion writerVersion;
+  private final String softwareVersion;
 
   protected final OrcTail tail;
 
@@ -116,6 +119,28 @@ public class ReaderImpl implements Reader {
       } else {
         encryptedKeys = previousKeys;
       }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+      if (this == o) {
+        return true;
+      }
+      if (o == null || getClass() != o.getClass()) {
+        return false;
+      }
+      StripeInformationImpl that = (StripeInformationImpl) o;
+      return stripeId == that.stripeId
+             && originalStripeId == that.originalStripeId
+             && Arrays.deepEquals(encryptedKeys, that.encryptedKeys)
+             && stripe.equals(that.stripe);
+    }
+
+    @Override
+    public int hashCode() {
+      int result = Objects.hash(stripeId, originalStripeId, stripe);
+      result = 31 * result + Arrays.hashCode(encryptedKeys);
+      return result;
     }
 
     @Override
@@ -202,6 +227,7 @@ public class ReaderImpl implements Reader {
     throw new IllegalArgumentException("Can't find user metadata " + key);
   }
 
+  @Override
   public boolean hasMetadataValue(String key) {
     for(OrcProto.UserMetadataItem item: userMetadata) {
       if (item.hasName() && item.getName().equals(key)) {
@@ -260,6 +286,11 @@ public class ReaderImpl implements Reader {
   }
 
   @Override
+  public String getSoftwareVersion() {
+    return softwareVersion;
+  }
+
+  @Override
   public OrcProto.FileTail getFileTail() {
     return tail.getFileTail();
   }
@@ -280,7 +311,8 @@ public class ReaderImpl implements Reader {
   }
 
   @Override
-  public List<StripeStatistics> getVariantStripeStatistics(EncryptionVariant variant) throws IOException {
+  public List<StripeStatistics> getVariantStripeStatistics(EncryptionVariant variant)
+      throws IOException {
     if (variant == null) {
       if (stripeStatistics == null) {
         try (CompressionCodec codec = OrcCodecPool.getCodec(compressionKind)) {
@@ -301,7 +333,8 @@ public class ReaderImpl implements Reader {
         if (codec != null) {
           compression.withCodec(codec).withBufferSize(bufferSize);
         }
-        return ((ReaderEncryptionVariant) variant).getStripeStatistics(null, compression, this);
+        return ((ReaderEncryptionVariant) variant).getStripeStatistics(null,
+            compression, this);
       }
     }
   }
@@ -349,10 +382,10 @@ public class ReaderImpl implements Reader {
     return result;
   }
 
-  private static ColumnStatistics[] decryptFileStats(ReaderEncryptionVariant encryption,
-                                                    InStream.StreamOptions compression,
-                                                    OrcProto.Footer footer
-                                                    ) throws IOException {
+  private ColumnStatistics[] decryptFileStats(ReaderEncryptionVariant encryption,
+                                              InStream.StreamOptions compression,
+                                              OrcProto.Footer footer
+                                              ) throws IOException {
     Key key = encryption.getFileFooterKey();
     if (key == null) {
       return null;
@@ -375,7 +408,8 @@ public class ReaderImpl implements Reader {
       TypeDescription root = encryption.getRoot();
       for(int i= 0; i < result.length; ++i){
         result[i] = ColumnStatisticsImpl.deserialize(root.findSubtype(root.getId() + i),
-            decrypted.getColumn(i));
+            decrypted.getColumn(i), writerUsedProlepticGregorian(),
+            getConvertToProlepticGregorian());
       }
       return result;
     }
@@ -387,7 +421,9 @@ public class ReaderImpl implements Reader {
     ColumnStatistics[] result = new ColumnStatistics[fileStats.size()];
     for(int i=0; i < result.length; ++i) {
       TypeDescription subschema = schema == null ? null : schema.findSubtype(i);
-      result[i] = ColumnStatisticsImpl.deserialize(subschema, fileStats.get(i), this);
+      result[i] = ColumnStatisticsImpl.deserialize(subschema, fileStats.get(i),
+          writerUsedProlepticGregorian(),
+          getConvertToProlepticGregorian());
     }
     return result;
   }
@@ -484,8 +520,9 @@ public class ReaderImpl implements Reader {
                                         ) throws IOException {
     List<Integer> version = postscript.getVersionList();
     if (getFileVersion(version) == OrcFile.Version.FUTURE) {
-      throw new UnknownFormatException(path, versionString(version),
-          postscript);
+      throw new IOException(path + " was written by a future ORC version " +
+          versionString(version) + ". This file is not readable by this version of ORC.\n"+
+          "Postscript: " + TextFormat.shortDebugString(postscript));
     }
   }
 
@@ -523,6 +560,7 @@ public class ReaderImpl implements Reader {
       this.userMetadata = null; // not cached and not needed here
       // FileMetadata is obsolete and doesn't support encryption
       this.encryption = new ReaderEncryption();
+      this.softwareVersion = null;
     } else {
       OrcTail orcTail = options.getOrcTail();
       if (orcTail == null) {
@@ -545,8 +583,12 @@ public class ReaderImpl implements Reader {
       this.writerVersion = tail.getWriterVersion();
       this.stripes = tail.getStripes();
       this.stripeStatistics = null;
-      this.encryption = new ReaderEncryption(tail.getFooter(), schema,
-          tail.getStripeStatisticsOffset(), tail.getTailBuffer(), stripes, options.getKeyProvider(), conf);
+      OrcProto.Footer footer = tail.getFooter();
+      this.encryption = new ReaderEncryption(footer, schema,
+          tail.getStripeStatisticsOffset(), tail.getTailBuffer(), stripes,
+          options.getKeyProvider(), conf);
+      this.softwareVersion = OrcUtils.getSoftwareVersion(footer.getWriter(),
+          footer.getSoftwareVersion());
     }
     this.types = OrcUtils.getOrcTypes(schema);
   }
@@ -584,14 +626,6 @@ public class ReaderImpl implements Reader {
     return OrcFile.WriterVersion.FUTURE;
   }
 
-  private static OrcProto.Footer extractFooter(ByteBuffer bb, int footerAbsPos,
-      int footerSize, InStream.StreamOptions options) throws IOException {
-    bb.position(footerAbsPos);
-    bb.limit(footerAbsPos + footerSize);
-    return OrcProto.Footer.parseFrom(InStream.createCodedInputStream(
-        InStream.create("footer", new BufferChunk(bb, 0), 0, footerSize, options)));
-  }
-
   public static OrcProto.Metadata extractMetadata(ByteBuffer bb, int metadataAbsPos,
       int metadataSize, InStream.StreamOptions options) throws IOException {
     bb.position(metadataAbsPos);
@@ -617,6 +651,7 @@ public class ReaderImpl implements Reader {
       case SNAPPY:
       case LZO:
       case LZ4:
+      case ZSTD:
         break;
       default:
         throw new IllegalArgumentException("Unknown compression");
@@ -681,15 +716,27 @@ public class ReaderImpl implements Reader {
   }
 
   /**
+   * Read compression block size from the postscript if it is set; otherwise,
+   * use the same 256k default the C++ implementation uses.
+   */
+  public static int getCompressionBlockSize(OrcProto.PostScript postScript) {
+    if (postScript.hasCompressionBlockSize()) {
+      return (int) postScript.getCompressionBlockSize();
+    } else {
+      return DEFAULT_COMPRESSION_BLOCK_SIZE;
+    }
+  }
+
+  /**
    * @deprecated Use {@link ReaderImpl#extractFileTail(FileSystem, Path, long)} instead.
    * This is for backward compatibility.
    */
   public static OrcTail extractFileTail(ByteBuffer buffer, long fileLen, long modificationTime)
       throws IOException {
     OrcProto.PostScript ps;
-    long readSize = fileLen != -1 ? fileLen : buffer.limit();
+    long readSize = buffer.limit();
     OrcProto.FileTail.Builder fileTailBuilder = OrcProto.FileTail.newBuilder();
-    fileTailBuilder.setFileLength(readSize);
+    fileTailBuilder.setFileLength(fileLen != -1 ? fileLen : readSize);
 
     int psLen = buffer.get((int) (readSize - 1)) & 0xff;
     int psOffset = (int) (readSize - 1 - psLen);
@@ -707,18 +754,20 @@ public class ReaderImpl implements Reader {
     try (CompressionCodec codec = OrcCodecPool.getCodec(compressionKind)){
       if (codec != null) {
         compression.withCodec(codec)
-            .withBufferSize((int) ps.getCompressionBlockSize());
+            .withBufferSize(getCompressionBlockSize(ps));
       }
 
       OrcProto.Footer footer =
           OrcProto.Footer.parseFrom(
               InStream.createCodedInputStream(
-                  InStream.create("footer", new BufferChunk(buffer, 0), psOffset - footerSize, footerSize, compression)));
+                  InStream.create("footer", new BufferChunk(buffer, 0),
+                                  psOffset - footerSize, footerSize, compression)));
       fileTailBuilder.setPostscriptLength(psLen).setFooter(footer);
     }
     // clear does not clear the contents but sets position to 0 and limit = capacity
     buffer.clear();
-    return new OrcTail(fileTailBuilder.build(), new BufferChunk(buffer.slice(), 0), modificationTime);
+    return new OrcTail(fileTailBuilder.build(),
+        new BufferChunk(buffer.slice(), 0), modificationTime);
   }
 
   protected OrcTail extractFileTail(FileSystem fs, Path path,
@@ -727,8 +776,8 @@ public class ReaderImpl implements Reader {
     OrcProto.PostScript ps;
     OrcProto.FileTail.Builder fileTailBuilder = OrcProto.FileTail.newBuilder();
     long modificationTime;
-    try (FSDataInputStream file = fs.open(path)) {
-      this.file = file;
+    file = fs.open(path);
+    try {
       // figure out the size of the file using the option or filesystem
       long size;
       if (maxFileLength == Long.MAX_VALUE) {
@@ -787,7 +836,7 @@ public class ReaderImpl implements Reader {
       try (CompressionCodec codec = OrcCodecPool.getCodec(compressionKind)) {
         if (codec != null) {
           compression.withCodec(codec)
-              .withBufferSize((int) ps.getCompressionBlockSize());
+              .withBufferSize(getCompressionBlockSize(ps));
         }
         OrcProto.Footer footer =
             OrcProto.Footer.parseFrom(
@@ -799,8 +848,8 @@ public class ReaderImpl implements Reader {
     } catch (Throwable thr) {
       try {
         close();
-      } catch (IOException ignore) {
-        LOG.info("Ignoring secondary exception in close of " + path, ignore);
+      } catch (IOException except) {
+        LOG.info("Ignoring secondary exception in close of " + path, except);
       }
       throw thr instanceof IOException ? (IOException) thr :
                 new IOException("Problem reading file footer " + path, thr);
@@ -904,44 +953,44 @@ public class ReaderImpl implements Reader {
     long numVals = colStat.getNumberOfValues();
 
     switch (column.getCategory()) {
-    case BINARY:
-      // old orc format doesn't support binary statistics. checking for binary
-      // statistics is not required as protocol buffers takes care of it.
-      return colStat.getBinaryStatistics().getSum();
-    case STRING:
-    case CHAR:
-    case VARCHAR:
-      // old orc format doesn't support sum for string statistics. checking for
-      // existence is not required as protocol buffers takes care of it.
+      case BINARY:
+        // old orc format doesn't support binary statistics. checking for binary
+        // statistics is not required as protocol buffers takes care of it.
+        return colStat.getBinaryStatistics().getSum();
+      case STRING:
+      case CHAR:
+      case VARCHAR:
+        // old orc format doesn't support sum for string statistics. checking for
+        // existence is not required as protocol buffers takes care of it.
 
-      // ORC strings are deserialized to java strings. so use java data model's
-      // string size
-      numVals = numVals == 0 ? 1 : numVals;
-      int avgStrLen = (int) (colStat.getStringStatistics().getSum() / numVals);
-      return numVals * JavaDataModel.get().lengthForStringOfLength(avgStrLen);
-    case TIMESTAMP:
-    case TIMESTAMP_INSTANT:
-      return numVals * JavaDataModel.get().lengthOfTimestamp();
-    case DATE:
-      return numVals * JavaDataModel.get().lengthOfDate();
-    case DECIMAL:
-      return numVals * JavaDataModel.get().lengthOfDecimal();
-    case DOUBLE:
-    case LONG:
-      return numVals * JavaDataModel.get().primitive2();
-    case FLOAT:
-    case INT:
-    case SHORT:
-    case BOOLEAN:
-    case BYTE:
-    case STRUCT:
-    case UNION:
-    case MAP:
-    case LIST:
-      return numVals * JavaDataModel.get().primitive1();
-    default:
-      LOG.debug("Unknown primitive category: " + column.getCategory());
-      break;
+        // ORC strings are deserialized to java strings. so use java data model's
+        // string size
+        numVals = numVals == 0 ? 1 : numVals;
+        int avgStrLen = (int) (colStat.getStringStatistics().getSum() / numVals);
+        return numVals * JavaDataModel.get().lengthForStringOfLength(avgStrLen);
+      case TIMESTAMP:
+      case TIMESTAMP_INSTANT:
+        return numVals * JavaDataModel.get().lengthOfTimestamp();
+      case DATE:
+        return numVals * JavaDataModel.get().lengthOfDate();
+      case DECIMAL:
+        return numVals * JavaDataModel.get().lengthOfDecimal();
+      case DOUBLE:
+      case LONG:
+        return numVals * JavaDataModel.get().primitive2();
+      case FLOAT:
+      case INT:
+      case SHORT:
+      case BOOLEAN:
+      case BYTE:
+      case STRUCT:
+      case UNION:
+      case MAP:
+      case LIST:
+        return numVals * JavaDataModel.get().primitive1();
+      default:
+        LOG.debug("Unknown primitive category: {}", column.getCategory());
+        break;
     }
 
     return 0;
@@ -981,12 +1030,11 @@ public class ReaderImpl implements Reader {
     return fileStats;
   }
 
-  private static
-  List<OrcProto.StripeStatistics> deserializeStripeStats(BufferChunk tailBuffer,
-                                                         long offset,
-                                                         int length,
-                                                         InStream.StreamOptions options
-                                                         ) throws IOException {
+  private static List<OrcProto.StripeStatistics> deserializeStripeStats(
+      BufferChunk tailBuffer,
+      long offset,
+      int length,
+      InStream.StreamOptions options) throws IOException {
     InStream stream = InStream.create("stripe stats", tailBuffer, offset,
         length, options);
     OrcProto.Metadata meta = OrcProto.Metadata.parseFrom(
@@ -1002,7 +1050,7 @@ public class ReaderImpl implements Reader {
       for (OrcProto.StripeStatistics ss : stripeStatistics) {
         result.add(new StripeStatisticsImpl(schema,
             new ArrayList<>(ss.getColStatsList()), writerUsedProlepticGregorian(),
-                    getConvertToProlepticGregorian()));
+            getConvertToProlepticGregorian()));
       }
       return result;
     }
@@ -1039,7 +1087,8 @@ public class ReaderImpl implements Reader {
                   if (included == null || included[sub]) {
                     for(int s = 0; s < colStats.size(); ++s) {
                       StripeStatisticsImpl resultElem = (StripeStatisticsImpl) result.get(s);
-                      resultElem.updateColumn(sub, colStats.get(s).getColumn(sub - variantType.getId()));
+                      resultElem.updateColumn(sub,
+                          colStats.get(s).getColumn(sub - variantType.getId()));
                     }
                   }
                 }
@@ -1078,9 +1127,9 @@ public class ReaderImpl implements Reader {
 
   @Override
   public void close() throws IOException {
-    // Keep the interface so it does not break backports.
-    // ORC-498 sould be backported again when Hive closes every instance of the readers (HIVE-25683, HIVE-25736
-    // and possible others). More testing is needed there, so as a quick fix this is a Frankenstein revert of ORC-498
+    if (file != null) {
+      file.close();
+    }
   }
 
   /**

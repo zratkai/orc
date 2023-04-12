@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,19 +20,14 @@ package org.apache.orc.impl;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.orc.MemoryManager;
-import org.apache.orc.OrcConf;
-import org.hamcrest.BaseMatcher;
-import org.hamcrest.Description;
-import org.junit.Test;
-import org.mockito.Matchers;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.lang.management.ManagementFactory;
 
-import static junit.framework.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
 
 /**
  * Test the ORC memory manager.
@@ -83,33 +78,8 @@ public class TestMemoryManager {
         ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getMax();
     System.err.print("Memory = " + mem);
     long pool = mgr.getTotalMemoryPool();
-    assertTrue("Pool too small: " + pool, mem * 0.899 < pool);
-    assertTrue("Pool too big: " + pool, pool < mem * 0.901);
-  }
-
-  private static class DoubleMatcher extends BaseMatcher<Double> {
-    final double expected;
-    final double error;
-    DoubleMatcher(double expected, double error) {
-      this.expected = expected;
-      this.error = error;
-    }
-
-    @Override
-    public boolean matches(Object val) {
-      double dbl = (Double) val;
-      return Math.abs(dbl - expected) <= error;
-    }
-
-    @Override
-    public void describeTo(Description description) {
-      description.appendText("not sufficiently close to ");
-      description.appendText(Double.toString(expected));
-    }
-  }
-
-  private static DoubleMatcher closeTo(double value, double error) {
-    return new DoubleMatcher(value, error);
+    assertTrue(mem * 0.899 < pool, "Pool too small: " + pool);
+    assertTrue(pool < mem * 0.901, "Pool too big: " + pool);
   }
 
   @Test
@@ -127,8 +97,7 @@ public class TestMemoryManager {
       mgr.checkMemory(0, calls[i]);
     }
     for(int call=0; call < calls.length; ++call) {
-      Mockito.verify(calls[call])
-          .checkMemory(Matchers.doubleThat(closeTo(0.2, ERROR)));
+      Mockito.verify(calls[call]).checkMemory(eq(0.2d));
     }
   }
 }

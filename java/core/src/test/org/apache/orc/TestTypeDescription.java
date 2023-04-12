@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,26 +17,23 @@
  */
 package org.apache.orc;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
 
-public class TestTypeDescription {
-  @Rule
-  public ExpectedException thrown= ExpectedException.none();
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
+public class TestTypeDescription {
   @Test
   public void testJson() {
     TypeDescription bin = TypeDescription.createBinary();
@@ -49,10 +46,15 @@ public class TestTypeDescription {
         .addField("f3", TypeDescription.createDecimal());
     assertEquals("struct<f1:int,f2:string,f3:decimal(38,10)>",
         struct.toString());
-    assertEquals("{\"category\": \"struct\", \"id\": 0, \"max\": 3, \"fields\": [\n"
-            + "  \"f1\": {\"category\": \"int\", \"id\": 1, \"max\": 1},\n"
-            + "  \"f2\": {\"category\": \"string\", \"id\": 2, \"max\": 2},\n"
-            + "  \"f3\": {\"category\": \"decimal\", \"id\": 3, \"max\": 3, \"precision\": 38, \"scale\": 10}]}",
+    assertEquals("{"
+                + "\"category\": \"struct\", "
+                + "\"id\": 0, \"max\": 3, "
+                + "\"fields\": [\n"
+            + "{  \"f1\": {\"category\": \"int\", \"id\": 1, \"max\": 1}},\n"
+            + "{  \"f2\": {\"category\": \"string\", \"id\": 2, \"max\": 2}},\n"
+            + "{  \"f3\": {\"category\": \"decimal\", \"id\": 3, \"max\": 3, \"precision\": 38, \"scale\": 10}}"
+            + "]"
+            + "}",
         struct.toJson());
     struct = TypeDescription.createStruct()
         .addField("f1", TypeDescription.createUnion()
@@ -67,15 +69,18 @@ public class TestTypeDescription {
     assertEquals("struct<f1:uniontype<tinyint,decimal(20,10)>,f2:struct<f3:date,f4:double,f5:boolean>,f6:char(100)>",
         struct.toString());
     assertEquals(
-        "{\"category\": \"struct\", \"id\": 0, \"max\": 8, \"fields\": [\n" +
-            "  \"f1\": {\"category\": \"uniontype\", \"id\": 1, \"max\": 3, \"children\": [\n" +
+        "{\"category\": \"struct\", "
+        + "\"id\": 0, "
+        + "\"max\": 8, "
+        + "\"fields\": [\n" +
+            "{  \"f1\": {\"category\": \"uniontype\", \"id\": 1, \"max\": 3, \"children\": [\n" +
             "    {\"category\": \"tinyint\", \"id\": 2, \"max\": 2},\n" +
-            "    {\"category\": \"decimal\", \"id\": 3, \"max\": 3, \"precision\": 20, \"scale\": 10}]},\n" +
-            "  \"f2\": {\"category\": \"struct\", \"id\": 4, \"max\": 7, \"fields\": [\n" +
-            "    \"f3\": {\"category\": \"date\", \"id\": 5, \"max\": 5},\n" +
-            "    \"f4\": {\"category\": \"double\", \"id\": 6, \"max\": 6},\n" +
-            "    \"f5\": {\"category\": \"boolean\", \"id\": 7, \"max\": 7}]},\n" +
-            "  \"f6\": {\"category\": \"char\", \"id\": 8, \"max\": 8, \"length\": 100}]}",
+            "    {\"category\": \"decimal\", \"id\": 3, \"max\": 3, \"precision\": 20, \"scale\": 10}]}},\n" +
+            "{  \"f2\": {\"category\": \"struct\", \"id\": 4, \"max\": 7, \"fields\": [\n" +
+            "{    \"f3\": {\"category\": \"date\", \"id\": 5, \"max\": 5}},\n" +
+            "{    \"f4\": {\"category\": \"double\", \"id\": 6, \"max\": 6}},\n" +
+            "{    \"f5\": {\"category\": \"boolean\", \"id\": 7, \"max\": 7}}]}},\n" +
+            "{  \"f6\": {\"category\": \"char\", \"id\": 8, \"max\": 8, \"length\": 100}}]}",
         struct.toJson());
   }
 
@@ -155,58 +160,66 @@ public class TestTypeDescription {
 
   @Test
   public void testMissingField() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Missing name at 'struct<^'");
-    TypeDescription.fromString("struct<");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("struct<");
+    });
+    assertTrue(e.getMessage().contains("Missing name at 'struct<^'"));
   }
 
   @Test
   public void testQuotedField1() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Unmatched quote at 'struct<^`abc'");
-    TypeDescription.fromString("struct<`abc");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("struct<`abc");
+    });
+    assertTrue(e.getMessage().contains("Unmatched quote at 'struct<^`abc'"));
   }
 
   @Test
   public void testQuotedField2() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Empty quoted field name at 'struct<``^:int>'");
-    TypeDescription.fromString("struct<``:int>");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("struct<``:int>");
+    });
+    assertTrue(e.getMessage().contains("Empty quoted field name at 'struct<``^:int>'"));
   }
 
   @Test
   public void testParserUnknownCategory() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Can't parse category at 'FOOBAR^'");
-    TypeDescription.fromString("FOOBAR");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("FOOBAR");
+    });
+    assertTrue(e.getMessage().contains("Can't parse category at 'FOOBAR^'"));
   }
 
   @Test
   public void testParserEmptyCategory() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Can't parse category at '^<int>'");
-    TypeDescription.fromString("<int>");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("<int>");
+    });
+    assertTrue(e.getMessage().contains("Can't parse category at '^<int>'"));
   }
 
   @Test
   public void testParserMissingInt() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Missing integer at 'char(^)'");
-    TypeDescription.fromString("char()");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("char()");
+    });
+    assertTrue(e.getMessage().contains("Missing integer at 'char(^)'"));
   }
 
   @Test
   public void testParserMissingSize() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Missing required char '(' at 'struct<c:char^>'");
-    TypeDescription.fromString("struct<c:char>");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("struct<c:char>");
+    });
+    assertTrue(e.getMessage().contains("Missing required char '(' at 'struct<c:char^>'"));
   }
 
   @Test
   public void testParserExtraStuff() {
-    thrown.expect(IllegalArgumentException.class);
-    thrown.expectMessage("Extra characters at 'struct<i:int>^,'");
-    TypeDescription.fromString("struct<i:int>,");
+    IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> {
+      TypeDescription.fromString("struct<i:int>,");
+    });
+    assertTrue(e.getMessage().contains("Extra characters at 'struct<i:int>^,'"));
   }
 
   @Test
@@ -262,31 +275,31 @@ public class TestTypeDescription {
             "g:uniontype<string,int>>");
     try {
       type.findSubtype("13");
-      assertTrue(false);
+      fail();
     } catch (IllegalArgumentException e) {
       // PASS
     }
     try {
       type.findSubtype("aa");
-      assertTrue(false);
+      fail();
     } catch (IllegalArgumentException e) {
       // PASS
     }
     try {
       type.findSubtype("b.a");
-      assertTrue(false);
+      fail();
     } catch (IllegalArgumentException e) {
       // PASS
     }
     try {
       type.findSubtype("g.2");
-      assertTrue(false);
+      fail();
     } catch (IllegalArgumentException e) {
       // PASS
     }
     try {
       type.findSubtype("b.c.d");
-      assertTrue(false);
+      fail();
     } catch (IllegalArgumentException e) {
       // PASS
     }
@@ -375,7 +388,25 @@ public class TestTypeDescription {
         street.getAttributeNames().toArray());
     assertEquals("pii", street.getAttributeValue("context"));
     assertEquals("nullify", street.getAttributeValue("mask"));
-    assertEquals(null, street.getAttributeValue("foobar"));
+    assertNull(street.getAttributeValue("foobar"));
+  }
+
+  @Test
+  public void testAttributesEquality() {
+    TypeDescription schema = TypeDescription.fromString(
+        "struct<" +
+            "name:struct<first:string,last:string>," +
+            "address:struct<street:string,city:string,country:string,post_code:string>," +
+            "credit_cards:array<struct<card_number:string,expire:date,ccv:string>>>");
+    // set some attributes
+    schema.findSubtype("name").setAttribute("iceberg.id", "12");
+    schema.findSubtype("address.street").setAttribute("mask", "nullify")
+        .setAttribute("context", "pii");
+
+    TypeDescription clone = schema.clone();
+    assertEquals(3, clearAttributes(clone));
+    assertNotEquals(clone, schema);
+    assertTrue(clone.equals(schema, false));
   }
 
   static int clearAttributes(TypeDescription schema) {
@@ -436,7 +467,7 @@ public class TestTypeDescription {
     assertEquals(3, clearAttributes(schema));
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testEncryptionConflict() {
     TypeDescription schema = TypeDescription.fromString(
         "struct<" +
@@ -444,10 +475,11 @@ public class TestTypeDescription {
             "address:struct<street:string,city:string,country:string,post_code:string>," +
             "credit_cards:array<struct<card_number:string,expire:date,ccv:string>>>");
     // set some encryption
-    schema.annotateEncryption("pii:address,personal:address",null);
+    assertThrows(IllegalArgumentException.class, () ->
+        schema.annotateEncryption("pii:address,personal:address",null));
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testMaskConflict() {
     TypeDescription schema = TypeDescription.fromString(
         "struct<" +
@@ -455,24 +487,40 @@ public class TestTypeDescription {
             "address:struct<street:string,city:string,country:string,post_code:string>," +
             "credit_cards:array<struct<card_number:string,expire:date,ccv:string>>>");
     // set some encryption
-    schema.annotateEncryption(null,"nullify:name;sha256:name");
+    assertThrows(IllegalArgumentException.class, () ->
+        schema.annotateEncryption(null,"nullify:name;sha256:name"));
   }
 
   @Test
-  public void testAttributesEquality() {
+  public void testGetFullFieldName() {
     TypeDescription schema = TypeDescription.fromString(
         "struct<" +
             "name:struct<first:string,last:string>," +
             "address:struct<street:string,city:string,country:string,post_code:string>," +
-            "credit_cards:array<struct<card_number:string,expire:date,ccv:string>>>");
-    // set some attributes
-    schema.findSubtype("name").setAttribute("iceberg.id", "12");
-    schema.findSubtype("address.street").setAttribute("mask", "nullify")
-        .setAttribute("context", "pii");
+            "credit_cards:array<struct<card_number:string,expire:date,ccv:string>>," +
+            "properties:map<string,uniontype<int,string>>>");
+    for (String column: new String[]{"0", "name", "name.first", "name.last",
+                                     "address.street", "address.city",
+                                     "credit_cards", "credit_cards._elem",
+                                     "credit_cards._elem.card_number",
+                                     "properties", "properties._key", "properties._value",
+                                     "properties._value.0", "properties._value.1"}) {
+      assertEquals(column,
+          schema.findSubtype(column, true).getFullFieldName());
+    }
+  }
 
-    TypeDescription clone = schema.clone();
-    assertEquals(3, clearAttributes(clone));
-    assertFalse(clone.equals(schema));
-    assertTrue(clone.equals(schema, false));
+  @Test
+  public void testSetAttribute() {
+    TypeDescription type = TypeDescription.fromString("int");
+    type.setAttribute("key1", null);
+
+    assertEquals(0, type.getAttributeNames().size());
+  }
+
+  @Test
+  public void testHashCode() {
+    // Should not throw NPE
+    TypeDescription.fromString("int").hashCode();
   }
 }

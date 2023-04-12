@@ -18,11 +18,13 @@
 #
 
 FROM centos:7
-MAINTAINER Owen O'Malley <owen@hortonworks.com>
+LABEL maintainer="Apache ORC project <dev@orc.apache.org>"
+ARG jdk=8
 
 RUN yum check-update || true
+RUN yum -y install epel-release
 RUN yum install -y \
-  cmake \
+  cmake3 \
   curl-devel \
   cyrus-sasl-devel \
   expat-devel \
@@ -30,19 +32,40 @@ RUN yum install -y \
   gcc-c++ \
   gettext-devel \
   git \
-  java-1.7.0-openjdk \
-  java-1.7.0-openjdk-devel \
+  libtool \
   make \
   maven \
   openssl-devel \
+  tar \
+  wget \
   which \
-  zlib-devel
+  zlib-devel && \
+  if [ "${jdk}" = "11" ] ; then \
+    yum install -y \
+    java-11-openjdk \
+    java-11-openjdk-devel \
+    && \
+    update-alternatives --set java  $(readlink -f /usr/lib/jvm/java-11-openjdk/bin/java) && \
+    update-alternatives --set javac $(readlink -f /usr/lib/jvm/java-11-openjdk/bin/javac) \
+  ; else \
+    yum install -y \
+    java-1.8.0-openjdk \
+    java-1.8.0-openjdk-devel \
+  ; fi
+
+# Our scripts assume that cmake is called 'cmake'
+RUN ln -s /usr/bin/cmake3 /usr/bin/cmake
 
 ENV TZ=America/Los_Angeles
 WORKDIR /root
+VOLUME /root/.m2/repository
 
-CMD git clone https://github.com/apache/orc.git -b master && \
-  mkdir orc/build && \
-  cd orc/build && \
-  cmake .. && \ 
-  make package test-out
+CMD if [ ! -d orc ]; then \
+      echo "No volume provided, building from apache main."; \
+      echo "Pass '-v`pwd`:/root/orc' to docker run to build local source."; \
+      git clone https://github.com/apache/orc.git -b main; \
+    fi && \
+    mkdir build && \
+    cd build && \
+    cmake ../orc && \
+    make package test-out

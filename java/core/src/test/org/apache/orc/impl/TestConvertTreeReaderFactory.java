@@ -17,15 +17,6 @@
  */
 package org.apache.orc.impl;
 
-import java.io.File;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.sql.Timestamp;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.GregorianCalendar;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -47,13 +38,21 @@ import org.apache.orc.RecordReader;
 import org.apache.orc.TestProlepticConversions;
 import org.apache.orc.TypeDescription;
 import org.apache.orc.Writer;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TestName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.GregorianCalendar;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestConvertTreeReaderFactory {
 
@@ -67,17 +66,15 @@ public class TestConvertTreeReaderFactory {
   private static final int INCREASING_BATCH_SIZE_FIRST = 30;
   private static final int INCREASING_BATCH_SIZE_SECOND = 50;
 
-  @Rule
-  public TestName testCaseName = new TestName();
-
-  @Before
-  public void setupPath() throws Exception {
+  @BeforeEach
+  public void setupPath(TestInfo testInfo) throws Exception {
     // Default CV length is 1024
     this.LARGE_BATCH_SIZE = 1030;
     this.conf = new Configuration();
     this.fs = FileSystem.getLocal(conf);
-    this.testFilePath = new Path(workDir, TestWriterImpl.class.getSimpleName() + testCaseName.getMethodName().
-        replaceFirst("\\[[0-9]+]", "") + ".orc");
+    this.testFilePath = new Path(workDir, TestWriterImpl.class.getSimpleName() +
+        testInfo.getTestMethod().get().getName().replaceFirst("\\[[0-9]+]", "") +
+        ".orc");
     fs.delete(testFilePath, false);
   }
 

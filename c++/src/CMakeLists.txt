@@ -43,6 +43,14 @@ CHECK_CXX_SOURCE_COMPILES("
 )
 
 CHECK_CXX_SOURCE_COMPILES("
+    int main(){
+      int a;
+      return __builtin_add_overflow(1, 2, &a);
+    }"
+  HAS_BUILTIN_OVERFLOW_CHECK
+)
+
+CHECK_CXX_SOURCE_COMPILES("
     #include<stdint.h>
     #include<stdio.h>
     int main(int,char*[]){
@@ -98,6 +106,35 @@ CHECK_CXX_SOURCE_COMPILES("
   NEEDS_REDUNDANT_MOVE
 )
 
+CHECK_CXX_SOURCE_COMPILES("
+    #include<string>
+    int main(int, char *[]) {
+      double d = 5;
+      std::to_string(d);
+    }"
+  HAS_DOUBLE_TO_STRING
+)
+
+CHECK_CXX_SOURCE_COMPILES("
+    #include<cstdint>
+    #include<string>
+    int main(int, char *[]) {
+      int64_t d = 5;
+      std::to_string(d);
+    }"
+  HAS_INT64_TO_STRING
+)
+
+CHECK_CXX_SOURCE_COMPILES("
+  constexpr int foo(int x, int y) {
+    return x+y;
+  }
+  int main(int, char*[]) {
+    return foo(1,3);
+  }"
+  HAS_CONSTEXPR
+)
+
 INCLUDE(CheckCXXSourceRuns)
 
 CHECK_CXX_SOURCE_RUNS("
@@ -120,13 +157,13 @@ CHECK_CXX_SOURCE_RUNS("
       struct tm time2038;
       strptime(\"2037-05-05 12:34:56\", \"%Y-%m-%d %H:%M:%S\", &time2037);
       strptime(\"2038-05-05 12:34:56\", \"%Y-%m-%d %H:%M:%S\", &time2038);
-      return mktime(&time2038) - mktime(&time2037) != 31536000;
+      return (mktime(&time2038) - mktime(&time2037)) <= 31500000;
     }"
   HAS_POST_2038
 )
 
 set(CMAKE_REQUIRED_INCLUDES ${ZLIB_INCLUDE_DIR})
-set(CMAKE_REQUIRED_LIBRARIES zlib)
+set(CMAKE_REQUIRED_LIBRARIES orc_zlib)
 CHECK_CXX_SOURCE_COMPILES("
     #define Z_PREFIX
     #include<zlib.h>
@@ -145,18 +182,14 @@ configure_file (
 include_directories (
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}
-  ${PROTOBUF_INCLUDE_DIR}
-  ${ZLIB_INCLUDE_DIR}
-  ${SNAPPY_INCLUDE_DIR}
-  ${LZ4_INCLUDE_DIR}
   ${LIBHDFSPP_INCLUDE_DIR}
   )
 
 add_custom_command(OUTPUT orc_proto.pb.h orc_proto.pb.cc
    COMMAND ${PROTOBUF_EXECUTABLE}
-        -I ${CMAKE_SOURCE_DIR}/proto
+        -I ${PROJECT_SOURCE_DIR}/proto
         --cpp_out="${CMAKE_CURRENT_BINARY_DIR}"
-        "${CMAKE_SOURCE_DIR}/proto/orc_proto.proto"
+        "${PROJECT_SOURCE_DIR}/proto/orc_proto.proto"
 )
 
 set(SOURCE_FILES
@@ -164,8 +197,15 @@ set(SOURCE_FILES
   orc_proto.pb.h
   io/InputStream.cc
   io/OutputStream.cc
+  sargs/ExpressionTree.cc
+  sargs/Literal.cc
+  sargs/PredicateLeaf.cc
+  sargs/SargsApplier.cc
+  sargs/SearchArgument.cc
+  sargs/TruthValue.cc
   wrap/orc-proto-wrapper.cc
   Adaptor.cc
+  BloomFilter.cc
   ByteRLE.cc
   ColumnPrinter.cc
   ColumnReader.cc
@@ -176,35 +216,35 @@ set(SOURCE_FILES
   Int128.cc
   LzoDecompressor.cc
   MemoryPool.cc
+  Murmur3.cc
   OrcFile.cc
   Reader.cc
   RLEv1.cc
-  RLEv2.cc
+  RLEV2Util.cc
+  RleDecoderV2.cc
+  RleEncoderV2.cc
   RLE.cc
   Statistics.cc
   StripeStream.cc
   Timezone.cc
   TypeImpl.cc
   Vector.cc
-  Writer.cc
-  )
+  Writer.cc)
 
-if(ORC_CXX_HAS_THREAD_LOCAL AND BUILD_LIBHDFSPP)
+if(BUILD_LIBHDFSPP)
   set(SOURCE_FILES ${SOURCE_FILES} OrcHdfsFile.cc)
-endif(ORC_CXX_HAS_THREAD_LOCAL AND BUILD_LIBHDFSPP)
+  add_definitions(-DBUILD_LIBHDFSPP)
+endif(BUILD_LIBHDFSPP)
 
 add_library (orc STATIC ${SOURCE_FILES})
 
 target_link_libraries (orc
-  protobuf
-  zlib
-  snappy
-  lz4
+  orc::protobuf
+  orc::zlib
+  orc::snappy
+  orc::lz4
+  orc::zstd
   ${LIBHDFSPP_LIBRARIES}
   )
 
 install(TARGETS orc DESTINATION lib)
-
-if(ORC_CXX_HAS_THREAD_LOCAL AND BUILD_LIBHDFSPP)
-  add_definitions(-DBUILD_LIBHDFSPP)
-endif(ORC_CXX_HAS_THREAD_LOCAL AND BUILD_LIBHDFSPP)

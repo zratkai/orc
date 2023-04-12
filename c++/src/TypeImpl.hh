@@ -34,12 +34,13 @@ namespace orc {
     mutable int64_t columnId;
     mutable int64_t maximumColumnId;
     TypeKind kind;
-    std::vector<Type*> subTypes;
+    std::vector<std::unique_ptr<Type>> subTypes;
     std::vector<std::string> fieldNames;
     uint64_t subtypeCount;
     uint64_t maxLength;
     uint64_t precision;
     uint64_t scale;
+    std::map<std::string, std::string> attributes;
 
   public:
     /**
@@ -57,8 +58,6 @@ namespace orc {
      */
     TypeImpl(TypeKind kind, uint64_t precision,
              uint64_t scale);
-
-    virtual ~TypeImpl() override;
 
     uint64_t getColumnId() const override;
 
@@ -78,6 +77,17 @@ namespace orc {
 
     uint64_t getScale() const override;
 
+    Type& setAttribute(const std::string& key,
+                       const std::string& value) override;
+
+    bool hasAttributeKey(const std::string& key) const override;
+
+    Type& removeAttribute(const std::string& key) override;
+
+    std::vector<std::string> getAttributeKeys() const override;
+
+    std::string getAttributeValue(const std::string& key) const override;
+
     std::string toString() const override;
 
     Type* addStructField(const std::string& fieldName,
@@ -85,7 +95,8 @@ namespace orc {
     Type* addUnionChild(std::unique_ptr<Type> fieldType) override;
 
     std::unique_ptr<ColumnVectorBatch> createRowBatch(uint64_t size,
-                                                      MemoryPool& memoryPool
+                                                      MemoryPool& memoryPool,
+                                                      bool encoded = false
                                                       ) const override;
 
     /**
@@ -98,7 +109,7 @@ namespace orc {
      */
     void addChildType(std::unique_ptr<Type> childType);
 
-    static std::vector<std::pair<std::string, Type *> > parseType(
+    static std::pair<ORC_UNIQUE_PTR<Type>, size_t> parseType(
       const std::string &input,
       size_t start,
       size_t end);
@@ -122,9 +133,9 @@ namespace orc {
      * @param start start position of the input string
      * @param end end position of the input string
      */
-    static Type* parseArrayType(const std::string &input,
-                                size_t start,
-                                size_t end);
+    static std::unique_ptr<Type> parseArrayType(const std::string &input,
+                                                size_t start,
+                                                size_t end);
 
     /**
      * Parse map type from string
@@ -132,9 +143,19 @@ namespace orc {
      * @param start start position of the input string
      * @param end end position of the input string
      */
-    static Type* parseMapType(const std::string &input,
-                              size_t start,
-                              size_t end);
+    static std::unique_ptr<Type> parseMapType(const std::string &input,
+                                              size_t start,
+                                              size_t end);
+
+    /**
+     * Parse field name from string
+     * @param input the input string of a field name
+     * @param start start position of the input string
+     * @param end end position of the input string
+     */
+    static std::pair<std::string, size_t> parseName(const std::string &input,
+                                                    const size_t start,
+                                                    const size_t end);
 
     /**
      * Parse struct type from string
@@ -142,9 +163,9 @@ namespace orc {
      * @param start start position of the input string
      * @param end end position of the input string
      */
-    static Type* parseStructType(const std::string &input,
-                                 size_t start,
-                                 size_t end);
+    static std::unique_ptr<Type> parseStructType(const std::string &input,
+                                                 size_t start,
+                                                 size_t end);
 
     /**
      * Parse union type from string
@@ -152,9 +173,9 @@ namespace orc {
      * @param start start position of the input string
      * @param end end position of the input string
      */
-    static Type* parseUnionType(const std::string &input,
-                                size_t start,
-                                size_t end);
+    static std::unique_ptr<Type> parseUnionType(const std::string &input,
+                                                size_t start,
+                                                size_t end);
 
     /**
      * Parse decimal type from string
@@ -162,9 +183,9 @@ namespace orc {
      * @param start start position of the input string
      * @param end end position of the input string
      */
-    static Type* parseDecimalType(const std::string &input,
-                                  size_t start,
-                                  size_t end);
+    static std::unique_ptr<Type> parseDecimalType(const std::string &input,
+                                                  size_t start,
+                                                  size_t end);
 
     /**
      * Parse type for a category
@@ -173,10 +194,10 @@ namespace orc {
      * @param start start position of the input string
      * @param end end position of the input string
      */
-    static Type* parseCategory(std::string category,
-                               const std::string &input,
-                               size_t start,
-                               size_t end);
+    static std::unique_ptr<Type> parseCategory(std::string category,
+                                               const std::string &input,
+                                               size_t start,
+                                               size_t end);
   };
 
   std::unique_ptr<Type> convertType(const proto::Type& type,

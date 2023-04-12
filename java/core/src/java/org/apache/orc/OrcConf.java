@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,8 +18,11 @@
 
 package org.apache.orc;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 
 /**
@@ -29,6 +32,10 @@ public enum OrcConf {
   STRIPE_SIZE("orc.stripe.size", "hive.exec.orc.default.stripe.size",
       64L * 1024 * 1024,
       "Define the default ORC stripe size, in bytes."),
+  STRIPE_ROW_COUNT("orc.stripe.row.count", "orc.stripe.row.count",
+      Integer.MAX_VALUE, "This value limit the row count in one stripe. \n" +
+      "The number of stripe rows can be controlled at \n" +
+      "(0, \"orc.stripe.row.count\" + max(batchSize, \"orc.rows.between.memory.checks\"))"),
   BLOCK_SIZE("orc.block.size", "hive.exec.orc.default.block.size",
       256L * 1024 * 1024,
       "Define the default file system block size for ORC files."),
@@ -37,7 +44,7 @@ public enum OrcConf {
   ROW_INDEX_STRIDE("orc.row.index.stride",
       "hive.exec.orc.default.row.index.stride", 10000,
       "Define the default ORC index stride in number of rows. (Stride is the\n"+
-          " number of rows n index entry represents.)"),
+          " number of rows an index entry represents.)"),
   BUFFER_SIZE("orc.compress.size", "hive.exec.orc.default.buffer.size",
       256 * 1024, "Define the default ORC buffer size, in bytes."),
   BASE_DELTA_RATIO("orc.base.delta.ratio", "hive.exec.orc.base.delta.ratio", 8,
@@ -51,7 +58,8 @@ public enum OrcConf {
       "Define the version of the file to write. Possible values are 0.11 and\n"+
           " 0.12. If this parameter is not defined, ORC will use the run\n" +
           " length encoding (RLE) introduced in Hive 0.12."),
-  ENFORCE_COMPRESSION_BUFFER_SIZE("orc.buffer.size.enforce", "hive.exec.orc.buffer.size.enforce", false,
+  ENFORCE_COMPRESSION_BUFFER_SIZE("orc.buffer.size.enforce",
+      "hive.exec.orc.buffer.size.enforce", false,
       "Defines whether to enforce ORC compression buffer size."),
   ENCODING_STRATEGY("orc.encoding.strategy", "hive.exec.orc.encoding.strategy",
       "SPEED",
@@ -75,7 +83,7 @@ public enum OrcConf {
           "3.2Mb, a new smaller stripe will be inserted to fit within that\n" +
           "space. This will make sure that no stripe written will block\n" +
           " boundaries and cause remote reads within a node local task."),
-  BLOOM_FILTER_FPP("orc.bloom.filter.fpp", "orc.default.bloom.fpp", 0.05,
+  BLOOM_FILTER_FPP("orc.bloom.filter.fpp", "orc.default.bloom.fpp", 0.01,
       "Define the default false positive probability for bloom filters."),
   USE_ZEROCOPY("orc.use.zerocopy", "hive.exec.orc.zerocopy", false,
       "Use zerocopy reads with ORC. (This requires Hadoop 2.3 or later.)"),
@@ -105,6 +113,12 @@ public enum OrcConf {
           "(default 10000 rows) else dictionary check will happen before\n" +
           "writing first stripe. In both cases, the decision to use\n" +
           "dictionary or not will be retained thereafter."),
+  DICTIONARY_IMPL("orc.dictionary.implementation", "orc.dictionary.implementation",
+      "rbtree",
+      "the implementation for the dictionary used for string-type column encoding.\n" +
+          "The choices are:\n"
+          + " rbtree - use red-black tree as the implementation for the dictionary.\n"
+          + " hash - use hash table as the implementation for the dictionary."),
   BLOOM_FILTER_COLUMNS("orc.bloom.filter.columns", "orc.bloom.filter.columns",
       "", "List of columns to create bloom filters for when writing."),
   BLOOM_FILTER_WRITE_VERSION("orc.bloom.filter.write.version",
@@ -140,41 +154,87 @@ public enum OrcConf {
       "The kryo and base64 encoded SearchArgument for predicate pushdown."),
   KRYO_SARG_BUFFER("orc.kryo.sarg.buffer", null, 8192,
       "The kryo buffer size for SearchArgument for predicate pushdown."),
-  SARG_COLUMNS("orc.sarg.column.names", "org.sarg.column.names", null,
+  SARG_COLUMNS("orc.sarg.column.names", "orc.sarg.column.names", null,
       "The list of column names for the SearchArgument."),
   FORCE_POSITIONAL_EVOLUTION("orc.force.positional.evolution",
       "orc.force.positional.evolution", false,
       "Require schema evolution to match the top level columns using position\n" +
       "rather than column names. This provides backwards compatibility with\n" +
       "Hive 2.1."),
+  FORCE_POSITIONAL_EVOLUTION_LEVEL("orc.force.positional.evolution.level",
+      "orc.force.positional.evolution.level", 1,
+      "Require schema evolution to match the the defined no. of level columns using position\n" +
+          "rather than column names. This provides backwards compatibility with Hive 2.1."),
   ROWS_BETWEEN_CHECKS("orc.rows.between.memory.checks", "orc.rows.between.memory.checks", 5000,
     "How often should MemoryManager check the memory sizes? Measured in rows\n" +
       "added to all of the writers.  Valid range is [1,10000] and is primarily meant for" +
-      "n\testing.  Setting this too low may negatively affect performance."),
+      "testing.  Setting this too low may negatively affect performance."
+        + " Use orc.stripe.row.count instead if the value larger than orc.stripe.row.count."),
   OVERWRITE_OUTPUT_FILE("orc.overwrite.output.file", "orc.overwrite.output.file", false,
     "A boolean flag to enable overwriting of the output file if it already exists.\n"),
-  IS_SCHEMA_EVOLUTION_CASE_SENSITIVE("orc.schema.evolution.case.sensitive", "orc.schema.evolution.case.sensitive", true,
-          "A boolean flag to determine if the comparision of field names in schema evolution is case sensitive .\n"),
+  IS_SCHEMA_EVOLUTION_CASE_SENSITIVE("orc.schema.evolution.case.sensitive",
+      "orc.schema.evolution.case.sensitive", true,
+      "A boolean flag to determine if the comparision of field names " +
+      "in schema evolution is case sensitive .\n"),
+  ALLOW_SARG_TO_FILTER("orc.sarg.to.filter", "orc.sarg.to.filter", false,
+                       "A boolean flag to determine if a SArg is allowed to become a filter"),
+  READER_USE_SELECTED("orc.filter.use.selected", "orc.filter.use.selected", false,
+                        "A boolean flag to determine if the selected vector is supported by\n"
+                        + "the reading application. If false, the output of the ORC reader "
+                        + "must have the filter\n"
+                        + "reapplied to avoid using unset values in the unselected rows.\n"
+                        + "If unsure please leave this as false."),
+  ALLOW_PLUGIN_FILTER("orc.filter.plugin",
+                      "orc.filter.plugin",
+                      false,
+                      "Enables the use of plugin filters during read. The plugin filters "
+                      + "are discovered against the service "
+                      + "org.apache.orc.filter.PluginFilterService, if multiple filters are "
+                      + "determined, they are combined using AND. The order of application is "
+                      + "non-deterministic and the filter functionality should not depend on the "
+                      + "order of application."),
   WRITE_VARIABLE_LENGTH_BLOCKS("orc.write.variable.length.blocks", null, false,
       "A boolean flag as to whether the ORC writer should write variable length\n"
       + "HDFS blocks."),
   DIRECT_ENCODING_COLUMNS("orc.column.encoding.direct", "orc.column.encoding.direct", "",
       "Comma-separated list of columns for which dictionary encoding is to be skipped."),
   // some JVM doesn't allow array creation of size Integer.MAX_VALUE, so chunk size is slightly less than max int
-  ORC_MAX_DISK_RANGE_CHUNK_LIMIT("orc.max.disk.range.chunk.limit", "hive.exec.orc.max.disk.range.chunk.limit",
+  ORC_MAX_DISK_RANGE_CHUNK_LIMIT("orc.max.disk.range.chunk.limit",
+      "hive.exec.orc.max.disk.range.chunk.limit",
     Integer.MAX_VALUE - 1024, "When reading stripes >2GB, specify max limit for the chunk size."),
-  PROLEPTIC_GREGORIAN("orc.proleptic.gregorian", "orc.proleptic.gregorian", false,
-          "Should we read and write dates & times using the proleptic Gregorian calendar\n" +
-                  "instead of the hybrid Julian Gregorian? Hive before 3.1 and Spark before 3.0\n" +
-                  "used hybrid."),
-  PROLEPTIC_GREGORIAN_DEFAULT("orc.proleptic.gregorian.default",
-          "orc.proleptic.gregorian.default", false,
-          "This value controls whether pre-ORC 27 files are using the hybrid or proleptic\n" +
-                  "calendar. Only Hive 3.1 and the C++ library wrote using the proleptic, so hybrid\n" +
-                  "is the default."),
+  ORC_MIN_DISK_SEEK_SIZE("orc.min.disk.seek.size",
+                         "orc.min.disk.seek.size",
+                         0,
+                         "When determining contiguous reads, gaps within this size are "
+                         + "read contiguously and not seeked. Default value of zero disables this "
+                         + "optimization"),
+  ORC_MIN_DISK_SEEK_SIZE_TOLERANCE("orc.min.disk.seek.size.tolerance",
+                          "orc.min.disk.seek.size.tolerance", 0.00,
+                          "Define the tolerance for for extra bytes read as a result of "
+                          + "orc.min.disk.seek.size. If the "
+                          + "(bytesRead - bytesNeeded) / bytesNeeded is greater than this "
+                          + "threshold then extra work is performed to drop the extra bytes from "
+                          + "memory after the read."),
   ENCRYPTION("orc.encrypt", "orc.encrypt", null, "The list of keys and columns to encrypt with"),
   DATA_MASK("orc.mask", "orc.mask", null, "The masks to apply to the encrypted columns"),
-  KEY_PROVIDER("orc.key.provider", "orc.key.provider", "hadoop", "The kind of KeyProvider to use for encryption."),
+  KEY_PROVIDER("orc.key.provider", "orc.key.provider", "hadoop",
+      "The kind of KeyProvider to use for encryption."),
+  PROLEPTIC_GREGORIAN("orc.proleptic.gregorian", "orc.proleptic.gregorian", false,
+      "Should we read and write dates & times using the proleptic Gregorian calendar\n" +
+          "instead of the hybrid Julian Gregorian? Hive before 3.1 and Spark before 3.0\n" +
+          "used hybrid."),
+  PROLEPTIC_GREGORIAN_DEFAULT("orc.proleptic.gregorian.default",
+      "orc.proleptic.gregorian.default", false,
+      "This value controls whether pre-ORC 27 files are using the hybrid or proleptic\n" +
+      "calendar. Only Hive 3.1 and the C++ library wrote using the proleptic, so hybrid\n" +
+      "is the default."),
+  ROW_BATCH_SIZE("orc.row.batch.size", "orc.row.batch.size", 1024,
+      "The number of rows to include in a orc vectorized reader batch. " +
+      "The value should be carefully chosen to minimize overhead and avoid OOMs in reading data."),
+  ROW_BATCH_CHILD_LIMIT("orc.row.child.limit", "orc.row.child.limit",
+      1024 * 32, "The maximum number of child elements to buffer before "+
+      "the ORC row writer writes the batch to the file."
+      ),
   ORC_VECTORED_READ("orc.use.hadoop-vectored.api",
           "hive.exec.orc.use.hadoop-vectored.api",
           false,
@@ -238,7 +298,16 @@ public enum OrcConf {
     return getInt(null, conf);
   }
 
+  /**
+   * @deprecated Use {@link #getInt(Configuration)} instead. This method was
+   * incorrectly added and shouldn't be used anymore.
+   */
+  @Deprecated
   public void getInt(Configuration conf, int value) {
+    // noop
+  }
+
+  public void setInt(Configuration conf, int value) {
     conf.setInt(attribute, value);
   }
 
@@ -265,6 +334,21 @@ public enum OrcConf {
 
   public String getString(Configuration conf) {
     return getString(null, conf);
+  }
+
+  public List<String> getStringAsList(Configuration conf) {
+    String value = getString(null, conf);
+    List<String> confList = new ArrayList<>();
+    if (StringUtils.isEmpty(value)) {
+      return confList;
+    }
+    for (String str: value.split(",")) {
+      String trimStr = StringUtils.trim(str);
+      if (StringUtils.isNotEmpty(trimStr)) {
+        confList.add(trimStr);
+      }
+    }
+    return confList;
   }
 
   public void setString(Configuration conf, String value) {

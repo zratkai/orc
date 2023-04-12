@@ -17,6 +17,8 @@
  */
 package org.apache.orc.impl;
 
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
@@ -26,29 +28,6 @@ import org.apache.hadoop.hive.ql.io.sarg.SearchArgument.TruthValue;
 import org.apache.hadoop.hive.ql.util.TimestampUtils;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.Text;
-
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.sql.Date;
-import java.sql.Timestamp;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.ZoneOffset;
-import java.time.chrono.ChronoLocalDate;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.SortedSet;
-import java.util.TimeZone;
-import java.util.TreeSet;
-
-import org.apache.orc.OrcFile;
-import org.apache.orc.impl.reader.ReaderEncryption;
-import org.apache.orc.impl.reader.StripePlanner;
-import org.apache.orc.util.BloomFilter;
-import org.apache.orc.util.BloomFilterIO;
 import org.apache.orc.BooleanColumnStatistics;
 import org.apache.orc.CollectionColumnStatistics;
 import org.apache.orc.ColumnStatistics;
@@ -59,6 +38,8 @@ import org.apache.orc.DecimalColumnStatistics;
 import org.apache.orc.DoubleColumnStatistics;
 import org.apache.orc.IntegerColumnStatistics;
 import org.apache.orc.OrcConf;
+import org.apache.orc.OrcFile;
+import org.apache.orc.OrcFilterContext;
 import org.apache.orc.OrcProto;
 import org.apache.orc.Reader;
 import org.apache.orc.RecordReader;
@@ -66,13 +47,44 @@ import org.apache.orc.StringColumnStatistics;
 import org.apache.orc.StripeInformation;
 import org.apache.orc.TimestampColumnStatistics;
 import org.apache.orc.TypeDescription;
+import org.apache.orc.filter.BatchFilter;
+import org.apache.orc.impl.filter.FilterFactory;
+import org.apache.orc.impl.reader.ReaderEncryption;
+import org.apache.orc.impl.reader.StripePlanner;
+import org.apache.orc.impl.reader.tree.BatchReader;
+import org.apache.orc.impl.reader.tree.TypeReader;
+import org.apache.orc.util.BloomFilter;
+import org.apache.orc.util.BloomFilterIO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
+import java.time.chrono.ChronoLocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import java.util.SortedSet;
+import java.util.TimeZone;
+import java.util.TreeSet;
+import java.util.function.Consumer;
 
 public class RecordReaderImpl implements RecordReader {
   static final Logger LOG = LoggerFactory.getLogger(RecordReaderImpl.class);
   private static final boolean isLogDebugEnabled = LOG.isDebugEnabled();
-  private static final Object UNKNOWN_VALUE = new Object();
+  // as public for use with test cases
+  public static final OrcProto.ColumnStatistics EMPTY_COLUMN_STATISTICS =
+      OrcProto.ColumnStatistics.newBuilder().setNumberOfValues(0)
+          .setHasNull(false)
+          .setBytesOnDisk(0)
+          .build();
   protected final Path path;
   private final long firstRow;
   private final List<StripeInformation> stripes = new ArrayList<>();
@@ -83,37 +95,86 @@ public class RecordReaderImpl implements RecordReader {
   private final boolean[] fileIncluded;
   private final long rowIndexStride;
   private long rowInStripe = 0;
+  // position of the follow reader within the stripe
+  private long followRowInStripe = 0;
   private int currentStripe = -1;
   private long rowBaseInStripe = 0;
   private long rowCountInStripe = 0;
-  private final TreeReaderFactory.TreeReader reader;
+  private final BatchReader reader;
   private final OrcIndex indexes;
+  // identifies the columns requiring row indexes
+  private final boolean[] rowIndexColsToRead;
   private final SargApplier sargApp;
   // an array about which row groups aren't skipped
   private boolean[] includedRowGroups = null;
   private final DataReader dataReader;
   private final int maxDiskRangeChunkLimit;
   private final StripePlanner planner;
+  // identifies the type of read, ALL(read everything), LEADERS(read only the filter columns)
+  private final TypeReader.ReadPhase startReadPhase;
+  // identifies that follow columns bytes must be read
+  private boolean needsFollowColumnsRead;
+  private final boolean noSelectedVector;
+  // identifies whether the file has bad bloom filters that we should not use.
+  private final boolean skipBloomFilters;
+  static final String[] BAD_CPP_BLOOM_FILTER_VERSIONS = {
+      "1.6.0", "1.6.1", "1.6.2", "1.6.3", "1.6.4", "1.6.5", "1.6.6", "1.6.7", "1.6.8",
+      "1.6.9", "1.6.10", "1.6.11", "1.7.0"};
 
   /**
    * Given a list of column names, find the given column and return the index.
    *
    * @param evolution the mapping from reader to file schema
    * @param columnName  the fully qualified column name to look for
-   * @return the file column number or -1 if the column wasn't found
+   * @return the file column number or -1 if the column wasn't found in the file schema
+   * @throws IllegalArgumentException if the column was not found in the reader schema
    */
   static int findColumns(SchemaEvolution evolution,
                          String columnName) {
+    TypeDescription fileColumn = findColumnType(evolution, columnName);
+    return fileColumn == null ? -1 : fileColumn.getId();
+  }
+
+  static TypeDescription findColumnType(SchemaEvolution evolution, String columnName) {
     try {
-      TypeDescription readerColumn =
-          evolution.getReaderBaseSchema().findSubtype(columnName);
-      TypeDescription fileColumn = evolution.getFileType(readerColumn);
-      return fileColumn == null ? -1 : fileColumn.getId();
+      TypeDescription readerColumn = evolution.getReaderBaseSchema().findSubtype(
+          columnName, evolution.isSchemaEvolutionCaseAware);
+      return evolution.getFileType(readerColumn);
     } catch (IllegalArgumentException e) {
-      if (LOG.isDebugEnabled()){
-        LOG.debug("{}", e.getMessage());
-      }
-      return -1;
+      throw new IllegalArgumentException("Filter could not find column with name: " +
+                                         columnName + " on " + evolution.getReaderBaseSchema(),
+                                         e);
+    }
+  }
+
+  /**
+   * Given a column name such as 'a.b.c', this method returns the column 'a.b.c' if present in the
+   * file. In case 'a.b.c' is not found in file then it tries to look for 'a.b', then 'a'. If none
+   * are present then it shall return null.
+   *
+   * @param evolution the mapping from reader to file schema
+   * @param columnName the fully qualified column name to look for
+   * @return the file column type or null in case none of the branch columns are present in the file
+   * @throws IllegalArgumentException if the column was not found in the reader schema
+   */
+  static TypeDescription findMostCommonColumn(SchemaEvolution evolution, String columnName) {
+    try {
+      TypeDescription readerColumn = evolution.getReaderBaseSchema().findSubtype(
+          columnName, evolution.isSchemaEvolutionCaseAware);
+      TypeDescription fileColumn;
+      do {
+        fileColumn = evolution.getFileType(readerColumn);
+        if (fileColumn == null) {
+          readerColumn = readerColumn.getParent();
+        } else {
+          return fileColumn;
+        }
+      } while (readerColumn != null);
+      return null;
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Filter could not find column with name: " +
+                                         columnName + " on " + evolution.getReaderBaseSchema(),
+                                         e);
     }
   }
 
@@ -128,10 +189,15 @@ public class RecordReaderImpl implements RecordReader {
                             List<PredicateLeaf> sargLeaves,
                             SchemaEvolution evolution) {
     int[] result = new int[sargLeaves.size()];
-    Arrays.fill(result, -1);
-    for(int i=0; i < result.length; ++i) {
-      String colName = sargLeaves.get(i).getColumnName();
-      result[i] = findColumns(evolution, colName);
+    for (int i = 0; i < sargLeaves.size(); ++i) {
+      int colNum = -1;
+      try {
+        String colName = sargLeaves.get(i).getColumnName();
+        colNum = findColumns(evolution, colName);
+      } catch (IllegalArgumentException e) {
+        LOG.debug("{}", e.getMessage());
+      }
+      result[i] = colNum;
     }
     return result;
   }
@@ -141,10 +207,8 @@ public class RecordReaderImpl implements RecordReader {
     OrcFile.WriterVersion writerVersion = fileReader.getWriterVersion();
     SchemaEvolution evolution;
     if (options.getSchema() == null) {
-      if (LOG.isInfoEnabled()) {
-        LOG.info("Reader schema not provided -- using file schema " +
-            fileReader.getSchema());
-      }
+      LOG.info("Reader schema not provided -- using file schema " +
+          fileReader.getSchema());
       evolution = new SchemaEvolution(fileReader.getSchema(), null, options);
     } else {
 
@@ -161,14 +225,19 @@ public class RecordReaderImpl implements RecordReader {
             "file schema:   " + fileReader.getSchema());
       }
     }
+
+    this.noSelectedVector = !options.useSelected();
+    LOG.debug("noSelectedVector={}", this.noSelectedVector);
     this.schema = evolution.getReaderSchema();
     this.path = fileReader.path;
     this.rowIndexStride = fileReader.rowIndexStride;
-    boolean ignoreNonUtf8BloomFilter = OrcConf.IGNORE_NON_UTF8_BLOOM_FILTERS.getBoolean(fileReader.conf);
+    boolean ignoreNonUtf8BloomFilter =
+        OrcConf.IGNORE_NON_UTF8_BLOOM_FILTERS.getBoolean(fileReader.conf);
     ReaderEncryption encryption = fileReader.getEncryption();
     this.fileIncluded = evolution.getFileIncluded();
     SearchArgument sarg = options.getSearchArgument();
-    if (sarg != null && rowIndexStride != 0) {
+    boolean[] rowIndexCols = new boolean[evolution.getFileIncluded().length];
+    if (sarg != null && rowIndexStride > 0) {
       sargApp = new SargApplier(sarg,
           rowIndexStride,
           evolution,
@@ -176,6 +245,7 @@ public class RecordReaderImpl implements RecordReader {
           fileReader.useUTCTimestamp,
           fileReader.writerUsedProlepticGregorian(),
           fileReader.options.getConvertToProlepticGregorian());
+      sargApp.setRowIndexCols(rowIndexCols);
     } else {
       sargApp = null;
     }
@@ -205,15 +275,22 @@ public class RecordReaderImpl implements RecordReader {
           InStream.options()
               .withCodec(OrcCodecPool.getCodec(fileReader.getCompressionKind()))
               .withBufferSize(fileReader.getCompressionSize());
-      this.dataReader = RecordReaderUtils.createDefaultDataReader(
+      DataReaderProperties.Builder builder =
           DataReaderProperties.builder()
               .withCompression(unencryptedOptions)
               .withFileSystemSupplier(fileReader.getFileSystemSupplier())
               .withPath(fileReader.path)
-              .withZeroCopy(zeroCopy)
               .withMaxDiskRangeChunkLimit(maxDiskRangeChunkLimit)
               .withVectoredRead(options.getIsVectoredRead())
-              .build());
+              .withZeroCopy(zeroCopy)
+              .withMinSeekSize(options.minSeekSize())
+              .withMinSeekSizeTolerance(options.minSeekSizeTolerance());
+      FSDataInputStream file = fileReader.takeFile();
+      if (file != null) {
+        builder.withFile(file);
+      }
+      this.dataReader = RecordReaderUtils.createDefaultDataReader(
+          builder.build());
     }
     firstRow = skippedRows;
     totalRowCount = rows;
@@ -222,33 +299,61 @@ public class RecordReaderImpl implements RecordReader {
       skipCorrupt = OrcConf.SKIP_CORRUPT_DATA.getBoolean(fileReader.conf);
     }
 
-    // Map columnNames to ColumnIds
-    SortedSet<Integer> filterColIds = new TreeSet<>();
-    if (options.getPreFilterColumnNames() != null) {
-      for (String colName : options.getPreFilterColumnNames()) {
-        int expandColId = findColumns(evolution, colName);
-        if (expandColId != -1) {
-          filterColIds.add(expandColId);
-        } else {
-          throw new IllegalArgumentException("Filter could not find column with name: " +
-              colName + " on " + evolution.getReaderBaseSchema());
-        }
-      }
-      LOG.info("Filter Columns: " + filterColIds);
+    String[] filterCols = null;
+    Consumer<OrcFilterContext> filterCallBack = null;
+    String filePath = options.allowPluginFilters() ?
+        fileReader.getFileSystem().makeQualified(fileReader.path).toString() : null;
+    BatchFilter filter = FilterFactory.createBatchFilter(options,
+                                                         evolution.getReaderBaseSchema(),
+                                                         evolution.isSchemaEvolutionCaseAware(),
+                                                         fileReader.getFileVersion(),
+                                                         false,
+                                                         filePath,
+                                                         fileReader.conf);
+    if (filter != null) {
+      // If a filter is determined then use this
+      filterCallBack = filter;
+      filterCols = filter.getColumnNames();
     }
 
+    // Map columnNames to ColumnIds
+    SortedSet<Integer> filterColIds = new TreeSet<>();
+    if (filterCols != null) {
+      for (String colName : filterCols) {
+        TypeDescription expandCol = findColumnType(evolution, colName);
+        // If the column is not present in the file then this can be ignored from read.
+        if (expandCol == null || expandCol.getId() == -1) {
+          // Add -1 to filter columns so that the NullTreeReader is invoked during the LEADERS phase
+          filterColIds.add(-1);
+          // Determine the common parent and include these
+          expandCol = findMostCommonColumn(evolution, colName);
+        }
+        while (expandCol != null && expandCol.getId() != -1) {
+          // classify the column and the parent branch as LEAD
+          filterColIds.add(expandCol.getId());
+          rowIndexCols[expandCol.getId()] = true;
+          expandCol = expandCol.getParent();
+        }
+      }
+      this.startReadPhase = TypeReader.ReadPhase.LEADERS;
+      LOG.debug("Using startReadPhase: {} with filter columns: {}", startReadPhase, filterColIds);
+    } else {
+      this.startReadPhase = TypeReader.ReadPhase.ALL;
+    }
+
+    this.rowIndexColsToRead = ArrayUtils.contains(rowIndexCols, true) ? rowIndexCols : null;
     TreeReaderFactory.ReaderContext readerContext =
         new TreeReaderFactory.ReaderContext()
           .setSchemaEvolution(evolution)
-          .setFilterCallback(filterColIds, options.getFilterCallback())
+          .setFilterCallback(filterColIds, filterCallBack)
           .skipCorrupt(skipCorrupt)
           .fileFormat(fileReader.getFileVersion())
           .useUTCTimestamp(fileReader.useUTCTimestamp)
-          .setEncryption(encryption)
           .setProlepticGregorian(fileReader.writerUsedProlepticGregorian(),
-                  fileReader.options.getConvertToProlepticGregorian());
-    reader = TreeReaderFactory.createTreeReader(evolution.getReaderSchema(),
-        readerContext);
+              fileReader.options.getConvertToProlepticGregorian())
+          .setEncryption(encryption);
+    reader = TreeReaderFactory.createRootReader(evolution.getReaderSchema(), readerContext);
+    skipBloomFilters = hasBadBloomFilters(fileReader.getFileTail().getFooter());
 
     int columns = evolution.getFileSchema().getMaximumId() + 1;
     indexes = new OrcIndex(new OrcProto.RowIndex[columns],
@@ -256,16 +361,45 @@ public class RecordReaderImpl implements RecordReader {
         new OrcProto.BloomFilterIndex[columns]);
 
     planner = new StripePlanner(evolution.getFileSchema(), encryption,
-        dataReader, writerVersion, ignoreNonUtf8BloomFilter,
-        maxDiskRangeChunkLimit);
+                                dataReader, writerVersion, ignoreNonUtf8BloomFilter,
+                                maxDiskRangeChunkLimit, filterColIds);
 
     try {
       advanceToNextRow(reader, 0L, true);
-    } catch (IOException e) {
+    } catch (Exception e) {
       // Try to close since this happens in constructor.
       close();
-      throw e;
+      long stripeId = stripes.size() == 0 ? 0 : stripes.get(0).getStripeId();
+      throw new IOException(String.format("Problem opening stripe %d footer in %s.",
+          stripeId, path), e);
     }
+  }
+
+  /**
+   * Check if the file has inconsistent bloom filters. We will skip using them
+   * in the following reads.
+   * @return true if it has.
+   */
+  private boolean hasBadBloomFilters(OrcProto.Footer footer) {
+    // Only C++ writer in old releases could have bad bloom filters.
+    if (footer.getWriter() != 1) return false;
+    // 'softwareVersion' is added in 1.5.13, 1.6.11, and 1.7.0.
+    // 1.6.x releases before 1.6.11 won't have it. On the other side, the C++ writer
+    // supports writing bloom filters since 1.6.0. So files written by the C++ writer
+    // and with 'softwareVersion' unset would have bad bloom filters.
+    if (!footer.hasSoftwareVersion()) return true;
+    String fullVersion = footer.getSoftwareVersion();
+    String version = fullVersion;
+    // Deal with snapshot versions, e.g. 1.6.12-SNAPSHOT.
+    if (fullVersion.contains("-")) {
+      version = fullVersion.substring(0, fullVersion.indexOf('-'));
+    }
+    for (String v : BAD_CPP_BLOOM_FILTER_VERSIONS) {
+      if (v.equals(version)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public static final class PositionProviderImpl implements PositionProvider {
@@ -303,138 +437,187 @@ public class RecordReaderImpl implements RecordReader {
     BEFORE, MIN, MIDDLE, MAX, AFTER
   }
 
-  /**
-   * Given a point and min and max, determine if the point is before, at the
-   * min, in the middle, at the max, or after the range.
-   * @param point the point to test
-   * @param min the minimum point
-   * @param max the maximum point
-   * @param <T> the type of the comparision
-   * @return the location of the point
-   */
-  static <T> Location compareToRange(Comparable<T> point, T min, T max, T lowerBound, T upperBound) {
+  static class ValueRange<T extends Comparable> {
+    final Comparable lower;
+    final Comparable upper;
+    final boolean onlyLowerBound;
+    final boolean onlyUpperBound;
+    final boolean hasNulls;
+    final boolean hasValue;
+    final boolean comparable;
 
-    final boolean isLowerBoundSet = (min == null && lowerBound != null) ? true : false;
-    final boolean isUpperBoundSet = (max == null && upperBound != null) ? true : false;
-
-    final int minCompare = isLowerBoundSet ? point.compareTo(lowerBound) : point.compareTo(min);
-    if (minCompare < 0) {
-      return Location.BEFORE;
+    ValueRange(PredicateLeaf predicate,
+               T lower, T upper,
+               boolean hasNulls,
+               boolean onlyLowerBound,
+               boolean onlyUpperBound,
+               boolean hasValue,
+               boolean comparable) {
+      PredicateLeaf.Type type = predicate.getType();
+      this.lower = getBaseObjectForComparison(type, lower);
+      this.upper = getBaseObjectForComparison(type, upper);
+      this.hasNulls = hasNulls;
+      this.onlyLowerBound = onlyLowerBound;
+      this.onlyUpperBound = onlyUpperBound;
+      this.hasValue = hasValue;
+      this.comparable = comparable;
     }
 
-    /* since min value is truncated when we have compare=0, it means the predicate string is BEFORE the min value*/
-    else if (minCompare == 0 && isLowerBoundSet) {
-      return Location.BEFORE;
-    } else if (minCompare == 0) {
-      return Location.MIN;
+    ValueRange(PredicateLeaf predicate,
+               T lower, T upper,
+               boolean hasNulls,
+               boolean onlyLowerBound,
+               boolean onlyUpperBound) {
+      this(predicate, lower, upper, hasNulls, onlyLowerBound, onlyUpperBound,
+          lower != null, lower != null);
     }
 
-    int maxCompare = isUpperBoundSet ? point.compareTo(upperBound) : point.compareTo(max);
-    if (maxCompare > 0) {
-      return Location.AFTER;
+    ValueRange(PredicateLeaf predicate, T lower, T upper,
+               boolean hasNulls) {
+      this(predicate, lower, upper, hasNulls, false, false);
     }
-    /* if upperbound is set then location here will be AFTER */
-    else if (maxCompare == 0 && isUpperBoundSet) {
-      return Location.AFTER;
-    } else if (maxCompare == 0) {
-      return Location.MAX;
-    }
-    return Location.MIDDLE;
-  }
 
-  /**
-   * Get the maximum value out of an index entry.
-   * @param index
-   *          the index entry
-   * @return the object for the maximum value or null if there isn't one
-   */
-  static Object getMax(ColumnStatistics index) {
-    return getMax(index, false);
+    /**
+     * A value range where the data is either missing or all null.
+     * @param predicate the predicate to test
+     * @param hasNulls whether there are nulls
+     */
+    ValueRange(PredicateLeaf predicate, boolean hasNulls) {
+      this(predicate, null, null, hasNulls, false, false);
+    }
+
+    boolean hasValues() {
+      return hasValue;
+    }
+
+    /**
+     * Whether min or max is provided for comparison
+     * @return is it comparable
+     */
+    boolean isComparable() {
+      return hasValue && comparable;
+    }
+
+    /**
+     * value range is invalid if the column statistics are non-existent
+     * @see ColumnStatisticsImpl#isStatsExists()
+     * this method is similar to isStatsExists
+     * @return value range is valid or not
+     */
+    boolean isValid() {
+      return hasValue || hasNulls;
+    }
+
+    /**
+     * Given a point and min and max, determine if the point is before, at the
+     * min, in the middle, at the max, or after the range.
+     * @param point the point to test
+     * @return the location of the point
+     */
+    Location compare(Comparable point) {
+      int minCompare = point.compareTo(lower);
+      if (minCompare < 0) {
+        return Location.BEFORE;
+      } else if (minCompare == 0) {
+        return onlyLowerBound ? Location.BEFORE : Location.MIN;
+      }
+      int maxCompare = point.compareTo(upper);
+      if (maxCompare > 0) {
+        return Location.AFTER;
+      } else if (maxCompare == 0) {
+        return onlyUpperBound ? Location.AFTER : Location.MAX;
+      }
+      return Location.MIDDLE;
+    }
+
+    /**
+     * Is this range a single point?
+     * @return true if min == max
+     */
+    boolean isSingleton() {
+      return lower != null && !onlyLowerBound && !onlyUpperBound &&
+                 lower.equals(upper);
+    }
+
+    /**
+     * Add the null option to the truth value, if the range includes nulls.
+     * @param value the original truth value
+     * @return the truth value extended with null if appropriate
+     */
+    TruthValue addNull(TruthValue value) {
+      if (hasNulls) {
+        switch (value) {
+          case YES:
+            return TruthValue.YES_NULL;
+          case NO:
+            return TruthValue.NO_NULL;
+          case YES_NO:
+            return TruthValue.YES_NO_NULL;
+          default:
+            return value;
+        }
+      } else {
+        return value;
+      }
+    }
   }
 
   /**
    * Get the maximum value out of an index entry.
    * Includes option to specify if timestamp column stats values
    * should be in UTC.
-   * @param index
-   *          the index entry
-   * @param useUTCTimestamp
+   * @param index the index entry
+   * @param predicate the kind of predicate
+   * @param useUTCTimestamp use UTC for timestamps
    * @return the object for the maximum value or null if there isn't one
    */
-  static Object getMax(ColumnStatistics index, boolean useUTCTimestamp) {
-    if (index instanceof IntegerColumnStatistics) {
-      return ((IntegerColumnStatistics) index).getMaximum();
-    } else if (index instanceof DoubleColumnStatistics) {
-      return ((DoubleColumnStatistics) index).getMaximum();
-    } else if (index instanceof StringColumnStatistics) {
-      return ((StringColumnStatistics) index).getUpperBound();
-    } else if (index instanceof DateColumnStatistics) {
-      return ((DateColumnStatistics) index).getMaximum();
-    } else if (index instanceof DecimalColumnStatistics) {
-      return ((DecimalColumnStatistics) index).getMaximum();
-    } else if (index instanceof TimestampColumnStatistics) {
-      if (useUTCTimestamp) {
-        return ((TimestampColumnStatistics) index).getMaximumUTC();
-      } else {
-        return ((TimestampColumnStatistics) index).getMaximum();
-      }
-    } else if (index instanceof BooleanColumnStatistics) {
-      if (((BooleanColumnStatistics)index).getTrueCount()!=0) {
-        return Boolean.TRUE;
-      } else {
-        return Boolean.FALSE;
-      }
-    } else {
-      return null;
-    }
-  }
-
-  /**
-   * Get the minimum value out of an index entry.
-   * @param index
-   *          the index entry
-   * @return the object for the minimum value or null if there isn't one
-   */
-  static Object getMin(ColumnStatistics index) {
-    return getMin(index, false);
-  }
-
-  /**
-   * Get the minimum value out of an index entry.
-   * Includes option to specify if timestamp column stats values
-   * should be in UTC.
-   * @param index
-   *          the index entry
-   * @param useUTCTimestamp
-   * @return the object for the minimum value or null if there isn't one
-   */
-  static Object getMin(ColumnStatistics index, boolean useUTCTimestamp) {
-    if (index instanceof IntegerColumnStatistics) {
-      return ((IntegerColumnStatistics) index).getMinimum();
+  static ValueRange getValueRange(ColumnStatistics index,
+                                  PredicateLeaf predicate,
+                                  boolean useUTCTimestamp) {
+    if (index.getNumberOfValues() == 0) {
+      return new ValueRange<>(predicate, index.hasNull());
+    } else if (index instanceof IntegerColumnStatistics) {
+      IntegerColumnStatistics stats = (IntegerColumnStatistics) index;
+      Long min = stats.getMinimum();
+      Long max = stats.getMaximum();
+      return new ValueRange<>(predicate, min, max, stats.hasNull());
     } else if (index instanceof CollectionColumnStatistics) {
-      return ((CollectionColumnStatistics) index).getMinimumChildren();
-    } else if (index instanceof DoubleColumnStatistics) {
-      return ((DoubleColumnStatistics) index).getMinimum();
+      CollectionColumnStatistics stats = (CollectionColumnStatistics) index;
+      Long min = stats.getMinimumChildren();
+      Long max = stats.getMaximumChildren();
+      return new ValueRange<>(predicate, min, max, stats.hasNull());
+    }else if (index instanceof DoubleColumnStatistics) {
+      DoubleColumnStatistics stats = (DoubleColumnStatistics) index;
+      Double min = stats.getMinimum();
+      Double max = stats.getMaximum();
+      return new ValueRange<>(predicate, min, max, stats.hasNull());
     } else if (index instanceof StringColumnStatistics) {
-      return ((StringColumnStatistics) index).getLowerBound();
+      StringColumnStatistics stats = (StringColumnStatistics) index;
+      return new ValueRange<>(predicate, stats.getLowerBound(),
+          stats.getUpperBound(), stats.hasNull(), stats.getMinimum() == null,
+          stats.getMaximum() == null);
     } else if (index instanceof DateColumnStatistics) {
-      return ((DateColumnStatistics) index).getMinimumLocalDate();
+      DateColumnStatistics stats = (DateColumnStatistics) index;
+      ChronoLocalDate min = stats.getMinimumLocalDate();
+      ChronoLocalDate max = stats.getMaximumLocalDate();
+      return new ValueRange<>(predicate, min, max, stats.hasNull());
     } else if (index instanceof DecimalColumnStatistics) {
-      return ((DecimalColumnStatistics) index).getMinimum();
+      DecimalColumnStatistics stats = (DecimalColumnStatistics) index;
+      HiveDecimal min = stats.getMinimum();
+      HiveDecimal max = stats.getMaximum();
+      return new ValueRange<>(predicate, min, max, stats.hasNull());
     } else if (index instanceof TimestampColumnStatistics) {
-      if (useUTCTimestamp) {
-        return ((TimestampColumnStatistics) index).getMinimumUTC();
-      } else {
-        return ((TimestampColumnStatistics) index).getMinimum();
-      }
+      TimestampColumnStatistics stats = (TimestampColumnStatistics) index;
+      Timestamp min = useUTCTimestamp ? stats.getMinimumUTC() : stats.getMinimum();
+      Timestamp max = useUTCTimestamp ? stats.getMaximumUTC() : stats.getMaximum();
+      return new ValueRange<>(predicate, min, max, stats.hasNull());
     } else if (index instanceof BooleanColumnStatistics) {
-      if (((BooleanColumnStatistics)index).getFalseCount()!=0) {
-        return Boolean.FALSE;
-      } else {
-        return Boolean.TRUE;
-      }
+      BooleanColumnStatistics stats = (BooleanColumnStatistics) index;
+      Boolean min = stats.getFalseCount() == 0;
+      Boolean max = stats.getTrueCount() != 0;
+      return new ValueRange<>(predicate, min, max, stats.hasNull());
     } else {
-      return UNKNOWN_VALUE; // null is not safe here
+      return new ValueRange(predicate, null, null, index.hasNull(), false, false, true, false);
     }
   }
 
@@ -457,7 +640,7 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription type) {
     return evaluatePredicateProto(statsProto, predicate, kind, encoding, bloomFilter,
-        writerVersion, type, false, true, true);
+        writerVersion, type, true, false);
   }
 
   /**
@@ -483,13 +666,12 @@ public class RecordReaderImpl implements RecordReader {
                                            OrcProto.BloomFilter bloomFilter,
                                            OrcFile.WriterVersion writerVersion,
                                            TypeDescription type,
-                                           boolean useUTCTimestamp,
                                            boolean writerUsedProlepticGregorian,
-                                           boolean convertToProlepticGregorian) {
+                                           boolean useUTCTimestamp) {
     ColumnStatistics cs = ColumnStatisticsImpl.deserialize(
-        null, statsProto, writerUsedProlepticGregorian, convertToProlepticGregorian);
-    Object minValue = getMin(cs, useUTCTimestamp);
-    Object maxValue = getMax(cs, useUTCTimestamp);
+        null, statsProto, writerUsedProlepticGregorian, true);
+    ValueRange range = getValueRange(cs, predicate, useUTCTimestamp);
+
     // files written before ORC-135 stores timestamp wrt to local timezone causing issues with PPD.
     // disable PPD for timestamp for all old files
     TypeDescription.Category category = type.getCategory();
@@ -498,12 +680,12 @@ public class RecordReaderImpl implements RecordReader {
         LOG.debug("Not using predication pushdown on {} because it doesn't " +
                   "include ORC-135. Writer version: {}",
             predicate.getColumnName(), writerVersion);
-        return TruthValue.YES_NO_NULL;
+        return range.addNull(TruthValue.YES_NO);
       }
       if (predicate.getType() != PredicateLeaf.Type.TIMESTAMP &&
           predicate.getType() != PredicateLeaf.Type.DATE &&
           predicate.getType() != PredicateLeaf.Type.STRING) {
-        return TruthValue.YES_NO_NULL;
+        return range.addNull(TruthValue.YES_NO);
       }
     } else if (writerVersion == OrcFile.WriterVersion.ORC_135 &&
                category == TypeDescription.Category.DECIMAL &&
@@ -514,30 +696,18 @@ public class RecordReaderImpl implements RecordReader {
                    " include ORC-517. Writer version: {}",
           predicate.getColumnName(), writerVersion);
       return TruthValue.YES_NO_NULL;
-    } else if (category == TypeDescription.Category.DOUBLE) {
+    } else if (category == TypeDescription.Category.DOUBLE
+        || category == TypeDescription.Category.FLOAT) {
       DoubleColumnStatistics dstas = (DoubleColumnStatistics) cs;
-      if (!Double.isFinite(dstas.getMinimum()) || !Double.isFinite(dstas.getMaximum())
-              || !Double.isFinite(dstas.getSum())) {
+      if (Double.isNaN(dstas.getSum())) {
         LOG.debug("Not using predication pushdown on {} because stats contain NaN values",
                 predicate.getColumnName());
         return dstas.hasNull() ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
       }
     }
-
-    String lowerBound = null;
-    String upperBound = null;
-
-    if(cs instanceof StringColumnStatistics) {
-      lowerBound = ((StringColumnStatistics) cs).getLowerBound();
-      minValue = ((StringColumnStatistics) cs).getMinimum();
-
-      upperBound = ((StringColumnStatistics) cs).getUpperBound();
-      maxValue = ((StringColumnStatistics) cs).getMaximum();
-    }
-
-    return evaluatePredicateRange(predicate, minValue, maxValue, cs.hasNull(),
-        BloomFilterIO.deserialize(kind, encoding, writerVersion, category, bloomFilter),
-        useUTCTimestamp, lowerBound, upperBound);
+    return evaluatePredicateRange(predicate, range,
+        BloomFilterIO.deserialize(kind, encoding, writerVersion, type.getCategory(),
+            bloomFilter), useUTCTimestamp);
   }
 
   /**
@@ -570,50 +740,39 @@ public class RecordReaderImpl implements RecordReader {
                                              PredicateLeaf predicate,
                                              BloomFilter bloomFilter,
                                              boolean useUTCTimestamp) {
-    Object minValue = getMin(stats, useUTCTimestamp);
-    Object maxValue = getMax(stats, useUTCTimestamp);
+    ValueRange range = getValueRange(stats, predicate, useUTCTimestamp);
 
-    String lowerBound = null;
-    String upperBound = null;
-
-    if(stats instanceof StringColumnStatistics) {
-      lowerBound = ((StringColumnStatistics) stats).getLowerBound();
-      minValue = ((StringColumnStatistics) stats).getMinimum();
-
-      upperBound = ((StringColumnStatistics) stats).getUpperBound();
-      maxValue = ((StringColumnStatistics) stats).getMaximum();
-    }
-
-    return evaluatePredicateRange(predicate, minValue, maxValue, stats.hasNull(), bloomFilter, useUTCTimestamp, lowerBound, upperBound);
+    return evaluatePredicateRange(predicate, range, bloomFilter, useUTCTimestamp);
   }
 
-  static TruthValue evaluatePredicateRange(PredicateLeaf predicate, Object min,
-      Object max, boolean hasNull, BloomFilter bloomFilter,
-      boolean useUTCTimestamp, Object lowerBound, Object upperBound) {
+  static TruthValue evaluatePredicateRange(PredicateLeaf predicate,
+                                           ValueRange range,
+                                           BloomFilter bloomFilter,
+                                           boolean useUTCTimestamp) {
+    if (!range.isValid()) {
+      return TruthValue.YES_NO_NULL;
+    }
+
     // if we didn't have any values, everything must have been null
-    if (min == null && lowerBound == null) {
+    if (!range.hasValues()) {
       if (predicate.getOperator() == PredicateLeaf.Operator.IS_NULL) {
         return TruthValue.YES;
       } else {
         return TruthValue.NULL;
       }
-    } else if (min == UNKNOWN_VALUE) {
-      return TruthValue.YES_NO_NULL;
-    }
-
-    if(max == UNKNOWN_VALUE) {
-      return TruthValue.YES_NO;
+    } else if (!range.isComparable()) {
+      return range.hasNulls ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
     }
 
     TruthValue result;
-    Object baseObj = predicate.getLiteral();
+    Comparable baseObj = (Comparable) predicate.getLiteral();
     // Predicate object and stats objects are converted to the type of the predicate object.
-    Object minValue = getBaseObjectForComparison(predicate.getType(), min);
-    Object maxValue = getBaseObjectForComparison(predicate.getType(), max);
-    Object predObj = getBaseObjectForComparison(predicate.getType(), baseObj);
-    result = evaluatePredicateMinMax(predicate, predObj, minValue, maxValue, hasNull, lowerBound, upperBound);
+    Comparable predObj = getBaseObjectForComparison(predicate.getType(), baseObj);
+
+    result = evaluatePredicateMinMax(predicate, predObj, range);
     if (shouldEvaluateBloomFilter(predicate, result, bloomFilter)) {
-      return evaluatePredicateBloomFilter(predicate, predObj, bloomFilter, hasNull, useUTCTimestamp);
+      return evaluatePredicateBloomFilter(
+          predicate, predObj, bloomFilter, range.hasNulls, useUTCTimestamp);
     } else {
       return result;
     }
@@ -625,116 +784,106 @@ public class RecordReaderImpl implements RecordReader {
     // 1) Bloom filter is available
     // 2) Min/Max evaluation yield YES or MAYBE
     // 3) Predicate is EQUALS or IN list
-    if (bloomFilter != null
-        && result != TruthValue.NO_NULL && result != TruthValue.NO
-        && (predicate.getOperator().equals(PredicateLeaf.Operator.EQUALS)
-            || predicate.getOperator().equals(PredicateLeaf.Operator.NULL_SAFE_EQUALS)
-            || predicate.getOperator().equals(PredicateLeaf.Operator.IN))) {
-      return true;
-    }
-    return false;
+    return bloomFilter != null
+           && result != TruthValue.NO_NULL && result != TruthValue.NO
+           && (predicate.getOperator().equals(PredicateLeaf.Operator.EQUALS)
+               || predicate.getOperator().equals(PredicateLeaf.Operator.NULL_SAFE_EQUALS)
+               || predicate.getOperator().equals(PredicateLeaf.Operator.IN));
   }
 
-  private static TruthValue evaluatePredicateMinMax(PredicateLeaf predicate, Object predObj,
-      Object minValue,
-      Object maxValue,
-      boolean hasNull,
-      Object lowerBound,
-      Object upperBound) {
+  private static TruthValue evaluatePredicateMinMax(PredicateLeaf predicate,
+                                                    Comparable predObj,
+                                                    ValueRange range) {
     Location loc;
     switch (predicate.getOperator()) {
       case NULL_SAFE_EQUALS:
-        loc = compareToRange((Comparable) predObj, minValue, maxValue, lowerBound, upperBound);
+        loc = range.compare(predObj);
         if (loc == Location.BEFORE || loc == Location.AFTER) {
           return TruthValue.NO;
         } else {
           return TruthValue.YES_NO;
         }
       case EQUALS:
-        loc = compareToRange((Comparable) predObj, minValue, maxValue, lowerBound, upperBound);
-        if (minValue != null && minValue.equals(maxValue) && loc == Location.MIN) {
-          return hasNull ? TruthValue.YES_NULL : TruthValue.YES;
+        loc = range.compare(predObj);
+        if (range.isSingleton() && loc == Location.MIN) {
+          return range.addNull(TruthValue.YES);
         } else if (loc == Location.BEFORE || loc == Location.AFTER) {
-          return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
+          return range.addNull(TruthValue.NO);
         } else {
-          return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
+          return range.addNull(TruthValue.YES_NO);
         }
       case LESS_THAN:
-        loc = compareToRange((Comparable) predObj, minValue, maxValue, lowerBound, upperBound);
+        loc = range.compare(predObj);
         if (loc == Location.AFTER) {
-          return hasNull ? TruthValue.YES_NULL : TruthValue.YES;
+          return range.addNull(TruthValue.YES);
         } else if (loc == Location.BEFORE || loc == Location.MIN) {
-          return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
+          return range.addNull(TruthValue.NO);
         } else {
-          return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
+          return range.addNull(TruthValue.YES_NO);
         }
       case LESS_THAN_EQUALS:
-        loc = compareToRange((Comparable) predObj, minValue, maxValue, lowerBound, upperBound);
+        loc = range.compare(predObj);
         if (loc == Location.AFTER || loc == Location.MAX ||
-            (loc == Location.MIN && minValue.equals(maxValue))) {
-          return hasNull ? TruthValue.YES_NULL : TruthValue.YES;
+            (loc == Location.MIN && range.isSingleton())) {
+          return range.addNull(TruthValue.YES);
         } else if (loc == Location.BEFORE) {
-          return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
+          return range.addNull(TruthValue.NO);
         } else {
-          return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
+          return range.addNull(TruthValue.YES_NO);
         }
       case IN:
-        boolean minEqualsMax = predicate.getType()
-            .equals(PredicateLeaf.Type.STRING) ?
-            lowerBound.equals(upperBound) :
-            minValue.equals(maxValue);
-
-        if (minEqualsMax) {
+        if (range.isSingleton()) {
           // for a single value, look through to see if that value is in the
           // set
           for (Object arg : predicate.getLiteralList()) {
-            predObj = getBaseObjectForComparison(predicate.getType(), arg);
-            loc = compareToRange((Comparable) predObj, minValue, maxValue, lowerBound, upperBound);
-            if (loc == Location.MIN) {
-              return hasNull ? TruthValue.YES_NULL : TruthValue.YES;
+            predObj = getBaseObjectForComparison(predicate.getType(), (Comparable) arg);
+            if (range.compare(predObj) == Location.MIN) {
+              return range.addNull(TruthValue.YES);
             }
           }
-          return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
+          return range.addNull(TruthValue.NO);
         } else {
           // are all of the values outside of the range?
           for (Object arg : predicate.getLiteralList()) {
-            predObj = getBaseObjectForComparison(predicate.getType(), arg);
-            loc = compareToRange((Comparable) predObj, minValue, maxValue, lowerBound, upperBound);
+            predObj = getBaseObjectForComparison(predicate.getType(), (Comparable) arg);
+            loc = range.compare(predObj);
             if (loc == Location.MIN || loc == Location.MIDDLE ||
                 loc == Location.MAX) {
-              return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
+              return range.addNull(TruthValue.YES_NO);
             }
           }
-          return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
+          return range.addNull(TruthValue.NO);
         }
       case BETWEEN:
         List<Object> args = predicate.getLiteralList();
         if (args == null || args.isEmpty()) {
-          return TruthValue.YES_NO;
+          return range.addNull(TruthValue.YES_NO);
         }
-        Object predObj1 = getBaseObjectForComparison(predicate.getType(), args.get(0));
+        Comparable predObj1 = getBaseObjectForComparison(predicate.getType(),
+            (Comparable) args.get(0));
 
-        loc = compareToRange((Comparable) predObj1, minValue, maxValue, lowerBound, upperBound);
+        loc = range.compare(predObj1);
         if (loc == Location.BEFORE || loc == Location.MIN) {
-          Object predObj2 = getBaseObjectForComparison(predicate.getType(), args.get(1));
-          Location loc2 = compareToRange((Comparable) predObj2, minValue, maxValue, lowerBound, upperBound);
+          Comparable predObj2 = getBaseObjectForComparison(predicate.getType(),
+              (Comparable) args.get(1));
+          Location loc2 = range.compare(predObj2);
           if (loc2 == Location.AFTER || loc2 == Location.MAX) {
-            return hasNull ? TruthValue.YES_NULL : TruthValue.YES;
+            return range.addNull(TruthValue.YES);
           } else if (loc2 == Location.BEFORE) {
-            return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
+            return range.addNull(TruthValue.NO);
           } else {
-            return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
+            return range.addNull(TruthValue.YES_NO);
           }
         } else if (loc == Location.AFTER) {
-          return hasNull ? TruthValue.NO_NULL : TruthValue.NO;
+          return range.addNull(TruthValue.NO);
         } else {
-          return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
+          return range.addNull(TruthValue.YES_NO);
         }
       case IS_NULL:
         // min = null condition above handles the all-nulls YES case
-        return hasNull ? TruthValue.YES_NO : TruthValue.NO;
+        return range.hasNulls ? TruthValue.YES_NO : TruthValue.NO;
       default:
-        return hasNull ? TruthValue.YES_NO_NULL : TruthValue.YES_NO;
+        return range.addNull(TruthValue.YES_NO);
     }
   }
 
@@ -749,8 +898,9 @@ public class RecordReaderImpl implements RecordReader {
       case IN:
         for (Object arg : predicate.getLiteralList()) {
           // if atleast one value in IN list exist in bloom filter, qualify the row group/stripe
-          Object predObjItem = getBaseObjectForComparison(predicate.getType(), arg);
-          TruthValue result = checkInBloomFilter(bloomFilter, predObjItem, hasNull, useUTCTimestamp);
+          Object predObjItem = getBaseObjectForComparison(predicate.getType(), (Comparable) arg);
+          TruthValue result =
+              checkInBloomFilter(bloomFilter, predObjItem, hasNull, useUTCTimestamp);
           if (result == TruthValue.YES_NO_NULL || result == TruthValue.YES_NO) {
             return result;
           }
@@ -761,15 +911,18 @@ public class RecordReaderImpl implements RecordReader {
     }
   }
 
-  private static TruthValue checkInBloomFilter(BloomFilter bf, Object predObj, boolean hasNull, boolean useUTCTimestamp) {
+  private static TruthValue checkInBloomFilter(BloomFilter bf,
+                                               Object predObj,
+                                               boolean hasNull,
+                                               boolean useUTCTimestamp) {
     TruthValue result = hasNull ? TruthValue.NO_NULL : TruthValue.NO;
 
     if (predObj instanceof Long) {
-      if (bf.testLong(((Long) predObj).longValue())) {
+      if (bf.testLong((Long) predObj)) {
         result = TruthValue.YES_NO_NULL;
       }
     } else if (predObj instanceof Double) {
-      if (bf.testDouble(((Double) predObj).doubleValue())) {
+      if (bf.testDouble((Double) predObj)) {
         result = TruthValue.YES_NO_NULL;
       }
     } else if (predObj instanceof String || predObj instanceof Text ||
@@ -784,7 +937,8 @@ public class RecordReaderImpl implements RecordReader {
           result = TruthValue.YES_NO_NULL;
         }
       } else {
-        if (bf.testLong(SerializationUtils.convertToUtc(TimeZone.getDefault(), ((Timestamp) predObj).getTime()))) {
+        if (bf.testLong(SerializationUtils.convertToUtc(
+            TimeZone.getDefault(), ((Timestamp) predObj).getTime()))) {
           result = TruthValue.YES_NO_NULL;
         }
       }
@@ -793,21 +947,19 @@ public class RecordReaderImpl implements RecordReader {
         result = TruthValue.YES_NO_NULL;
       }
     } else {
-        // if the predicate object is null and if hasNull says there are no nulls then return NO
-        if (predObj == null && !hasNull) {
-          result = TruthValue.NO;
-        } else {
-          result = TruthValue.YES_NO_NULL;
-        }
+      // if the predicate object is null and if hasNull says there are no nulls then return NO
+      if (predObj == null && !hasNull) {
+        result = TruthValue.NO;
+      } else {
+        result = TruthValue.YES_NO_NULL;
       }
+    }
 
     if (result == TruthValue.YES_NO_NULL && !hasNull) {
       result = TruthValue.YES_NO;
     }
 
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Bloom filter evaluation: " + result.toString());
-    }
+    LOG.debug("Bloom filter evaluation: {}", result);
 
     return result;
   }
@@ -817,12 +969,13 @@ public class RecordReaderImpl implements RecordReader {
    */
   static class SargCastException extends IllegalArgumentException {
 
-    public SargCastException(String string) {
+    SargCastException(String string) {
       super(string);
     }
   }
 
-  private static Object getBaseObjectForComparison(PredicateLeaf.Type type, Object obj) {
+  private static Comparable getBaseObjectForComparison(PredicateLeaf.Type type,
+                                                       Comparable obj) {
     if (obj == null) {
       return null;
     }
@@ -852,10 +1005,10 @@ public class RecordReaderImpl implements RecordReader {
         break;
       case DECIMAL:
         if (obj instanceof Boolean) {
-          return new HiveDecimalWritable(((Boolean) obj).booleanValue() ?
+          return new HiveDecimalWritable((Boolean) obj ?
               HiveDecimal.ONE : HiveDecimal.ZERO);
         } else if (obj instanceof Integer) {
-          return new HiveDecimalWritable(((Integer) obj).intValue());
+          return new HiveDecimalWritable((Integer) obj);
         } else if (obj instanceof Long) {
           return new HiveDecimalWritable(((Long) obj));
         } else if (obj instanceof Float || obj instanceof Double ||
@@ -882,10 +1035,6 @@ public class RecordReaderImpl implements RecordReader {
           return Double.valueOf(obj.toString());
         } else if (obj instanceof Timestamp) {
           return TimestampUtils.getDouble((Timestamp) obj);
-        } else if (obj instanceof HiveDecimal) {
-          return ((HiveDecimal) obj).doubleValue();
-        } else if (obj instanceof BigDecimal) {
-          return ((BigDecimal) obj).doubleValue();
         }
         break;
       case LONG:
@@ -913,7 +1062,7 @@ public class RecordReaderImpl implements RecordReader {
         } else if (obj instanceof Float) {
           return TimestampUtils.doubleToTimestamp(((Float) obj).doubleValue());
         } else if (obj instanceof Double) {
-          return TimestampUtils.doubleToTimestamp(((Double) obj).doubleValue());
+          return TimestampUtils.doubleToTimestamp((Double) obj);
         } else if (obj instanceof HiveDecimal) {
           return TimestampUtils.decimalToTimestamp((HiveDecimal) obj);
         } else if (obj instanceof HiveDecimalWritable) {
@@ -939,8 +1088,8 @@ public class RecordReaderImpl implements RecordReader {
   }
 
   public static class SargApplier {
-    public final static boolean[] READ_ALL_RGS = null;
-    public final static boolean[] READ_NO_RGS = new boolean[0];
+    public static final boolean[] READ_ALL_RGS = null;
+    public static final boolean[] READ_NO_RGS = new boolean[0];
 
     private final OrcFile.WriterVersion writerVersion;
     private final SearchArgument sarg;
@@ -948,23 +1097,20 @@ public class RecordReaderImpl implements RecordReader {
     private final int[] filterColumns;
     private final long rowIndexStride;
     // same as the above array, but indices are set to true
-    private final boolean[] sargColumns;
-    private SchemaEvolution evolution;
+    private final SchemaEvolution evolution;
     private final long[] exceptionCount;
     private final boolean useUTCTimestamp;
     private final boolean writerUsedProlepticGregorian;
     private final boolean convertToProlepticGregorian;
 
     /**
-     * Create a SargApplier without proleptic gregorian values.
-     * @deprecated Use {@link #SargApplier(SearchArgument, long, SchemaEvolution, OrcFile.WriterVersion, boolean, boolean, boolean)} instead
+     * @deprecated Use the constructor having full parameters. This exists for backward compatibility.
      */
-    @Deprecated
     public SargApplier(SearchArgument sarg,
-        long rowIndexStride,
-        SchemaEvolution evolution,
-        OrcFile.WriterVersion writerVersion,
-        boolean useUTCTimestamp) {
+                       long rowIndexStride,
+                       SchemaEvolution evolution,
+                       OrcFile.WriterVersion writerVersion,
+                       boolean useUTCTimestamp) {
       this(sarg, rowIndexStride, evolution, writerVersion, useUTCTimestamp, false, false);
     }
 
@@ -983,19 +1129,21 @@ public class RecordReaderImpl implements RecordReader {
       filterColumns = mapSargColumnsToOrcInternalColIdx(sargLeaves,
                                                         evolution);
       this.rowIndexStride = rowIndexStride;
+      this.evolution = evolution;
+      exceptionCount = new long[sargLeaves.size()];
+      this.useUTCTimestamp = useUTCTimestamp;
+    }
+
+    public void setRowIndexCols(boolean[] rowIndexCols) {
       // included will not be null, row options will fill the array with
       // trues if null
-      sargColumns = new boolean[evolution.getFileIncluded().length];
       for (int i : filterColumns) {
         // filter columns may have -1 as index which could be partition
         // column in SARG.
         if (i > 0) {
-          sargColumns[i] = true;
+          rowIndexCols[i] = true;
         }
       }
-      this.evolution = evolution;
-      exceptionCount = new long[sargLeaves.size()];
-      this.useUTCTimestamp = useUTCTimestamp;
     }
 
     /**
@@ -1034,7 +1182,10 @@ public class RecordReaderImpl implements RecordReader {
             if (entry == null) {
               throw new AssertionError("RG is not populated for " + columnIx + " rg " + rowGroup);
             }
-            OrcProto.ColumnStatistics stats = entry.getStatistics();
+            OrcProto.ColumnStatistics stats = EMPTY_COLUMN_STATISTICS;
+            if (entry.hasStatistics()) {
+              stats = entry.getStatistics();
+            }
             OrcProto.BloomFilter bf = null;
             OrcProto.Stream.Kind bfk = null;
             if (bloomFilterIndices != null && bloomFilterIndices[columnIx] != null) {
@@ -1048,22 +1199,19 @@ public class RecordReaderImpl implements RecordReader {
                     predicate, bfk, encodings.get(columnIx), bf,
                     writerVersion, evolution.getFileSchema().
                     findSubtype(columnIx),
-                    useUTCTimestamp,
-                    writerUsedProlepticGregorian,
-                    convertToProlepticGregorian);
+                    writerUsedProlepticGregorian, useUTCTimestamp);
               } catch (Exception e) {
                 exceptionCount[pred] += 1;
                 if (e instanceof SargCastException) {
                   LOG.info("Skipping ORC PPD - " + e.getMessage() + " on "
                       + predicate);
                 } else {
-                  if (LOG.isWarnEnabled()) {
-                    final String reason = e.getClass().getSimpleName() + " when evaluating predicate." +
-                        " Skipping ORC PPD." +
-                        " Stats: " + stats +
-                        " Predicate: " + predicate;
-                    LOG.warn(reason, e);
-                  }
+                  final String reason = e.getClass().getSimpleName() +
+                      " when evaluating predicate." +
+                      " Skipping ORC PPD." +
+                      " Stats: " + stats +
+                      " Predicate: " + predicate;
+                  LOG.warn(reason, e);
                 }
                 boolean hasNoNull = stats.hasHasNull() && !stats.getHasNull();
                 if (predicate.getOperator().equals(PredicateLeaf.Operator.NULL_SAFE_EQUALS)
@@ -1113,15 +1261,21 @@ public class RecordReaderImpl implements RecordReader {
    * @throws IOException
    */
   protected boolean[] pickRowGroups() throws IOException {
-    // if we don't have a sarg or indexes, we read everything
+    // Read the Row Indicies if required
+    if (rowIndexColsToRead != null) {
+      readCurrentStripeRowIndex();
+    }
+
+    // In the absence of SArg all rows groups should be included
     if (sargApp == null) {
       return null;
     }
-    readRowIndex(currentStripe, fileIncluded, sargApp.sargColumns);
     return sargApp.pickRowGroups(stripes.get(currentStripe),
         indexes.getRowGroupIndex(),
-        indexes.getBloomFilterKinds(), stripeFooter.getColumnsList(),
-        indexes.getBloomFilterIndex(), false);
+        skipBloomFilters ? null : indexes.getBloomFilterKinds(),
+        stripeFooter.getColumnsList(),
+        skipBloomFilters ? null : indexes.getBloomFilterIndex(),
+        false);
   }
 
   private void clearStreams() {
@@ -1148,11 +1302,12 @@ public class RecordReaderImpl implements RecordReader {
 
     // if we haven't skipped the whole stripe, read the data
     if (rowInStripe < rowCountInStripe) {
-      planner.readData(indexes, includedRowGroups, false);
-      reader.startStripe(planner);
+      planner.readData(indexes, includedRowGroups, false, startReadPhase);
+      reader.startStripe(planner, startReadPhase);
+      needsFollowColumnsRead = true;
       // if we skipped the first row group, move the pointers forward
       if (rowInStripe != 0) {
-        seekToRowEntry(reader, (int) (rowInStripe / rowIndexStride));
+        seekToRowEntry(reader, (int) (rowInStripe / rowIndexStride), startReadPhase);
       }
     }
   }
@@ -1164,6 +1319,7 @@ public class RecordReaderImpl implements RecordReader {
     // setup the position in the stripe
     rowCountInStripe = stripe.getNumberOfRows();
     rowInStripe = 0;
+    followRowInStripe = 0;
     rowBaseInStripe = 0;
     for (int i = 0; i < currentStripe; ++i) {
       rowBaseInStripe += stripes.get(i).getNumberOfRows();
@@ -1191,21 +1347,29 @@ public class RecordReaderImpl implements RecordReader {
   }
 
   /**
+   * Determine the RowGroup based on the supplied row id.
+   * @param rowIdx Row for which the row group is being determined
+   * @return Id of the RowGroup that the row belongs to
+   */
+  private int computeRGIdx(long rowIdx) {
+    return rowIndexStride == 0 ? 0 : (int) (rowIdx / rowIndexStride);
+  }
+
+  /**
    * Skip over rows that we aren't selecting, so that the next row is
    * one that we will read.
    *
    * @param nextRow the row we want to go to
    * @throws IOException
    */
-  private boolean advanceToNextRow(
-      TreeReaderFactory.TreeReader reader, long nextRow, boolean canAdvanceStripe)
+  private boolean advanceToNextRow(BatchReader reader, long nextRow, boolean canAdvanceStripe)
       throws IOException {
     long nextRowInStripe = nextRow - rowBaseInStripe;
     // check for row skipping
     if (rowIndexStride != 0 &&
         includedRowGroups != null &&
         nextRowInStripe < rowCountInStripe) {
-      int rowGroup = (int) (nextRowInStripe / rowIndexStride);
+      int rowGroup = computeRGIdx(nextRowInStripe);
       if (!includedRowGroups[rowGroup]) {
         while (rowGroup < includedRowGroups.length && !includedRowGroups[rowGroup]) {
           rowGroup += 1;
@@ -1228,10 +1392,10 @@ public class RecordReaderImpl implements RecordReader {
     if (nextRowInStripe != rowInStripe) {
       if (rowIndexStride != 0) {
         int rowGroup = (int) (nextRowInStripe / rowIndexStride);
-        seekToRowEntry(reader, rowGroup);
-        reader.skipRows(nextRowInStripe - rowGroup * rowIndexStride);
+        seekToRowEntry(reader, rowGroup, startReadPhase);
+        reader.skipRows(nextRowInStripe - rowGroup * rowIndexStride, startReadPhase);
       } else {
-        reader.skipRows(nextRowInStripe - rowInStripe);
+        reader.skipRows(nextRowInStripe - rowInStripe, startReadPhase);
       }
       rowInStripe = nextRowInStripe;
     }
@@ -1241,29 +1405,120 @@ public class RecordReaderImpl implements RecordReader {
   @Override
   public boolean nextBatch(VectorizedRowBatch batch) throws IOException {
     try {
-      if (rowInStripe >= rowCountInStripe) {
-        currentStripe += 1;
-        if (currentStripe >= stripes.size()) {
-          batch.size = 0;
-          return false;
+      int batchSize;
+      // do...while is required to handle the case where the filter eliminates all rows in the
+      // batch, we never return an empty batch unless the file is exhausted
+      do {
+        if (rowInStripe >= rowCountInStripe) {
+          currentStripe += 1;
+          if (currentStripe >= stripes.size()) {
+            batch.size = 0;
+            return false;
+          }
+          // Read stripe in Memory
+          readStripe();
+          followRowInStripe = rowInStripe;
         }
-        // Read stripe in Memory
-        readStripe();
+
+        batchSize = computeBatchSize(batch.getMaxSize());
+        reader.setVectorColumnCount(batch.getDataColumnCount());
+        reader.nextBatch(batch, batchSize, startReadPhase);
+        if (startReadPhase == TypeReader.ReadPhase.LEADERS && batch.size > 0) {
+          // At least 1 row has been selected and as a result we read the follow columns into the
+          // row batch
+          reader.nextBatch(batch,
+                           batchSize,
+                           prepareFollowReaders(rowInStripe, followRowInStripe));
+          followRowInStripe = rowInStripe + batchSize;
+        }
+        rowInStripe += batchSize;
+        advanceToNextRow(reader, rowInStripe + rowBaseInStripe, true);
+        // batch.size can be modified by filter so only batchSize can tell if we actually read rows
+      } while (batchSize != 0 && batch.size == 0);
+
+      if (noSelectedVector) {
+        // In case selected vector is not supported we leave the size to be read size. In this case
+        // the non filter columns might be read selectively, however the filter after the reader
+        // should eliminate rows that don't match predicate conditions
+        batch.size = batchSize;
+        batch.selectedInUse = false;
       }
 
-      int batchSize = computeBatchSize(batch.getMaxSize());
-      rowInStripe += batchSize;
-      batch.size = batchSize;
-
-      reader.setVectorColumnCount(batch.getDataColumnCount());
-      reader.nextBatch(batch, batchSize);
-      advanceToNextRow(reader, rowInStripe + rowBaseInStripe, true);
-      // batch.size can be modified by filter so only batchSize can tell if we actually read rows
       return batchSize != 0;
     } catch (IOException e) {
       // Rethrow exception with file name in log message
       throw new IOException("Error reading file: " + path, e);
     }
+  }
+
+  /**
+   * This method prepares the non-filter column readers for next batch. This involves the following
+   * 1. Determine position
+   * 2. Perform IO if required
+   * 3. Position the non-filter readers
+   *
+   * This method is repositioning the non-filter columns and as such this method shall never have to
+   * deal with navigating the stripe forward or skipping row groups, all of this should have already
+   * taken place based on the filter columns.
+   * @param toFollowRow The rowIdx identifies the required row position within the stripe for
+   *                    follow read
+   * @param fromFollowRow Indicates the current position of the follow read, exclusive
+   * @return the read phase for reading non-filter columns, this shall be FOLLOWERS_AND_PARENTS in
+   * case of a seek otherwise will be FOLLOWERS
+   */
+  private TypeReader.ReadPhase prepareFollowReaders(long toFollowRow, long fromFollowRow)
+    throws IOException {
+    // 1. Determine the required row group and skip rows needed from the RG start
+    int needRG = computeRGIdx(toFollowRow);
+    // The current row is not yet read so we -1 to compute the previously read row group
+    int readRG = computeRGIdx(fromFollowRow - 1);
+    long skipRows;
+    if (needRG == readRG && toFollowRow >= fromFollowRow) {
+      // In case we are skipping forward within the same row group, we compute skip rows from the
+      // current position
+      skipRows = toFollowRow - fromFollowRow;
+    } else {
+      // In all other cases including seeking backwards, we compute the skip rows from the start of
+      // the required row group
+      skipRows = toFollowRow - (needRG * rowIndexStride);
+    }
+
+    // 2. Plan the row group idx for the non-filter columns if this has not already taken place
+    if (needsFollowColumnsRead) {
+      needsFollowColumnsRead = false;
+      planner.readFollowData(indexes, includedRowGroups, needRG, false);
+      reader.startStripe(planner, TypeReader.ReadPhase.FOLLOWERS);
+    }
+
+    // 3. Position the non-filter readers to the required RG and skipRows
+    TypeReader.ReadPhase result = TypeReader.ReadPhase.FOLLOWERS;
+    if (needRG != readRG || toFollowRow < fromFollowRow) {
+      // When having to change a row group or in case of back navigation, seek both the filter
+      // parents and non-filter. This will re-position the parents present vector. This is needed
+      // to determine the number of non-null values to skip on the non-filter columns.
+      seekToRowEntry(reader, needRG, TypeReader.ReadPhase.FOLLOWERS_AND_PARENTS);
+      // skip rows on both the filter parents and non-filter as both have been positioned in the
+      // previous step
+      reader.skipRows(skipRows, TypeReader.ReadPhase.FOLLOWERS_AND_PARENTS);
+      result = TypeReader.ReadPhase.FOLLOWERS_AND_PARENTS;
+    } else if (skipRows > 0) {
+      // in case we are only skipping within the row group, position the filter parents back to the
+      // position of the follow. This is required to determine the non-null values to skip on the
+      // non-filter columns.
+      seekToRowEntry(reader, readRG, TypeReader.ReadPhase.LEADER_PARENTS);
+      reader.skipRows(fromFollowRow - (readRG * rowIndexStride),
+          TypeReader.ReadPhase.LEADER_PARENTS);
+      // Move both the filter parents and non-filter forward, this will compute the correct
+      // non-null skips on follow children
+      reader.skipRows(skipRows, TypeReader.ReadPhase.FOLLOWERS_AND_PARENTS);
+      result = TypeReader.ReadPhase.FOLLOWERS_AND_PARENTS;
+    }
+    // Identifies the read level that should be performed for the read
+    // FOLLOWERS_WITH_PARENTS indicates repositioning identifying both non-filter and filter parents
+    // FOLLOWERS indicates read only of the non-filter level without the parents, which is used during
+    // contiguous read. During a contiguous read no skips are needed and the non-null information of
+    // the parent is available in the column vector for use during non-filter read
+    return result;
   }
 
   private int computeBatchSize(long targetBatchSize) {
@@ -1273,22 +1528,29 @@ public class RecordReaderImpl implements RecordReader {
     // within strip). Batch size computed out of marker position makes sure that batch size is
     // aware of row group boundary and will not cause overflow when reading rows
     // illustration of this case is here https://issues.apache.org/jira/browse/HIVE-6287
-    if (rowIndexStride != 0 && includedRowGroups != null && rowInStripe < rowCountInStripe) {
+    if (rowIndexStride != 0
+        && (includedRowGroups != null || startReadPhase != TypeReader.ReadPhase.ALL)
+        && rowInStripe < rowCountInStripe) {
       int startRowGroup = (int) (rowInStripe / rowIndexStride);
-      if (!includedRowGroups[startRowGroup]) {
+      if (includedRowGroups != null && !includedRowGroups[startRowGroup]) {
         while (startRowGroup < includedRowGroups.length && !includedRowGroups[startRowGroup]) {
           startRowGroup += 1;
         }
       }
 
       int endRowGroup = startRowGroup;
-      while (endRowGroup < includedRowGroups.length && includedRowGroups[endRowGroup]) {
+      // We force row group boundaries when dealing with filters. We adjust the end row group to
+      // be the next row group even if more than one are possible selections.
+      if (includedRowGroups != null && startReadPhase == TypeReader.ReadPhase.ALL) {
+        while (endRowGroup < includedRowGroups.length
+               && includedRowGroups[endRowGroup]) {
+          endRowGroup += 1;
+        }
+      } else {
         endRowGroup += 1;
       }
 
-      final long markerPosition =
-          (endRowGroup * rowIndexStride) < rowCountInStripe ? (endRowGroup * rowIndexStride)
-              : rowCountInStripe;
+      final long markerPosition = Math.min((endRowGroup * rowIndexStride), rowCountInStripe);
       batchSize = (int) Math.min(targetBatchSize, (markerPosition - rowInStripe));
 
       if (isLogDebugEnabled && batchSize < targetBatchSize) {
@@ -1333,13 +1595,21 @@ public class RecordReaderImpl implements RecordReader {
     throw new IllegalArgumentException("Seek after the end of reader range");
   }
 
-  public OrcIndex readRowIndex(int stripeIndex, boolean[] included,
-                               boolean[] sargColumns) throws IOException {
-    // if this is the current stripe, use the cached objects.
-    if (stripeIndex == currentStripe) {
-      return planner.readRowIndex(
-          sargColumns != null || sargApp == null
-              ? sargColumns : sargApp.sargColumns, indexes);
+  private void readCurrentStripeRowIndex() throws IOException {
+    planner.readRowIndex(rowIndexColsToRead, indexes);
+  }
+
+  public OrcIndex readRowIndex(int stripeIndex,
+                               boolean[] included,
+                               boolean[] readCols) throws IOException {
+    // Use the cached objects if the read request matches the cached request
+    if (stripeIndex == currentStripe
+            && (readCols == null || Arrays.equals(readCols, rowIndexColsToRead))) {
+      if (rowIndexColsToRead != null) {
+        return indexes;
+      } else {
+        return planner.readRowIndex(readCols, indexes);
+      }
     } else {
       StripePlanner copy = new StripePlanner(planner);
       if (included == null) {
@@ -1347,11 +1617,11 @@ public class RecordReaderImpl implements RecordReader {
         Arrays.fill(included, true);
       }
       copy.parseStripe(stripes.get(stripeIndex), included);
-      return copy.readRowIndex(sargColumns, null);
+      return copy.readRowIndex(readCols, null);
     }
   }
 
-  private void seekToRowEntry(TreeReaderFactory.TreeReader reader, int rowEntry)
+  private void seekToRowEntry(BatchReader reader, int rowEntry, TypeReader.ReadPhase readPhase)
       throws IOException {
     OrcProto.RowIndex[] rowIndices = indexes.getRowGroupIndex();
     PositionProvider[] index = new PositionProvider[rowIndices.length];
@@ -1366,7 +1636,7 @@ public class RecordReaderImpl implements RecordReader {
         }
       }
     }
-    reader.seek(index);
+    reader.seek(index, readPhase);
   }
 
   @Override
@@ -1387,7 +1657,10 @@ public class RecordReaderImpl implements RecordReader {
       currentStripe = rightStripe;
       readStripe();
     }
-    readRowIndex(currentStripe, fileIncluded, sargApp == null ? null : sargApp.sargColumns);
+    if (rowIndexColsToRead == null) {
+      // Read the row indexes only if they were not already read as part of readStripe()
+      readCurrentStripeRowIndex();
+    }
 
     // if we aren't to the right row yet, advance in the stripe.
     advanceToNextRow(reader, rowNumber, true);

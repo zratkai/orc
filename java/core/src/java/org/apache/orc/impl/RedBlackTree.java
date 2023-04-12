@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -40,7 +40,7 @@ abstract class RedBlackTree {
   /**
    * Create a set with the given initial capacity.
    */
-  public RedBlackTree(int initialCapacity) {
+  RedBlackTree(int initialCapacity) {
     data = new DynamicIntArray(initialCapacity * ELEMENT_SIZE);
   }
 
@@ -137,8 +137,8 @@ abstract class RedBlackTree {
    * the parents, this routine passing down the context.
    *
    * The fix is broken down into 6 cases (1.{1,2,3} and 2.{1,2,3} that are
-   * left-right mirror images of each other). See Algorighms by Cormen,
-   * Leiserson, and Rivest for the explaination of the subcases.
+   * left-right mirror images of each other). See Algorithms by Cormen,
+   * Leiserson, and Rivest for the explanation of the subcases.
    *
    * @param node The node that we are fixing right now.
    * @param fromLeft Did we come down from the left?

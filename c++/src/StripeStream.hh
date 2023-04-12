@@ -37,17 +37,22 @@ namespace orc {
   class StripeStreamsImpl: public StripeStreams {
   private:
     const RowReaderImpl& reader;
+    const proto::StripeInformation& stripeInfo;
     const proto::StripeFooter& footer;
+    const uint64_t stripeIndex;
     const uint64_t stripeStart;
     InputStream& input;
     const Timezone& writerTimezone;
+    const Timezone& readerTimezone;
 
   public:
-    StripeStreamsImpl(const RowReaderImpl& reader,
+    StripeStreamsImpl(const RowReaderImpl& reader, uint64_t index,
+                      const proto::StripeInformation& stripeInfo,
                       const proto::StripeFooter& footer,
                       uint64_t stripeStart,
                       InputStream& input,
-                      const Timezone& writerTimezone);
+                      const Timezone& writerTimezone,
+                      const Timezone& readerTimezone);
 
     virtual ~StripeStreamsImpl() override;
 
@@ -65,9 +70,13 @@ namespace orc {
 
     const Timezone& getWriterTimezone() const override;
 
+    const Timezone& getReaderTimezone() const override;
+
     std::ostream* getErrorStream() const override;
 
     bool getThrowOnHive11DecimalOverflow() const override;
+
+    bool isDecimalAsLong() const override;
 
     int32_t getForcedScaleOnHive11Decimal() const override;
   };

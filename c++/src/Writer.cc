@@ -38,9 +38,13 @@ namespace orc {
     FileVersion fileVersion;
     double dictionaryKeySizeThreshold;
     bool enableIndex;
+    std::set<uint64_t> columnsUseBloomFilter;
+    double bloomFilterFalsePositiveProb;
+    BloomFilterVersion bloomFilterVersion;
+    std::string timezone;
 
     WriterOptionsPrivate() :
-                            fileVersion(0, 11) { // default to Hive_0_11
+                            fileVersion(FileVersion::v_0_12()) { // default to Hive_0_12
       stripeSize = 64 * 1024 * 1024; // 64M
       compressionBlockSize = 64 * 1024; // 64K
       rowIndexStride = 10000;
@@ -51,6 +55,12 @@ namespace orc {
       errorStream = &std::cerr;
       dictionaryKeySizeThreshold = 0.0;
       enableIndex = true;
+      bloomFilterFalsePositiveProb = 0.05;
+      bloomFilterVersion = UTF8;
+      //Writer timezone uses "GMT" by default to get rid of potential issues
+      //introduced by moving timestamps between different timezones.
+      //Explictly set the writer timezone if the use case depends on it.
+      timezone = "GMT";
     }
   };
 
@@ -68,9 +78,7 @@ namespace orc {
 
   WriterOptions::WriterOptions(WriterOptions& rhs) {
     // swap privateBits with rhs
-    WriterOptionsPrivate* l = privateBits.release();
-    privateBits.reset(rhs.privateBits.release());
-    rhs.privateBits.reset(l);
+    privateBits.swap(rhs.privateBits);
   }
 
   WriterOptions& WriterOptions::operator=(const WriterOptions& rhs) {
@@ -82,6 +90,14 @@ namespace orc {
 
   WriterOptions::~WriterOptions() {
     // PASS
+  }
+  RleVersion WriterOptions::getRleVersion() const {
+    if(privateBits->fileVersion == FileVersion::v_0_11())
+    {
+      return RleVersion_1;
+    }
+
+    return RleVersion_2;
   }
 
   WriterOptions& WriterOptions::setStripeSize(uint64_t size) {
@@ -122,12 +138,20 @@ namespace orc {
   }
 
   WriterOptions& WriterOptions::setFileVersion(const FileVersion& version) {
-    // Only Hive_0_11 version is supported currently
-    if (version.getMajor() == 0 && version.getMinor() == 11) {
+    // Only Hive_0_11 and Hive_0_12 version are supported currently
+    if (version.getMajor() == 0 && (version.getMinor() == 11 || version.getMinor() == 12)) {
       privateBits->fileVersion = version;
       return *this;
     }
-    throw std::logic_error("Unpoorted file version specified.");
+    if (version == FileVersion::UNSTABLE_PRE_2_0()) {
+      *privateBits->errorStream << "Warning: ORC files written in "
+                                << FileVersion::UNSTABLE_PRE_2_0().toString()
+                                << " will not be readable by other versions of the software."
+                                << " It is only for developer testing.\n";
+      privateBits->fileVersion = version;
+      return *this;
+    }
+    throw std::logic_error("Unsupported file version specified.");
   }
 
   FileVersion WriterOptions::getFileVersion() const {
@@ -151,6 +175,10 @@ namespace orc {
 
   CompressionStrategy WriterOptions::getCompressionStrategy() const {
     return privateBits->compressionStrategy;
+  }
+
+  bool WriterOptions::getAlignedBitpacking() const {
+    return privateBits->compressionStrategy == CompressionStrategy ::CompressionStrategy_SPEED;
   }
 
   WriterOptions& WriterOptions::setPaddingTolerance(double tolerance) {
@@ -182,6 +210,49 @@ namespace orc {
 
   bool WriterOptions::getEnableIndex() const {
     return privateBits->enableIndex;
+  }
+
+  bool WriterOptions::getEnableDictionary() const {
+    return privateBits->dictionaryKeySizeThreshold > 0.0;
+  }
+
+  WriterOptions& WriterOptions::setColumnsUseBloomFilter(
+    const std::set<uint64_t>& columns) {
+    privateBits->columnsUseBloomFilter = columns;
+    return *this;
+  }
+
+  bool WriterOptions::isColumnUseBloomFilter(uint64_t column) const {
+    return privateBits->columnsUseBloomFilter.find(column) !=
+           privateBits->columnsUseBloomFilter.end();
+  }
+
+  WriterOptions& WriterOptions::setBloomFilterFPP(double fpp) {
+    privateBits->bloomFilterFalsePositiveProb = fpp;
+    return *this;
+  }
+
+  double WriterOptions::getBloomFilterFPP() const {
+    return privateBits->bloomFilterFalsePositiveProb;
+  }
+
+  // delibrately not provide setter to write bloom filter version because
+  // we only support UTF8 for now.
+  BloomFilterVersion WriterOptions::getBloomFilterVersion() const {
+    return privateBits->bloomFilterVersion;
+  }
+
+  const Timezone& WriterOptions::getTimezone() const {
+    return getTimezoneByName(privateBits->timezone);
+  }
+
+  const std::string& WriterOptions::getTimezoneName() const {
+    return privateBits->timezone;
+  }
+
+  WriterOptions& WriterOptions::setTimezoneName(const std::string& zone) {
+    privateBits->timezone = zone;
+    return *this;
   }
 
   Writer::~Writer() {
@@ -219,6 +290,8 @@ namespace orc {
     void add(ColumnVectorBatch& rowsToAdd) override;
 
     void close() override;
+
+    void addUserMetadata(const std::string name, const std::string value) override;
 
   private:
     void init();
@@ -280,7 +353,7 @@ namespace orc {
       while (pos < rowsToAdd.numElements) {
         chunkSize = std::min(rowsToAdd.numElements - pos,
                              rowIndexStride - indexRows);
-        columnWriter->add(rowsToAdd, pos, chunkSize);
+        columnWriter->add(rowsToAdd, pos, chunkSize, nullptr);
 
         pos += chunkSize;
         indexRows += chunkSize;
@@ -293,7 +366,7 @@ namespace orc {
       }
     } else {
       stripeRows += rowsToAdd.numElements;
-      columnWriter->add(rowsToAdd, 0, rowsToAdd.numElements);
+      columnWriter->add(rowsToAdd, 0, rowsToAdd.numElements, nullptr);
     }
 
     if (columnWriter->getEstimatedSize() >= options.getStripeSize()) {
@@ -311,10 +384,17 @@ namespace orc {
     outStream->close();
   }
 
+  void WriterImpl::addUserMetadata(const std::string name, const std::string value){
+    proto::UserMetadataItem* userMetadataItem = fileFooter.add_metadata();
+    userMetadataItem->set_name(name);
+    userMetadataItem->set_value(value);
+  }
+
   void WriterImpl::init() {
     // Write file header
-    outStream->write(WriterImpl::magicId, strlen(WriterImpl::magicId));
-    currentOffset += strlen(WriterImpl::magicId);
+    const static size_t magicIdLength = strlen(WriterImpl::magicId);
+    outStream->write(WriterImpl::magicId, magicIdLength);
+    currentOffset += magicIdLength;
 
     // Initialize file footer
     fileFooter.set_headerlength(currentOffset);
@@ -323,6 +403,7 @@ namespace orc {
     fileFooter.set_rowindexstride(
                           static_cast<uint32_t>(options.getRowIndexStride()));
     fileFooter.set_writer(writerId);
+    fileFooter.set_softwareversion(ORC_VERSION);
 
     uint32_t index = 0;
     buildFooterType(type, fileFooter, index);
@@ -361,6 +442,9 @@ namespace orc {
       columnWriter->mergeRowGroupStatsIntoStripeStats();
     }
 
+    // dictionary should be written before any stream is flushed
+    columnWriter->writeDictionary();
+
     std::vector<proto::Stream> streams;
     // write ROW_INDEX streams
     if (options.getEnableIndex()) {
@@ -382,9 +466,7 @@ namespace orc {
       *stripeFooter.add_columns() = encodings[i];
     }
 
-    // use GMT to guarantee TimestampVectorBatch from reader can write
-    // same wall clock time
-    stripeFooter.set_writertimezone("GMT");
+    stripeFooter.set_writertimezone(options.getTimezoneName());
 
     // add stripe statistics to metadata
     proto::StripeStatistics* stripeStats = metadata.add_stripestats();
@@ -405,7 +487,8 @@ namespace orc {
     uint64_t dataLength = 0;
     uint64_t indexLength = 0;
     for (uint32_t i = 0; i < streams.size(); ++i) {
-      if (streams[i].kind() == proto::Stream_Kind_ROW_INDEX) {
+      if (streams[i].kind() == proto::Stream_Kind_ROW_INDEX ||
+          streams[i].kind() == proto::Stream_Kind_BLOOM_FILTER_UTF8) {
         indexLength += streams[i].length();
       } else {
         dataLength += streams[i].length();
@@ -511,6 +594,10 @@ namespace orc {
       protoType.set_kind(proto::Type_Kind_TIMESTAMP);
       break;
     }
+    case TIMESTAMP_INSTANT: {
+      protoType.set_kind(proto::Type_Kind_TIMESTAMP_INSTANT);
+      break;
+    }
     case LIST: {
       protoType.set_kind(proto::Type_Kind_LIST);
       break;
@@ -547,11 +634,19 @@ namespace orc {
       throw std::logic_error("Unknown type.");
     }
 
+    for (auto& key : t.getAttributeKeys()) {
+      const auto& value = t.getAttributeValue(key);
+      auto protoAttr = protoType.add_attributes();
+      protoAttr->set_key(key);
+      protoAttr->set_value(value);
+    }
+
     int pos = static_cast<int>(index);
     *footer.add_types() = protoType;
 
     for (uint64_t i = 0; i < t.getSubtypeCount(); ++i) {
-      if (t.getKind() != LIST && t.getKind() != MAP && t.getKind() != UNION) {
+      // only add subtypes' field names if this type is STRUCT
+      if (t.getKind() == STRUCT) {
         footer.mutable_types(pos)->add_fieldnames(t.getFieldName(i));
       }
       footer.mutable_types(pos)->add_subtypes(++index);

@@ -18,9 +18,9 @@
 
 package org.apache.orc.impl;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class TestDateUtils {
   /**
@@ -51,10 +51,10 @@ public class TestDateUtils {
 
   void checkConversion(int dayOfEpoch, String hybrid, String proleptic) {
     String result = DateUtils.printDate(dayOfEpoch, false);
-    assertEquals("day " + dayOfEpoch, hybrid, result);
+    assertEquals(hybrid, result, "day " + dayOfEpoch);
     assertEquals(dayOfEpoch, (int) DateUtils.parseDate(result, false));
     result = DateUtils.printDate(dayOfEpoch, true);
-    assertEquals("day " + dayOfEpoch, proleptic, result);
+    assertEquals(proleptic, result, "day " + dayOfEpoch);
     assertEquals(dayOfEpoch, (int) DateUtils.parseDate(result, true));
   }
 }

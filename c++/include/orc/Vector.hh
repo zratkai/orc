@@ -50,6 +50,8 @@ namespace orc {
     DataBuffer<char> notNull;
     // whether there are any null values
     bool hasNulls;
+    // whether the vector batch is encoded
+    bool isEncoded;
 
     // custom memory pool
     MemoryPool& memoryPool;
@@ -64,6 +66,12 @@ namespace orc {
      * This function is not recursive into subtypes.
      */
     virtual void resize(uint64_t capacity);
+
+    /**
+     * Empties the vector from all its elements, recursively.
+     * Do not alter the current capacity.
+     */
+    virtual void clear();
 
     /**
      * Heap memory used by the batch.
@@ -87,6 +95,7 @@ namespace orc {
     DataBuffer<int64_t> data;
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
   };
 
@@ -95,6 +104,7 @@ namespace orc {
     virtual ~DoubleVectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
 
     DataBuffer<double> data;
@@ -105,12 +115,50 @@ namespace orc {
     virtual ~StringVectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
 
     // pointers to the start of each string
     DataBuffer<char*> data;
     // the length of each string
     DataBuffer<int64_t> length;
+    // string blob
+    DataBuffer<char> blob;
+  };
+
+  struct StringDictionary {
+    StringDictionary(MemoryPool& pool);
+    DataBuffer<char> dictionaryBlob;
+
+    // Offset for each dictionary key entry.
+    DataBuffer<int64_t> dictionaryOffset;
+
+    void getValueByIndex(int64_t index, char*& valPtr, int64_t& length) {
+      if (index < 0 || static_cast<uint64_t>(index) + 1 >= dictionaryOffset.size()) {
+        throw std::out_of_range("index out of range.");
+      }
+
+      int64_t* offsetPtr = dictionaryOffset.data();
+
+      valPtr = dictionaryBlob.data() + offsetPtr[index];
+      length = offsetPtr[index + 1] - offsetPtr[index];
+    }
+  };
+
+  /**
+   * Include a index array with reference to corresponding dictionary.
+   * User first obtain index from index array and retrieve string pointer
+   * and length by calling getValueByIndex() from dictionary.
+   */
+  struct EncodedStringVectorBatch : public StringVectorBatch {
+    EncodedStringVectorBatch(uint64_t capacity, MemoryPool& pool);
+    virtual ~EncodedStringVectorBatch();
+    std::string toString() const;
+    void resize(uint64_t capacity);
+    std::shared_ptr<StringDictionary> dictionary;
+
+    // index for dictionary entry
+    DataBuffer<int64_t> index;
   };
 
   struct StructVectorBatch: public ColumnVectorBatch {
@@ -118,6 +166,7 @@ namespace orc {
     virtual ~StructVectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
     bool hasVariableLength();
 
@@ -129,12 +178,13 @@ namespace orc {
     virtual ~ListVectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
     bool hasVariableLength();
 
     /**
      * The offset of the first element of each list.
-     * The length of list i is startOffset[i+1] - startOffset[i].
+     * The length of list i is offsets[i+1] - offsets[i].
      */
     DataBuffer<int64_t> offsets;
 
@@ -147,12 +197,13 @@ namespace orc {
     virtual ~MapVectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
     bool hasVariableLength();
 
     /**
-     * The offset of the first element of each list.
-     * The length of list i is startOffset[i+1] - startOffset[i].
+     * The offset of the first element of each map.
+     * The size of map i is offsets[i+1] - offsets[i].
      */
     DataBuffer<int64_t> offsets;
 
@@ -167,6 +218,7 @@ namespace orc {
     virtual ~UnionVectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
     bool hasVariableLength();
 
@@ -189,7 +241,7 @@ namespace orc {
     explicit Decimal(const std::string& value);
     Decimal();
 
-    std::string toString() const;
+    std::string toString(bool trimTrailingZeros = false) const;
     Int128 value;
     int32_t scale;
   };
@@ -199,6 +251,7 @@ namespace orc {
     virtual ~Decimal64VectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
 
     // total number of digits
@@ -224,6 +277,7 @@ namespace orc {
     virtual ~Decimal128VectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
 
     // total number of digits
@@ -255,6 +309,7 @@ namespace orc {
     virtual ~TimestampVectorBatch();
     std::string toString() const;
     void resize(uint64_t capacity);
+    void clear();
     uint64_t getMemoryUsage();
 
     // the number of seconds past 1 Jan 1970 00:00 UTC (aka time_t)

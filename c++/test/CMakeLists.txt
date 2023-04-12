@@ -14,10 +14,6 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/c++/src
   ${PROJECT_BINARY_DIR}/c++/include
   ${PROJECT_BINARY_DIR}/c++/src
-  ${PROTOBUF_INCLUDE_DIR}
-  ${ZLIB_INCLUDE_DIR}
-  ${SNAPPY_INCLUDE_DIR}
-  ${GTEST_INCLUDE_DIR}
 )
 
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX11_FLAGS} ${WARN_FLAGS}")
@@ -25,7 +21,9 @@ set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX11_FLAGS} ${WARN_FLAGS}")
 add_executable (orc-test
   MemoryInputStream.cc
   MemoryOutputStream.cc
+  TestAttributes.cc
   TestBufferedOutputStream.cc
+  TestBloomFilter.cc
   TestByteRle.cc
   TestByteRLEEncoder.cc
   TestColumnPrinter.cc
@@ -34,11 +32,18 @@ add_executable (orc-test
   TestCompression.cc
   TestDecompression.cc
   TestDecimal.cc
+  TestDictionaryEncoding.cc
   TestDriver.cc
   TestInt128.cc
+  TestMurmur3.cc
+  TestPredicateLeaf.cc
+  TestPredicatePushdown.cc
   TestReader.cc
-  TestRle.cc
-  TestRLEv1Encoder.cc
+  TestRleDecoder.cc
+  TestRleEncoder.cc
+  TestRLEV2Util.cc
+  TestSargsApplier.cc
+  TestSearchArgument.cc
   TestStripeIndexStatistics.cc
   TestTimestampStatistics.cc
   TestTimezone.cc
@@ -48,11 +53,11 @@ add_executable (orc-test
 
 target_link_libraries (orc-test
   orc
-  lz4
-  protobuf
-  snappy
-  zlib
-  ${GTEST_LIBRARIES}
+  orc::lz4
+  orc::protobuf
+  orc::snappy
+  orc::zlib
+  orc::gmock
 )
 
 add_executable (create-test-files
@@ -61,7 +66,25 @@ add_executable (create-test-files
 
 target_link_libraries (create-test-files
   orc
-  protobuf
+  orc::protobuf
 )
 
-add_test (NAME orc-test COMMAND orc-test)
+if (TEST_VALGRIND_MEMCHECK)
+  add_test (orc-test
+          valgrind --tool=memcheck --leak-check=full --error-exitcode=1 ./orc-test)
+else ()
+  add_test (NAME orc-test COMMAND orc-test)
+endif ()
+
+set_property(TEST orc-test
+    PROPERTY
+      ENVIRONMENT "ORC_EXAMPLE_DIR=${EXAMPLE_DIRECTORY}"
+    )
+
+if (WIN32)
+  set_property(
+    TEST orc-test
+    APPEND PROPERTY
+      ENVIRONMENT "TZDIR=${TZDATA_DIR}"
+    )
+endif ()

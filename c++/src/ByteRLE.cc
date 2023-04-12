@@ -40,7 +40,7 @@ namespace orc {
     virtual ~ByteRleEncoderImpl() override;
 
     /**
-     * Encode the next batch of values
+     * Encode the next batch of values.
      * @param data to be encoded
      * @param numValues the number of values to be encoded
      * @param notNull If the pointer is null, all values are read. If the
@@ -55,11 +55,18 @@ namespace orc {
     virtual uint64_t getBufferSize() const override;
 
     /**
-     * Flushing underlying BufferedOutputStream
-    */
+     * Flush underlying BufferedOutputStream.
+     */
     virtual uint64_t flush() override;
 
     virtual void recordPosition(PositionRecorder* recorder) const override;
+
+    virtual void suppress() override;
+
+    /**
+     * Reset to initial state
+     */
+    void reset();
 
   protected:
     std::unique_ptr<BufferedOutputStream> outputStream;
@@ -80,12 +87,7 @@ namespace orc {
                                 std::unique_ptr<BufferedOutputStream> output)
                                   : outputStream(std::move(output)) {
     literals = new char[MAX_LITERAL_SIZE];
-    numLiterals = 0;
-    tailRunLength = 0;
-    repeat = false;
-    bufferPosition = 0;
-    bufferLength = 0;
-    buffer = nullptr;
+    reset();
   }
 
   ByteRleEncoderImpl::~ByteRleEncoderImpl() {
@@ -122,7 +124,7 @@ namespace orc {
         writeByte(
             static_cast<char>(numLiterals - static_cast<int>(MINIMUM_REPEAT)));
         writeByte(literals[0]);
-     } else {
+      } else {
         writeByte(static_cast<char>(-numLiterals));
         for (int i = 0; i < numLiterals; ++i) {
           writeByte(literals[i]);
@@ -201,6 +203,21 @@ namespace orc {
       recorder->add(flushedSize + unflushedSize);
     }
     recorder->add(static_cast<uint64_t>(numLiterals));
+  }
+
+  void ByteRleEncoderImpl::reset() {
+    numLiterals = 0;
+    tailRunLength = 0;
+    repeat = false;
+    bufferPosition = 0;
+    bufferLength = 0;
+    buffer = nullptr;
+  }
+
+  void ByteRleEncoderImpl::suppress() {
+    // written data can be just ignored because they are only flushed in memory
+    outputStream->suppress();
+    reset();
   }
 
   std::unique_ptr<ByteRleEncoder> createByteRleEncoder
@@ -521,6 +538,7 @@ namespace orc {
   void BooleanRleDecoderImpl::seek(PositionProvider& location) {
     ByteRleDecoderImpl::seek(location);
     uint64_t consumed = location.next();
+    remainingBits = 0;
     if (consumed > 8) {
       throw ParseError("bad position");
     }
@@ -537,8 +555,12 @@ namespace orc {
       numValues -= remainingBits;
       uint64_t bytesSkipped = numValues / 8;
       ByteRleDecoderImpl::skip(bytesSkipped);
-      ByteRleDecoderImpl::next(&lastByte, 1, nullptr);
-      remainingBits = 8 - (numValues % 8);
+      if (numValues % 8 != 0) {
+        ByteRleDecoderImpl::next(&lastByte, 1, nullptr);
+        remainingBits = 8 - (numValues % 8);
+      } else {
+        remainingBits = 0;
+      }
     }
   }
 
