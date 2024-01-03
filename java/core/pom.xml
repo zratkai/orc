@@ -19,7 +19,7 @@
   <parent>
     <groupId>org.apache.orc</groupId>
     <artifactId>orc</artifactId>
-    <version>1.5.1.7.1.7.2001-SNAPSHOT</version>
+    <version>1.5.1.7.1.7.3000-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
