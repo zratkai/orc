@@ -64,9 +64,9 @@
 
     <junit.version>5.8.2</junit.version>
     <min.hadoop.version>3.1.1.7.2.17.0-SNAPSHOT</min.hadoop.version>
-    <hadoop.version>3.1.1.7.2.17.0-334</hadoop.version>
+    <hadoop.version>3.1.1.7.2.17.200-29</hadoop.version>
     <storage-api.version>3.1.3000.2024.0.17.0-SNAPSHOT</storage-api.version>
-    <zookeeper.version>3.5.5.7.2.17.0-334</zookeeper.version>
+    <zookeeper.version>3.5.5.7.2.17.200-29</zookeeper.version>
     
     <maven-assembly-plugin.version>3.4.1</maven-assembly-plugin.version>
     <maven-shade-plugin.version>3.2.4</maven-shade-plugin.version>
