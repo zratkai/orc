@@ -158,11 +158,11 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>2.20.1</version>
+        <version>${surefire.version}</version>
         <configuration>
           <trimStackTrace>false</trimStackTrace>
           <reuseForks>false</reuseForks>
-          <argLine>-Xmx2048m</argLine>
+          <argLine>-Xmx5120m</argLine>
           <environmentVariables>
             <TZ>US/Pacific</TZ>
             <LANG>en_US.UTF-8</LANG>
@@ -656,11 +656,6 @@
         <artifactId>threeten-extra</artifactId>
         <version>1.7.1</version>
       </dependency>
-      <dependency>
-        <groupId>org.threeten</groupId>
-        <artifactId>threeten-extra</artifactId>
-        <version>1.5.0</version>
-      </dependency>
 
       <!-- test inter-project -->
       <dependency>
@@ -684,6 +679,12 @@
       <dependency>
         <groupId>org.junit.jupiter</groupId>
         <artifactId>junit-jupiter-params</artifactId>
+        <version>${junit.version}</version>
+        <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter-engine</artifactId>
         <version>${junit.version}</version>
         <scope>test</scope>
       </dependency>

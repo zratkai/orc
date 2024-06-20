@@ -20,6 +20,7 @@ package org.apache.orc.impl.mask;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -207,6 +208,8 @@ public class TestRedactMask {
   }
 
   @Test
+  //Disabled until CDPD-64240 HIVE-25400: is done for Hive on cdpd-master branch
+  @Disabled
   public void testStringMaskBufferOverflow() throws Exception {
     // set upper and lower letters to replace with 4 byte replacements
     // (U+267CC and U+28CCA)
